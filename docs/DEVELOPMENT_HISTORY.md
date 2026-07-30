@@ -4,6 +4,7 @@
 |---|---|
 | 2026-07-30 | Project scaffolding and `CLAUDE.md` project rules established |
 | 2026-07-30 | First tool: rocprof-sys CPU hotspots launcher + extractor |
+| 2026-07-30 | rocprof-sys hotspots: %-of-total column, selectable output, header metadata |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -27,3 +28,13 @@ Two pieces:
 - `scripts/rocprof_sys_profile.sh` — bash launcher wrapping `rocprof-sys-sample` (lightweight call-stack sampling, no binary instrumentation) with sane first-run defaults (flat profile, text+JSON output, Perfetto tracing off), and auto-invoking the extractor afterwards. Since `rocprof-sys-sample` wraps a single process, MPI usage is `mpirun -np N scripts/rocprof_sys_profile.sh -- ./app` (mpirun/srun goes *before* the script, not inside it) — the script detects `OMPI_COMM_WORLD_RANK`/`PMI_RANK`/`SLURM_PROCID` so only rank 0 runs the extractor against the shared output directory.
 
 Verified locally (no ROCm/GPU available on this dev machine, per `CLAUDE.md`'s environment constraints): `python3 -m unittest` against hand-crafted fixtures under `postprocess/tests/fixtures/` (18 tests covering label-cleaning, table parsing, cross-file aggregation, GPU/CPU bucketing, and end-to-end report generation), `bash -n` on the launcher (shellcheck not installed in this environment, so that check was skipped), and manual dry-run / stubbed-`rocprof-sys-sample` runs exercising flag parsing, env var construction, and the rank-0-only summary gating. Real end-to-end validation against actual `rocprof-sys` output is left to the user on the HPC system.
+
+## 2026-07-30 — rocprof-sys hotspots: %-of-total column, selectable output, header metadata
+
+Extended the CPU hotspots tool with three follow-up requests:
+
+1. **`%total` column**, computed purely from timemory data: each aggregated entry's share of a `total_runtime` denominator, itself the sum, across all scanned files, of that file's own single largest `SUM` value. A file's largest `SUM` is — barring unusual instrumentation — its outermost/root scope, since inclusive time only grows going up the call stack; this holds whether the file is a hierarchical or an already-flattened profile, without needing to guess the entry-point function's name (which the target codebase's language/build system might vary, e.g. Fortran's `MAIN__` vs C's `main`).
+2. **Selectable output**: `-n/--top N` (unchanged default of 20), plus new `--threshold PCT` (only entries at/above PCT% of total runtime — falls back to showing everything, with a note, if total runtime couldn't be computed) and `--all` (no truncation), as a mutually-exclusive argparse group. `scripts/rocprof_sys_profile.sh` forwards whichever of the three the user passed through to the extractor unchanged.
+3. **Best-effort header metadata** — executable name, run date/time, total runtime, and MPI rank count — read from `metadata.json` in the rocprof-sys output directory (never from the timemory files themselves, per the request). Since `metadata.json`'s schema isn't documented anywhere found during research, field lookup is a best-effort, case-insensitive search over several plausible key names (one level of nested dicts deep), with two concrete fallbacks grounded in documented rocprof-sys behavior rather than guesswork: run date/time falls back to rocprof-sys's own default output-subdirectory naming pattern (`%F_%H.%M`, e.g. `2025-01-21_07.40`) if present in the path, and rank count falls back to the number of distinct PIDs among the scanned `<component>-<pid>.txt` filenames. Any field that still can't be determined is left blank — never an error, per the request.
+
+Extended `postprocess/tests/fixtures/mpi_2rank/` with a `metadata.json` fixture (exercising both a direct top-level key and one nested under a `settings` object) and left `single_rank/` without one, to test the all-fields-blank-plus-PID-fallback path. Added 15 new tests (33 total) covering the total-runtime computation, all three selection modes (including the threshold/unknown-total-runtime fallback), and metadata guessing with and without `metadata.json` present.

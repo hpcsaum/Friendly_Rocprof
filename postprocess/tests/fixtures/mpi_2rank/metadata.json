@@ -1,0 +1,8 @@
+{
+  "argv": ["/home/user/app/jacobi_mpi", "--iters", "1000"],
+  "start_time": "2026-07-21T07:40:00",
+  "elapsed": 21.824161,
+  "settings": {
+    "world_size": 2
+  }
+}

@@ -9,7 +9,9 @@ footer note this script writes into its own output.
 
 import argparse
 import glob
+import json
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -23,6 +25,23 @@ EXPECTED_HEADER_FIELDS = ["LABEL", "COUNT", "DEPTH", "METRIC", "UNITS", "SUM", "
 # because under MPI the docs describe the row prefix as "|MM|NN>>>label" -- an
 # embedded pipe that would otherwise misalign a naive fixed-column split.
 FIXED_FIELDS_AFTER_LABEL = len(EXPECTED_HEADER_FIELDS) - 1
+
+METADATA_FILENAME = "metadata.json"
+# Field names are not documented anywhere -- these are best-effort guesses tried
+# in order; if none match (or metadata.json is absent), the corresponding header
+# field is just left blank, per this tool's "never error on missing metadata" rule.
+EXECUTABLE_KEYS = ["command_line", "argv", "command", "exe", "executable"]
+RUN_DATETIME_KEYS = ["start_time", "launch_time", "timestamp", "date", "time"]
+TOTAL_RUNTIME_KEYS = ["elapsed", "duration", "wall_time", "total_time", "runtime"]
+NUM_RANKS_KEYS = ["num_ranks", "world_size", "mpi_size", "ranks", "num_procs"]
+
+# rocprof-sys's default ROCPROFSYS_TIME_OUTPUT subdirectory naming (documented default
+# strftime pattern "%F_%H.%M", e.g. "2025-01-21_07.40") -- used as a fallback run
+# date/time source when metadata.json doesn't have (or isn't) available.
+TIME_OUTPUT_DIR_RE = re.compile(r"\d{4}-\d{2}-\d{2}_\d{2}\.\d{2}")
+# rocprof-sys's default per-process file naming is "<component>-<pid>.txt" -- used as
+# a fallback rank count (one file per process/rank) when metadata.json lacks a count.
+PID_SUFFIX_RE = re.compile(r"-(\d+)\.txt$")
 
 
 def parse_table_file(path):
@@ -87,11 +106,17 @@ def is_gpu_entry(label, filename):
 def aggregate(output_dir):
     """Scan output_dir for timemory text tables and aggregate rows by clean function name.
 
-    Returns (cpu_entries, gpu_entries, scanned_files) where each entries list is
-    [{"label", "count", "sum", "pct_self_last"}], sorted by nothing yet.
+    Returns (cpu_entries, gpu_entries, scanned_files, total_runtime) where each
+    entries list is [{"label", "count", "sum", "pct_self"}], unsorted, and
+    total_runtime is the denominator used for each entry's "% of total runtime":
+    the sum, across all scanned files, of that file's own largest SUM value (a
+    file's largest SUM is -- barring unusual instrumentation -- its outermost/
+    root scope, since inclusive time only grows going up the call stack; this
+    works whether the file is a hierarchical or a flattened profile, without
+    needing to guess the root function's name).
     """
     scanned_files = []
-    totals = {}  # label -> {"count": int, "sum": float, "pct_self": float, "gpu": bool}
+    file_rows = []  # [(path, rows)]
 
     candidates = sorted(glob.glob(os.path.join(output_dir, "*.txt")))
     for path in candidates:
@@ -101,6 +126,12 @@ def aggregate(output_dir):
         if rows is None:
             continue
         scanned_files.append(path)
+        file_rows.append((path, rows))
+
+    total_runtime = sum(max(row["sum"] for row in rows) for _, rows in file_rows if rows)
+
+    totals = {}  # label -> {"count": int, "sum": float, "pct_self": float, "gpu": bool}
+    for path, rows in file_rows:
         for row in rows:
             label = row["label"]
             gpu = is_gpu_entry(label, path)
@@ -113,20 +144,51 @@ def aggregate(output_dir):
     cpu_entries = []
     gpu_entries = []
     for label, entry in totals.items():
-        item = {"label": label, "count": entry["count"], "sum": entry["sum"], "pct_self": entry["pct_self"]}
+        pct_total = (entry["sum"] / total_runtime * 100.0) if total_runtime > 0 else None
+        item = {
+            "label": label,
+            "count": entry["count"],
+            "sum": entry["sum"],
+            "pct_self": entry["pct_self"],
+            "pct_total": pct_total,
+        }
         (gpu_entries if entry["gpu"] else cpu_entries).append(item)
 
-    return cpu_entries, gpu_entries, scanned_files
+    return cpu_entries, gpu_entries, scanned_files, total_runtime
 
 
-def format_table(entries, top_n):
-    entries = sorted(entries, key=lambda e: e["sum"], reverse=True)[:top_n]
+def select_entries(entries, total_runtime, top=None, threshold=None, show_all=False):
+    """Pick which aggregated entries to report, always sorted by SUM descending.
+
+    Exactly one selection mode applies (show_all > threshold > top, in that
+    precedence, though callers should only set one): show every entry, keep
+    only entries at or above a %-of-total-runtime threshold, or keep the top N
+    by total time. Returns (selected_entries, description_for_report_header).
+    """
+    entries_sorted = sorted(entries, key=lambda e: e["sum"], reverse=True)
+    total_count = len(entries_sorted)
+
+    if show_all:
+        return entries_sorted, f"all {total_count} entries"
+
+    if threshold is not None:
+        if total_runtime <= 0:
+            return entries_sorted, f"all {total_count} entries (total runtime unknown, threshold ignored)"
+        filtered = [e for e in entries_sorted if e["pct_total"] is not None and e["pct_total"] >= threshold]
+        return filtered, f">= {threshold:g}% of total runtime ({len(filtered)} of {total_count} entries)"
+
+    n = 20 if top is None else top
+    return entries_sorted[:n], f"top {n} of {total_count} entries"
+
+
+def format_table(entries):
     if not entries:
         return "  (none found)\n"
     lines = []
-    lines.append(f"  {'#':>3}  {'total(s)':>12}  {'calls':>10}  {'%self':>7}  function")
+    lines.append(f"  {'#':>3}  {'total(s)':>12}  {'%total':>7}  {'calls':>10}  {'%self':>7}  function")
     for i, e in enumerate(entries, 1):
-        lines.append(f"  {i:>3}  {e['sum']:>12.6f}  {e['count']:>10}  {e['pct_self']:>7.1f}  {e['label']}")
+        pct_total_str = f"{e['pct_total']:.1f}" if e["pct_total"] is not None else "n/a"
+        lines.append(f"  {i:>3}  {e['sum']:>12.6f}  {pct_total_str:>7}  {e['count']:>10}  {e['pct_self']:>7.1f}  {e['label']}")
     return "\n".join(lines) + "\n"
 
 
@@ -136,8 +198,86 @@ def find_extra_artifacts(output_dir):
     return proto_files, db_files
 
 
-def write_report(output_dir, dest_path, top_n):
-    cpu_entries, gpu_entries, scanned_files = aggregate(output_dir)
+def load_metadata(output_dir):
+    path = os.path.join(output_dir, METADATA_FILENAME)
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def find_first_key(d, candidate_keys, _depth=0):
+    """Best-effort case-insensitive key search, one level of nested dicts deep --
+    metadata.json's schema isn't documented, so this is a guess, not a parse."""
+    if not isinstance(d, dict):
+        return None
+    lower_map = {k.lower(): v for k, v in d.items()}
+    for key in candidate_keys:
+        if key in lower_map and lower_map[key] not in (None, "", []):
+            return lower_map[key]
+    if _depth == 0:
+        for v in d.values():
+            if isinstance(v, dict):
+                found = find_first_key(v, candidate_keys, _depth=1)
+                if found is not None:
+                    return found
+    return None
+
+
+def guess_executable(metadata):
+    val = find_first_key(metadata, EXECUTABLE_KEYS)
+    if isinstance(val, list) and val:
+        val = val[0]
+    if isinstance(val, str) and val.strip():
+        return os.path.basename(val.split()[0])
+    return None
+
+
+def guess_run_datetime(metadata, output_dir):
+    val = find_first_key(metadata, RUN_DATETIME_KEYS)
+    if isinstance(val, str) and val.strip():
+        return val.strip()
+    m = TIME_OUTPUT_DIR_RE.search(output_dir)
+    return m.group(0) if m else None
+
+
+def guess_total_runtime(metadata):
+    val = find_first_key(metadata, TOTAL_RUNTIME_KEYS)
+    if isinstance(val, (int, float)):
+        return f"{val:.6f} sec"
+    if isinstance(val, str) and val.strip():
+        return val.strip()
+    return None
+
+
+def guess_num_ranks(metadata, scanned_files):
+    val = find_first_key(metadata, NUM_RANKS_KEYS)
+    if isinstance(val, (int, float)) and val > 0:
+        return int(val)
+    pids = set()
+    for path in scanned_files:
+        m = PID_SUFFIX_RE.search(os.path.basename(path))
+        if m:
+            pids.add(m.group(1))
+    return len(pids) if pids else None
+
+
+def gather_run_info(output_dir, scanned_files):
+    metadata = load_metadata(output_dir)
+    return {
+        "executable": guess_executable(metadata),
+        "run_datetime": guess_run_datetime(metadata, output_dir),
+        "total_runtime": guess_total_runtime(metadata),
+        "num_ranks": guess_num_ranks(metadata, scanned_files),
+    }
+
+
+def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False):
+    cpu_entries, gpu_entries, scanned_files, total_runtime = aggregate(output_dir)
     if not scanned_files:
         raise SystemExit(
             f"error: no rocprof-sys timemory text table found in {output_dir!r} "
@@ -146,29 +286,39 @@ def write_report(output_dir, dest_path, top_n):
         )
 
     proto_files, db_files = find_extra_artifacts(output_dir)
+    run_info = gather_run_info(output_dir, scanned_files)
+
+    cpu_selected, cpu_desc = select_entries(cpu_entries, total_runtime, top, threshold, show_all)
+    gpu_selected, gpu_desc = select_entries(gpu_entries, total_runtime, top, threshold, show_all)
 
     parts = []
     parts.append("rocprof-sys hotspots report (CPU-side only)\n")
     parts.append(f"generated: {datetime.now().isoformat(timespec='seconds')}\n")
     parts.append(f"source directory: {os.path.abspath(output_dir)}\n")
+    parts.append(f"executable: {run_info['executable'] or ''}\n")
+    parts.append(f"run date/time: {run_info['run_datetime'] or ''}\n")
+    parts.append(f"total runtime: {run_info['total_runtime'] or ''}\n")
+    parts.append(f"MPI ranks: {run_info['num_ranks'] if run_info['num_ranks'] is not None else ''}\n")
     parts.append("files scanned:\n")
     for f in scanned_files:
         parts.append(f"  - {os.path.basename(f)}\n")
     parts.append("\n")
 
-    parts.append(f"Top {top_n} CPU compute hotspots (candidates for GPU offload)\n")
-    parts.append(format_table(cpu_entries, top_n))
+    parts.append(f"CPU compute hotspots (candidates for GPU offload) -- showing {cpu_desc}\n")
+    parts.append(format_table(cpu_selected))
     parts.append("\n")
 
-    parts.append(f"Top {top_n} GPU API / launch overhead\n")
+    parts.append(f"GPU API / launch overhead -- showing {gpu_desc}\n")
     parts.append("(host-side call overhead only -- NOT device kernel execution time)\n")
-    parts.append(format_table(gpu_entries, top_n))
+    parts.append(format_table(gpu_selected))
     parts.append("\n")
 
     parts.append(
         "Note: true GPU kernel execution time is not present in this data. "
         "rocprof-sys's text/JSON output only captures host-side timing; "
-        "GPU-launch-looking rows above are launch/API overhead, not device time.\n"
+        "GPU-launch-looking rows above are launch/API overhead, not device time. "
+        "'%total' is each function's share of total measured time (summed across "
+        "all scanned files); it will not add up to 100% across both tables.\n"
     )
     if proto_files:
         parts.append("A Perfetto trace was also found (not parsed by this tool):\n")
@@ -193,15 +343,20 @@ def main(argv=None):
     parser.add_argument("output_dir", help="rocprof-sys output directory to read")
     parser.add_argument("-o", "--output", dest="dest", default=None,
                          help="path to write the hotspots report (default: <output_dir>/hotspots.txt)")
-    parser.add_argument("-n", "--top", dest="top_n", type=int, default=20,
-                         help="number of hotspots to list per section (default: 20)")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("-n", "--top", dest="top", type=int, default=None,
+                            help="number of hotspots to list per section (default: 20)")
+    selection.add_argument("--threshold", dest="threshold", type=float, default=None,
+                            help="only list entries at or above this %% of total runtime")
+    selection.add_argument("--all", dest="show_all", action="store_true",
+                            help="list every entry, no truncation")
     args = parser.parse_args(argv)
 
     if not os.path.isdir(args.output_dir):
         raise SystemExit(f"error: no such directory: {args.output_dir!r}")
 
     dest = args.dest or os.path.join(args.output_dir, "hotspots.txt")
-    write_report(args.output_dir, dest, args.top_n)
+    write_report(args.output_dir, dest, top=args.top, threshold=args.threshold, show_all=args.show_all)
     print(f"wrote {dest}")
 
 

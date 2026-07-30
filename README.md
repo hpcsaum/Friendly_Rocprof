@@ -28,11 +28,24 @@ mpirun -np 4 scripts/rocprof_sys_profile.sh -o results/run1 -- ./app arg1 arg2
 This runs `rocprof-sys-sample` (lightweight call-stack sampling, no binary
 instrumentation needed) and, once it finishes, generates `results/run1/hotspots.txt`
 listing the top CPU-side hotspots (candidates for GPU offload) and top GPU-API/launch
-overhead calls. Note: this only covers CPU-side timing — true GPU kernel execution
-time needs a different tool (`rocprofv3`, planned separately).
+overhead calls, each with its share of total measured runtime. Note: this only covers
+CPU-side timing — true GPU kernel execution time needs a different tool (`rocprofv3`,
+planned separately). The report's header also includes the executable name, run
+date/time, total runtime, and MPI rank count when `rocprof-sys` happened to record
+them (best-effort from its `metadata.json`, since none of that lives in the timing
+data itself) — any field it couldn't find is just left blank.
+
+By default the report lists the top 20 entries per section, ranked by total time.
+Pass `--top N` for a different count, `--threshold PCT` to instead list every
+entry at or above PCT% of total runtime, or `--all` to list everything with no
+truncation (works on both the launcher and the extractor):
+
+```bash
+scripts/rocprof_sys_profile.sh -o results/run1 --threshold 5 -- ./app arg1
+```
 
 The extractor also works standalone against any existing `rocprof-sys` output directory:
 
 ```bash
-python3 postprocess/rocprof_sys_hotspots.py <rocprof-sys-output-dir> [-n TOP_N] [-o report.txt]
+python3 postprocess/rocprof_sys_hotspots.py <rocprof-sys-output-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all]
 ```

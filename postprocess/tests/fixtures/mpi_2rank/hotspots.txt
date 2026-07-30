@@ -1,0 +1,23 @@
+rocprof-sys hotspots report (CPU-side only)
+generated: 2026-07-30T17:33:01
+source directory: /home/saumet/Documents/Porting_Adventure/Friendly_Rocprof/postprocess/tests/fixtures/mpi_2rank
+executable: jacobi_mpi
+run date/time: 2026-07-21T07:40:00
+total runtime: 21.824161 sec
+MPI ranks: 2
+files scanned:
+  - wall_clock-2001.txt
+  - wall_clock-2002.txt
+
+CPU compute hotspots (candidates for GPU offload) -- showing top 20 of 2 entries
+    #      total(s)   %total       calls    %self  function
+    1     21.824161    100.0           2      0.1  main
+    2     18.900000     86.6        1000     93.5  compute_stencil
+
+GPU API / launch overhead -- showing top 20 of 1 entries
+(host-side call overhead only -- NOT device kernel execution time)
+    #      total(s)   %total       calls    %self  function
+    1      0.039500      0.2         500    100.0  hipMemcpy
+
+Note: true GPU kernel execution time is not present in this data. rocprof-sys's text/JSON output only captures host-side timing; GPU-launch-looking rows above are launch/API overhead, not device time. '%total' is each function's share of total measured time (summed across all scanned files); it will not add up to 100% across both tables.
+For real GPU kernel hotspots, run: rocprofv3 --stats --kernel-trace --summary -- <app>

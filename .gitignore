@@ -6,3 +6,6 @@
 results/
 rocprof-sys-*-output/
 __pycache__/
+
+# test fixtures are checked-in sample data, not generated output
+!postprocess/tests/fixtures/**

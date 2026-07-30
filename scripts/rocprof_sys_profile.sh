@@ -17,9 +17,9 @@ EXTRACTOR="$SCRIPT_DIR/../postprocess/rocprof_sys_hotspots.py"
 
 OUTPUT_DIR="rocprof-sys-hotspots-output"
 FREQ_HZ=100
-TOP_N=20
 RUN_SUMMARY=1
 DRY_RUN=0
+SELECTION_ARGS=()
 
 usage() {
   cat <<'EOF'
@@ -28,7 +28,9 @@ Usage: rocprof_sys_profile.sh [options] -- <command> [args...]
 Options:
   -o, --output-dir DIR   rocprof-sys output directory (default: rocprof-sys-hotspots-output)
   -f, --freq HZ           sampling frequency in Hz (default: 100)
-  --top N                 hotspots per section to report (default: 20)
+  --top N                 hotspots per section to report (default: 20; last of --top/--threshold/--all wins)
+  --threshold PCT         only report entries at or above PCT% of total runtime
+  --all                   report every entry, no truncation
   --no-summary            skip auto-running the hotspots extractor afterwards
   --dry-run               print the command and env vars that would run, don't execute
   -h, --help              show this help
@@ -42,7 +44,11 @@ while [[ $# -gt 0 ]]; do
     -f|--freq)
       FREQ_HZ="$2"; shift 2 ;;
     --top)
-      TOP_N="$2"; shift 2 ;;
+      SELECTION_ARGS=(--top "$2"); shift 2 ;;
+    --threshold)
+      SELECTION_ARGS=(--threshold "$2"); shift 2 ;;
+    --all)
+      SELECTION_ARGS=(--all); shift ;;
     --no-summary)
       RUN_SUMMARY=0; shift ;;
     --dry-run)
@@ -98,11 +104,11 @@ if [[ "$RUN_SUMMARY" -eq 1 ]]; then
   RANK="${OMPI_COMM_WORLD_RANK:-${PMI_RANK:-${SLURM_PROCID:-0}}}"
   if [[ "$RANK" -eq 0 ]]; then
     if command -v python3 >/dev/null 2>&1; then
-      python3 "$EXTRACTOR" "$OUTPUT_DIR" -n "$TOP_N" || \
+      python3 "$EXTRACTOR" "$OUTPUT_DIR" "${SELECTION_ARGS[@]}" || \
         echo "warning: hotspots extractor failed; profiling data is still in $OUTPUT_DIR" >&2
     else
       echo "warning: python3 not found, skipping hotspots summary; run it manually later:" >&2
-      echo "  python3 $EXTRACTOR $OUTPUT_DIR -n $TOP_N" >&2
+      echo "  python3 $EXTRACTOR $OUTPUT_DIR ${SELECTION_ARGS[*]}" >&2
     fi
   fi
 fi
