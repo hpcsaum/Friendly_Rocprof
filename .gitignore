@@ -1,0 +1,5 @@
+# rocprof output
+*.csv
+*.json
+*.db
+results/
