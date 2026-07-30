@@ -2,4 +2,7 @@
 *.csv
 *.json
 *.db
+*.proto
 results/
+rocprof-sys-*-output/
+__pycache__/

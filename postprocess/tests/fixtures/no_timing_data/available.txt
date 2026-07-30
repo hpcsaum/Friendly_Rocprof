@@ -1,0 +1,4 @@
+Instrumented functions available for rocprof-sys-instrument (not a timing table).
+main
+compute_stencil
+apply_boundary
