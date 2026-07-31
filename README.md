@@ -126,3 +126,47 @@ check that they came from the same executable or test case — that's on you
 ```bash
 python3 postprocess/extract_hotspots.py <rocprof-sys-output-dir> <rocprofv3-output-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all]
 ```
+
+### Selective instrumentation — `instrument_hotspots.sh`
+
+Once you already know your hotspots (from `profile_hotspots.sh` above),
+instrumenting every function in the binary to get a detailed trace is slow
+and distorts the very timing you're trying to measure. This tool builds a
+`rocprof-sys-instrument` binary rewrite covering *only* the hotspot
+functions, then (in `trace` mode) runs it to produce a full trace — kernels,
+OpenMP regions, and MPI calls are captured automatically too, not just the
+hotspot functions themselves.
+
+Two modes, sharing the same build: `instrument` builds the instrumented
+binary and stops; `trace` does the same build, then immediately runs it.
+`trace` never assumes a binary was already built by a separate `instrument`
+call — every invocation builds its own.
+
+```bash
+# build only, auto-profiling with the default 1% threshold
+scripts/instrument_hotspots.sh instrument -- ./app arg1 arg2
+
+# build + run to produce a full trace, reusing a report you already have
+scripts/instrument_hotspots.sh trace --report results/run1/hotspots.txt -- ./app arg1 arg2
+```
+
+Unlike the other three tools, `mpirun`/`srun` does **not** go in front of
+this script — the binary rewrite must happen exactly once, not once per
+rank. Instead, pass the MPI launch command as data via `--mpi`, and this
+script places it wherever it's actually needed (the auto-profiling run, and
+`trace` mode's final run) — never in front of the one-time build step,
+which doesn't execute your program at all:
+
+```bash
+scripts/instrument_hotspots.sh trace --mpi "mpirun -np 4" -- ./app arg1 arg2
+```
+
+After the rewrite, this tool checks `rocprof-sys-instrument`'s own
+`instrumented.json` output against the functions you asked for and warns
+(without stopping anything) about any that didn't actually make it into the
+binary — inlining, optimization, or a name mismatch can all cause that.
+
+```bash
+python3 postprocess/select_hotspot_functions.py --output-dir <rocprof-sys-output-dir> [-n TOP_N | --threshold PCT | --all]
+python3 postprocess/select_hotspot_functions.py --report results/run1/hotspots.txt
+```

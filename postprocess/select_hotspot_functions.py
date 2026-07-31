@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""Resolve CPU hotspot function names into rocprof-sys-instrument "-R" input.
+
+Two unrelated jobs live in this one module, both in service of
+scripts/instrument_hotspots.sh:
+
+1. Resolve mode (default): read a hotspots report (written by
+   extract_CPU_hotspots.py or extract_hotspots.py) or a rocprof-sys output
+   directory directly, and print "label<TAB>regex" pairs -- the regex being
+   an escaped, unanchored substring pattern safe to pass to
+   rocprof-sys-instrument's "-R/--function-restrict".
+
+2. --check-instrumented mode: after rocprof-sys-instrument has produced its
+   own instrumented.json (documenting exactly which functions actually got
+   instrumented, post-filtering), compare it against the requested labels
+   and warn about any that didn't make it in. Never fails -- a lost
+   function is a warning, not an error.
+
+Only CPU-side function names are handled here. GPU kernel names (from a
+combined report's fused/GPU tables) are a different mechanism entirely and
+are never read by this module.
+"""
+
+import argparse
+import json
+import os
+import sys
+
+import extract_CPU_hotspots as cpu_tool
+
+HELP_BLURB = """\
+Turns a profile_hotspots.sh (or extract_CPU_hotspots.py) report -- or a
+rocprof-sys output directory -- into a list of CPU hotspot function names,
+ready to feed into AMD's rocprof-sys-instrument as a "-R" (restrict) regex
+list. This is what scripts/instrument_hotspots.sh uses to instrument only
+the functions that already showed up as hotspots, instead of every
+function in the binary.
+
+Only CPU-side functions are selected -- GPU kernel names from a combined
+report can't be targeted this way, since kernel instrumentation is a
+different mechanism entirely.
+
+This tool also has a second, unrelated job: after rocprof-sys-instrument
+has run, --check-instrumented compares its own instrumented.json output
+against the functions that were requested and warns (without failing
+anything) about any that didn't make it into the binary.
+
+Under the hood, this prepares input for AMD's rocprof-sys-instrument -- see
+https://rocm.docs.amd.com/projects/rocprofiler-systems/en/docs-7.0.2/how-to/instrumenting-rewriting-binary-application.html
+for details.
+"""
+
+_REGEX_METACHARS = set(".^$*+?()[]{}|\\")
+
+
+class InstrumentedFileError(Exception):
+    """Raised when instrumented.json can't be read -- never lets this abort
+    the caller, since a lost-function check is a nicety, not a requirement."""
+
+
+def escape_for_instrument_regex(name):
+    """Escape only characters that are metacharacters in std::regex's default
+    ECMAScript grammar -- the grammar rocprof-sys-instrument's -R/-I/-E
+    matching uses via std::regex_search -- so an arbitrary function-name
+    substring embeds safely in an unanchored pattern. '<', '>', '~', '::'
+    etc. are literal in this grammar and deliberately left untouched."""
+    return "".join(("\\" + c) if c in _REGEX_METACHARS else c for c in name)
+
+
+def labels_from_output_dir(rocprof_sys_dir, top=None, threshold=None, show_all=False):
+    cpu_entries, _gpu_entries, scanned, total = cpu_tool.aggregate(rocprof_sys_dir)
+    if not scanned:
+        raise SystemExit(
+            f"error: no rocprof-sys timemory text table found in {rocprof_sys_dir!r} -- "
+            "nothing to select hotspot functions from"
+        )
+    selected, _desc = cpu_tool.select_entries(cpu_entries, total, top=top, threshold=threshold, show_all=show_all)
+    return sorted({e["label"] for e in selected})
+
+
+def labels_from_report(report_path):
+    """Reads the 'CPU compute hotspots' table from a report written by
+    extract_CPU_hotspots.py or extract_hotspots.py -- both use the exact
+    same cpu_tool.format_table() layout, so one parser covers both. Rows are
+    taken as-is: whatever selection produced the report is trusted."""
+    with open(report_path, errors="replace") as f:
+        lines = f.readlines()
+
+    start = None
+    for i, line in enumerate(lines):
+        if "CPU compute hotspots" in line:
+            start = i
+            break
+    if start is None:
+        raise SystemExit(
+            f"error: no 'CPU compute hotspots' section found in {report_path!r} -- "
+            "expected a report written by extract_CPU_hotspots.py or extract_hotspots.py"
+        )
+
+    header = None
+    for i in range(start, len(lines)):
+        if lines[i].rstrip().endswith("function"):
+            header = i
+            break
+    if header is None:
+        raise SystemExit(
+            f"error: found a 'CPU compute hotspots' section in {report_path!r} but no table header after it"
+        )
+
+    labels = []
+    for line in lines[header + 1:]:
+        if not line.strip():
+            break
+        parts = line.split(maxsplit=5)
+        if len(parts) < 6:
+            continue
+        labels.append(parts[5].strip())
+
+    if not labels:
+        raise SystemExit(
+            f"error: 'CPU compute hotspots' section in {report_path!r} has no rows -- nothing to instrument"
+        )
+
+    return sorted(set(labels))
+
+
+def _iter_instrumented_entries(data):
+    """instrumented.json's exact top-level shape (bare array vs. wrapped in an
+    object) isn't independently confirmed beyond the per-entry field names --
+    handle the plain-array case (the expected one) and, best-effort, a
+    dict wrapping a single list, same spirit as this project's other
+    undocumented-JSON-schema handling (metadata.json, config.json)."""
+    if isinstance(data, list):
+        yield from data
+        return
+    if isinstance(data, dict):
+        for value in data.values():
+            if isinstance(value, list):
+                yield from value
+                return
+
+
+def find_lost_functions(instrumented_json_path, requested_labels):
+    try:
+        with open(instrumented_json_path) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise InstrumentedFileError(str(exc)) from exc
+
+    names = set()
+    for entry in _iter_instrumented_entries(data):
+        if not isinstance(entry, dict):
+            continue
+        function = entry.get("function")
+        if isinstance(function, str):
+            names.add(function)
+        signature = entry.get("signature")
+        if isinstance(signature, dict):
+            sig_name = signature.get("name")
+            if isinstance(sig_name, str):
+                names.add(sig_name)
+
+    return [label for label in requested_labels if not any(label in name for name in names)]
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="select_hotspot_functions.py",
+        description=HELP_BLURB,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--report", dest="report", default=None,
+                         help="hotspots.txt report to read CPU hotspot functions from")
+    source.add_argument("--output-dir", dest="output_dir", default=None,
+                         help="rocprof-sys output directory to read CPU hotspot functions from")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("-n", "--top", dest="top", type=int, default=None,
+                            help="number of hotspot functions to select (default: 1%% threshold)")
+    selection.add_argument("--threshold", dest="threshold", type=float, default=None,
+                            help="only select functions at or above this %% of total runtime (default: 1.0)")
+    selection.add_argument("--all", dest="show_all", action="store_true", default=False,
+                            help="select every function, no truncation")
+    parser.add_argument("--check-instrumented", dest="check_instrumented", default=None,
+                         help="switch to lost-function mode: read requested labels from stdin "
+                              "(one per line) and warn about any missing from this "
+                              "rocprof-sys-instrument instrumented.json file")
+    args = parser.parse_args(argv)
+
+    if args.check_instrumented:
+        if args.report or args.output_dir or args.top is not None or args.threshold is not None or args.show_all:
+            raise SystemExit("error: --check-instrumented can't be combined with --report/--output-dir/selection flags")
+        labels = [line.strip() for line in sys.stdin if line.strip()]
+        try:
+            lost = find_lost_functions(args.check_instrumented, labels)
+        except InstrumentedFileError as exc:
+            print(
+                f"note: couldn't read {args.check_instrumented!r} ({exc}) -- skipping lost-function check",
+                file=sys.stderr,
+            )
+            return
+        for label in lost:
+            print(
+                f"warning: hotspot function '{label}' wasn't found in the instrumented binary -- "
+                "it may be inlined, optimized out, or use a name rocprof-sys-instrument didn't match; "
+                "this doesn't stop anything, but that function won't show up in the trace",
+                file=sys.stderr,
+            )
+        return
+
+    if not args.report and not args.output_dir:
+        raise SystemExit("error: one of --report or --output-dir is required")
+
+    if args.top is None and args.threshold is None and not args.show_all:
+        args.threshold = 1.0
+
+    if args.report:
+        labels = labels_from_report(args.report)
+    else:
+        if not os.path.isdir(args.output_dir):
+            raise SystemExit(f"error: no such directory: {args.output_dir!r}")
+        labels = labels_from_output_dir(args.output_dir, top=args.top, threshold=args.threshold, show_all=args.show_all)
+
+    if not labels:
+        raise SystemExit("error: no hotspot functions resolved -- nothing to instrument")
+
+    for label in labels:
+        print(f"{label}\t{escape_for_instrument_regex(label)}")
+
+
+if __name__ == "__main__":
+    main()
