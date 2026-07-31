@@ -75,3 +75,46 @@ only the MPI rank count (derived from output filenames) is reliably available on
 ```bash
 python3 postprocess/rocprofv3_hotspots.py <rocprofv3-output-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all]
 ```
+
+### Combined CPU+GPU hotspots
+
+Runs both of the above against the same command (one after the other — each
+tool wraps a whole process, so they can't run concurrently) and merges them
+into one coherent ranking, so you don't have to eyeball two separate reports
+to figure out whether your top bottleneck is a CPU function or a GPU kernel.
+
+```bash
+# non-MPI
+scripts/rocprof_combined_profile.sh -o results/run1 -- ./app arg1 arg2
+
+# MPI: same convention as the other two tools
+mpirun -np 4 scripts/rocprof_combined_profile.sh -o results/run1 -- ./app arg1 arg2
+```
+
+Combining two separately-measured runs isn't as simple as adding their
+totals: `rocprof-sys`'s CPU total already includes time spent blocked inside
+`hipStreamSynchronize`/`hipDeviceSynchronize`/a synchronous `hipMemcpy` —
+i.e. the CPU literally waiting for the GPU — which is the *same* physical
+time `rocprofv3` counts again from the device side as kernel execution. To
+avoid double-counting that overlap, the CPU run's "GPU API / launch
+overhead" bucket (the one `rocprof_sys_hotspots.py` already separates from
+its "CPU compute" bucket) is subtracted out before the two totals are added:
+`combined pool = (CPU total − GPU API/overhead) + GPU kernel total`. The
+report shows this arithmetic explicitly rather than hiding it.
+
+The generated `hotspots.txt` has four tables: (1) the fused CPU+GPU ranking
+against that combined pool — the headline answer; (2) CPU compute hotspots
+exactly as `rocprof_sys_hotspots.py` would report them standalone; (3) GPU
+kernel hotspots exactly as `rocprofv3_hotspots.py` would report them
+standalone; (4) the GPU API/launch-overhead bucket that was subtracted out
+of table 1, so you can see precisely what got removed and why. Same
+`--top`/`--threshold`/`--all` selection as the other two tools, applied to
+every table.
+
+The extractor takes both tools' output directories directly and does **not**
+check that they came from the same executable or test case — that's on you
+(garbage in, garbage out):
+
+```bash
+python3 postprocess/rocprof_combined_hotspots.py <rocprof-sys-output-dir> <rocprofv3-output-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all]
+```
