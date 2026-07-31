@@ -329,7 +329,8 @@ def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False
         for f in db_files:
             parts.append(f"  - {f}\n")
     parts.append(
-        "For real GPU kernel hotspots, run: rocprofv3 --stats --kernel-trace --summary -- <app>\n"
+        "For real GPU kernel hotspots, use scripts/rocprofv3_profile.sh "
+        "(or run: rocprofv3 --kernel-trace --stats --output-format csv -- <app>)\n"
     )
 
     report = "".join(parts)

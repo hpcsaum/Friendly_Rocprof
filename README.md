@@ -29,11 +29,11 @@ This runs `rocprof-sys-sample` (lightweight call-stack sampling, no binary
 instrumentation needed) and, once it finishes, generates `results/run1/hotspots.txt`
 listing the top CPU-side hotspots (candidates for GPU offload) and top GPU-API/launch
 overhead calls, each with its share of total measured runtime. Note: this only covers
-CPU-side timing — true GPU kernel execution time needs a different tool (`rocprofv3`,
-planned separately). The report's header also includes the executable name, run
-date/time, total runtime, and MPI rank count when `rocprof-sys` happened to record
-them (best-effort from its `metadata.json`, since none of that lives in the timing
-data itself) — any field it couldn't find is just left blank.
+CPU-side timing — true GPU kernel execution time needs `rocprofv3` instead (see below).
+The report's header also includes the executable name, run date/time, total runtime,
+and MPI rank count when `rocprof-sys` happened to record them (best-effort from its
+`metadata.json`, since none of that lives in the timing data itself) — any field it
+couldn't find is just left blank.
 
 By default the report lists the top 20 entries per section, ranked by total time.
 Pass `--top N` for a different count, `--threshold PCT` to instead list every
@@ -48,4 +48,30 @@ The extractor also works standalone against any existing `rocprof-sys` output di
 
 ```bash
 python3 postprocess/rocprof_sys_hotspots.py <rocprof-sys-output-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all]
+```
+
+### rocprofv3 GPU kernel hotspots
+
+Get the real GPU-side counterpart: which kernels actually spend time executing
+*on the device*, ranked by total time.
+
+```bash
+# non-MPI
+scripts/rocprofv3_profile.sh -o results/run1 -- ./app arg1 arg2
+
+# MPI: put mpirun/srun before the script, same convention as the rocprof-sys tool
+mpirun -np 4 scripts/rocprofv3_profile.sh -o results/run1 -- ./app arg1 arg2
+```
+
+This runs `rocprofv3 --kernel-trace --stats --output-format csv` (no rebuild or
+instrumentation needed either) and generates `results/run1/hotspots.txt` ranking GPU
+kernels by total device execution time — this is genuine device time, unlike
+`rocprof-sys`'s CPU-only view above. Same `--top`/`--threshold`/`--all` selection and
+best-effort header (executable/run-datetime/total-runtime/MPI-rank-count) as the
+rocprof-sys tool, though on ROCm 7.0.2 the metadata file that header is read from
+(`--output-config`) doesn't exist yet, so those fields will usually be blank there —
+only the MPI rank count (derived from output filenames) is reliably available on 7.0.2.
+
+```bash
+python3 postprocess/rocprofv3_hotspots.py <rocprofv3-output-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all]
 ```

@@ -196,7 +196,7 @@ class WriteReportTests(unittest.TestCase):
             self.assertIn("compute_stencil", report)
             self.assertIn("showing top 20 of", report)
             self.assertIn("true GPU kernel execution time is not present", report)
-            self.assertIn("rocprofv3 --stats --kernel-trace --summary", report)
+            self.assertIn("scripts/rocprofv3_profile.sh", report)
             self.assertIn("executable: jacobi_mpi", report)
             self.assertIn("run date/time: 2026-07-21T07:40:00", report)
             self.assertIn("total runtime: 21.824161 sec", report)

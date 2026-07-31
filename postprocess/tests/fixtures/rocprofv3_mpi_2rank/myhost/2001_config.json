@@ -1,0 +1,7 @@
+{
+  "command": "/home/user/app/jacobi_hip --iters 1000",
+  "init_time": "2026-07-25T09:15:00",
+  "timing": {
+    "elapsed": 5.98
+  }
+}

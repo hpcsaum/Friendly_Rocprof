@@ -1,0 +1,18 @@
+rocprofv3 GPU kernel hotspots report
+generated: 2026-07-31T11:39:13
+source directory: /home/saumet/Documents/Porting_Adventure/Friendly_Rocprof/postprocess/tests/fixtures/rocprofv3_single_rank
+executable: 
+run date/time: 
+total runtime: 
+MPI ranks: 1
+files scanned:
+  - myhost/1234_kernel_stats.csv
+
+GPU kernel hotspots -- showing top 20 of 3 entries
+    #      total(s)   %total       calls     avg(us)  kernel
+    1      0.537450     90.3        1000      537.45  JacobiIterationKernel
+    2      0.058000      9.7        1000       58.00  BoundaryKernel
+    3      0.000009      0.0           1        9.00  __hipRegisterFatBinary
+
+Note: this covers GPU kernel execution time only. '%total' is each kernel's share of total measured GPU time (summed across all scanned files); it will not add up to 100% if a --threshold/--top cut entries.
+For host-side (HIP API / launch overhead) hotspots, use scripts/rocprof_sys_profile.sh.

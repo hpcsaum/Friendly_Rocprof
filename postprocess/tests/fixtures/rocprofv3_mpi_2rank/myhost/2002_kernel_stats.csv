@@ -1,0 +1,3 @@
+"Name","Calls","TotalDurationNs","AverageNs","Percentage","MinNs","MaxNs","StdDev"
+"JacobiIterationKernel",500,268000000,536000.000000,94.00,519000,559000,6400.000000
+"BoundaryKernel",500,17000000,34000.000000,5.96,31000,36000,1050.000000
