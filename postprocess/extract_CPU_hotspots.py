@@ -55,6 +55,10 @@ extract_hotspots.py for both combined.
 
 Numbers are percentages of total measured time -- good enough to spot your
 top bottleneck, not a precise, reproducible benchmark.
+
+Under the hood, this parses output written by AMD's rocprof-sys (ROCm
+Systems Profiler) -- see
+https://rocm.docs.amd.com/projects/rocprofiler-systems/en/latest/ for details.
 """
 
 

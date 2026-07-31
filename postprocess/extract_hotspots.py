@@ -33,6 +33,12 @@ exactly what fed into the combined ranking.
 Takes the two directories as-is and does NOT check they came from the same
 program/run -- that's on you. Numbers are percentages, good enough to find
 your top bottleneck, not a precise benchmark.
+
+Under the hood, this parses output written by AMD's rocprof-sys and
+rocprofv3 -- see
+https://rocm.docs.amd.com/projects/rocprofiler-systems/en/latest/ and
+https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-rocprofv3.html
+for details.
 """
 
 

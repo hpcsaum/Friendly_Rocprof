@@ -40,6 +40,10 @@ enough to spot your top bottleneck -- not a precise, reproducible
 benchmark. Safe to run repeatedly; it only observes your program, it
 doesn't change it or require rebuilding it.
 
+Under the hood, this uses AMD's rocprofv3 -- see
+https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-rocprofv3.html
+for details.
+
 Options:
   -o, --output-dir DIR   rocprofv3 output directory (default: rocprofv3-hotspots-output)
   --top N                 hotspots to report (default: 20; last of --top/--threshold/--all wins)

@@ -39,6 +39,9 @@ Numbers are reported as percentages of total measured time, good enough to
 spot your top bottleneck -- not a precise, reproducible benchmark. Safe to
 run repeatedly; it only observes your program, it doesn't change it.
 
+Under the hood, this uses AMD's rocprof-sys (ROCm Systems Profiler) -- see
+https://rocm.docs.amd.com/projects/rocprofiler-systems/en/latest/ for details.
+
 Options:
   -o, --output-dir DIR   rocprof-sys output directory (default: rocprof-sys-hotspots-output)
   -f, --freq HZ           sampling frequency in Hz (default: 100)

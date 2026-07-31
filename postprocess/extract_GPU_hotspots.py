@@ -46,6 +46,10 @@ extract_hotspots.py for both combined.
 
 Numbers are percentages of total measured GPU time -- good enough to spot
 your top bottleneck, not a precise, reproducible benchmark.
+
+Under the hood, this parses output written by AMD's rocprofv3 -- see
+https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-rocprofv3.html
+for details.
 """
 
 

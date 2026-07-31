@@ -41,6 +41,11 @@ between the two runs -- only the relative percentages matter here, not
 exact times. The two measurements are merged assuming they came from the
 same program and the same workload; nothing checks that for you.
 
+Under the hood, this uses AMD's rocprof-sys and rocprofv3 -- see
+https://rocm.docs.amd.com/projects/rocprofiler-systems/en/latest/ and
+https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-rocprofv3.html
+for details.
+
 Options:
   -o, --output-dir DIR   base output directory (default: rocprof-combined-hotspots-output)
                           split into DIR/rocprof-sys and DIR/rocprofv3

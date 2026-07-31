@@ -8,6 +8,7 @@
 | 2026-07-31 | Second tool: rocprofv3 GPU kernel hotspots launcher + extractor |
 | 2026-07-31 | Third tool: combined CPU+GPU hotspots, double-counting-safe |
 | 2026-07-31 | Renamed all six tools to beginner-friendly names; added plain-language -h/--help text |
+| 2026-07-31 | -h/--help now names the underlying AMD tool with a documentation link |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -87,3 +88,11 @@ Two small follow-up requests, no plan needed:
 2. **`-h`/`--help` on every tool now leads with a short (~10-15 line), jargon-free explanation** of what it does and its main limitation, written for someone who's never heard of `rocprof-sys`/`rocprofv3` — before the existing options table, which is unchanged. For the three bash launchers this is a new paragraph prepended to their existing `usage()` heredoc. For the three Python extractors, added a new `HELP_BLURB` module constant passed as argparse's `description` (with `formatter_class=argparse.RawDescriptionHelpFormatter` so its line breaks render as written) instead of reusing the module docstring — the original, more technical docstring stays in place as a code comment for future maintainers, per the same "AMD/technical detail stays in comments, not user-facing text" principle as the renaming above.
 
 Verified: full existing test suite (68 tests, unchanged) still passes after the rename; `bash -n` on all three renamed launchers; manually rendered all six tools' `-h`/`--help` output and read them as a first-time user would; re-ran the same stubbed-tool dry-run/full-run/abort/rank-gating checks used for tools 1-3 against the renamed `profile_hotspots.sh` to confirm the rename didn't silently break the sub-launcher call chain; grepped the whole repo for leftover old filenames outside the historical docs (none found after regenerating the four sample fixtures).
+
+## 2026-07-31 — -h/--help now names the underlying AMD tool with a documentation link
+
+Small follow-up to the beginner-friendly renaming: each tool's `-h`/`--help` blurb now ends with a one-line "under the hood, this uses AMD's `<tool>`" note plus a link to that tool's official ROCm documentation, so a curious user can go straight to the authoritative source instead of having to dig through this project's code or commit history to find out what's actually running.
+
+Added to all six tools' existing help blurb (right before the options table for the three bash launchers, at the end of `HELP_BLURB` for the three Python extractors): `profile_CPU_hotspots.sh`/`extract_CPU_hotspots.py` name rocprof-sys with a link to https://rocm.docs.amd.com/projects/rocprofiler-systems/en/latest/; `profile_GPU_hotspots.sh`/`extract_GPU_hotspots.py` name rocprofv3 with a link to https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-rocprofv3.html; `profile_hotspots.sh`/`extract_hotspots.py` name and link both, since they use both tools.
+
+Verified: full test suite (68 tests) still passes; manually rendered all six `-h`/`--help` outputs to confirm the note reads correctly and the options table underneath is unaffected.
