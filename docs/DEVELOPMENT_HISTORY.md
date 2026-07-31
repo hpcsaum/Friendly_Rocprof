@@ -9,6 +9,7 @@
 | 2026-07-31 | Third tool: combined CPU+GPU hotspots, double-counting-safe |
 | 2026-07-31 | Renamed all six tools to beginner-friendly names; added plain-language -h/--help text |
 | 2026-07-31 | -h/--help now names the underlying AMD tool with a documentation link |
+| 2026-07-31 | CLAUDE.md codifies naming and -h/--help conventions for future tools |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -96,3 +97,9 @@ Small follow-up to the beginner-friendly renaming: each tool's `-h`/`--help` blu
 Added to all six tools' existing help blurb (right before the options table for the three bash launchers, at the end of `HELP_BLURB` for the three Python extractors): `profile_CPU_hotspots.sh`/`extract_CPU_hotspots.py` name rocprof-sys with a link to https://rocm.docs.amd.com/projects/rocprofiler-systems/en/latest/; `profile_GPU_hotspots.sh`/`extract_GPU_hotspots.py` name rocprofv3 with a link to https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-rocprofv3.html; `profile_hotspots.sh`/`extract_hotspots.py` name and link both, since they use both tools.
 
 Verified: full test suite (68 tests) still passes; manually rendered all six `-h`/`--help` outputs to confirm the note reads correctly and the options table underneath is unaffected.
+
+## 2026-07-31 — CLAUDE.md codifies naming and -h/--help conventions for future tools
+
+The two conventions just applied to all six existing tools (beginner-friendly naming, and a plain-language `-h`/`--help` blurb naming the underlying AMD tool with a doc link) are meant to hold for every future tool in this project, not just a one-time cleanup — so they're now written into [CLAUDE.md](../CLAUDE.md) as a standing rule (new "User-facing conventions" section), rather than living only in this history file or in the code itself.
+
+Codified: (1) tools are named after what they do, not the AMD tool behind them — `scripts/` launchers as `profile_<what>`, `postprocess/` tools as `extract_<what>`, following the pattern already established by `profile_CPU_hotspots.sh`/`profile_GPU_hotspots.sh`/`profile_hotspots.sh` and `extract_CPU_hotspots.py`/`extract_GPU_hotspots.py`/`extract_hotspots.py`; (2) `-h`/`--help` must lead with a short (~10-15 line), jargon-free purpose-and-limitation explanation ahead of the options table, ending with a line naming the specific AMD tool used and a link to its official documentation.
