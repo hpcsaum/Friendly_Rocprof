@@ -5,11 +5,11 @@ import tempfile
 import unittest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
-MODULE_PATH = os.path.join(os.path.dirname(__file__), "..", "rocprofv3_hotspots.py")
+MODULE_PATH = os.path.join(os.path.dirname(__file__), "..", "extract_GPU_hotspots.py")
 
-spec = importlib.util.spec_from_file_location("rocprofv3_hotspots", MODULE_PATH)
+spec = importlib.util.spec_from_file_location("extract_GPU_hotspots", MODULE_PATH)
 hotspots = importlib.util.module_from_spec(spec)
-sys.modules["rocprofv3_hotspots"] = hotspots
+sys.modules["extract_GPU_hotspots"] = hotspots
 spec.loader.exec_module(hotspots)
 
 
@@ -151,7 +151,7 @@ class WriteReportTests(unittest.TestCase):
             self.assertIn("total runtime: 5.980000 sec", report)
             self.assertIn("MPI ranks: 2", report)
             self.assertIn("GPU kernel execution time only", report)
-            self.assertIn("scripts/rocprof_sys_profile.sh", report)
+            self.assertIn("scripts/profile_CPU_hotspots.sh", report)
 
     def test_end_to_end_single_rank_blank_header(self):
         with tempfile.TemporaryDirectory() as tmp:

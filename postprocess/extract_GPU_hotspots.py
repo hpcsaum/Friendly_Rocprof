@@ -4,7 +4,7 @@
 Only reads `*_kernel_stats.csv` (produced by `rocprofv3 --kernel-trace --stats
 --output-format csv`). This is real GPU device execution time -- unlike
 rocprof-sys's text/JSON output, which only ever captures host-side timing.
-For CPU-side hotspots, see scripts/rocprof_sys_profile.sh instead.
+For CPU-side hotspots, see scripts/profile_CPU_hotspots.sh instead.
 """
 
 import argparse
@@ -24,7 +24,7 @@ REQUIRED_COLUMNS = {"Name", "Calls", "TotalDurationNs"}
 # rocprofv3's --output-config (-> <pid>_config.json) is a post-ROCm-7.0.2 feature;
 # absent that file (the common case for our 7.0.2 compatibility target), header
 # fields below just stay blank. No documented field-name schema was found for it
-# either, so this is a best-effort guess, same philosophy as rocprof_sys_hotspots.py.
+# either, so this is a best-effort guess, same philosophy as extract_CPU_hotspots.py.
 CONFIG_EXECUTABLE_KEYS = ["command", "command_line", "argv", "cmd", "exe", "executable"]
 CONFIG_DATETIME_KEYS = ["init_time", "start_time", "launch_time", "timestamp"]
 CONFIG_RUNTIME_KEYS = ["elapsed", "duration", "wall_time", "total_time", "runtime"]
@@ -32,6 +32,21 @@ CONFIG_RUNTIME_KEYS = ["elapsed", "duration", "wall_time", "total_time", "runtim
 # rocprofv3's default naming is "<hostname>/<pid>_kernel_stats.csv" -- used as a
 # fallback rank count (one file per process/rank) when config.json lacks one.
 PID_SUFFIX_RE = re.compile(r"(\d+)_kernel_stats\.csv$")
+
+HELP_BLURB = """\
+Reads the output of a profile_GPU_hotspots.sh run (or any rocprofv3 output
+directory) and writes a short, ranked text report: which GPU kernels
+actually spend the most time executing on the GPU itself.
+
+This is real device execution time, telling you which pieces of GPU work
+are worth optimizing first. It does NOT show CPU-side hotspots (functions
+still running on the CPU, possibly candidates for offloading to the GPU in
+the first place) -- for that, see extract_CPU_hotspots.py, or
+extract_hotspots.py for both combined.
+
+Numbers are percentages of total measured GPU time -- good enough to spot
+your top bottleneck, not a precise, reproducible benchmark.
+"""
 
 
 def parse_kernel_stats_csv(path):
@@ -85,7 +100,7 @@ def aggregate(output_dir):
         entries.append({
             "label": label,
             "count": entry["count"],
-            "sum": entry["total_ns"] / 1e9,  # seconds, for consistent naming with rocprof_sys_hotspots.py
+            "sum": entry["total_ns"] / 1e9,  # seconds, for consistent naming with extract_CPU_hotspots.py
             "avg_us": avg_us,
             "pct_total": pct_total,
         })
@@ -94,7 +109,7 @@ def aggregate(output_dir):
 
 
 def select_entries(entries, total_ns, top=None, threshold=None, show_all=False):
-    """Same top/threshold/all selection semantics as rocprof_sys_hotspots.py --
+    """Same top/threshold/all selection semantics as extract_CPU_hotspots.py --
     duplicated rather than imported, since each extractor is meant to stand alone."""
     entries_sorted = sorted(entries, key=lambda e: e["sum"], reverse=True)
     total_count = len(entries_sorted)
@@ -234,7 +249,7 @@ def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False
         "Note: this covers GPU kernel execution time only. '%total' is each "
         "kernel's share of total measured GPU time (summed across all scanned "
         "files); it will not add up to 100% if a --threshold/--top cut entries.\n"
-        "For host-side (HIP API / launch overhead) hotspots, use scripts/rocprof_sys_profile.sh.\n"
+        "For host-side (HIP API / launch overhead) hotspots, use scripts/profile_CPU_hotspots.sh.\n"
     )
 
     report = "".join(parts)
@@ -244,7 +259,7 @@ def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=HELP_BLURB, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("output_dir", help="rocprofv3 output directory to read")
     parser.add_argument("-o", "--output", dest="dest", default=None,
                          help="path to write the hotspots report (default: <output_dir>/hotspots.txt)")

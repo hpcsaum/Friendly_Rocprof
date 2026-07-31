@@ -1,5 +1,5 @@
 rocprof-sys hotspots report (CPU-side only)
-generated: 2026-07-31T11:40:36
+generated: 2026-07-31T14:59:26
 source directory: /home/saumet/Documents/Porting_Adventure/Friendly_Rocprof/postprocess/tests/fixtures/single_rank
 executable: 
 run date/time: 
@@ -21,4 +21,4 @@ GPU API / launch overhead -- showing top 20 of 2 entries
     2      0.002600      0.0        1000    100.0  hipLaunchKernel
 
 Note: true GPU kernel execution time is not present in this data. rocprof-sys's text/JSON output only captures host-side timing; GPU-launch-looking rows above are launch/API overhead, not device time. '%total' is each function's share of total measured time (summed across all scanned files); it will not add up to 100% across both tables.
-For real GPU kernel hotspots, use scripts/rocprofv3_profile.sh (or run: rocprofv3 --kernel-trace --stats --output-format csv -- <app>)
+For real GPU kernel hotspots, use scripts/profile_GPU_hotspots.sh (or run: rocprofv3 --kernel-trace --stats --output-format csv -- <app>)

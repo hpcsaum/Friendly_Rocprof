@@ -1,5 +1,5 @@
 rocprofv3 GPU kernel hotspots report
-generated: 2026-07-31T11:39:23
+generated: 2026-07-31T14:59:26
 source directory: /home/saumet/Documents/Porting_Adventure/Friendly_Rocprof/postprocess/tests/fixtures/rocprofv3_mpi_2rank
 executable: jacobi_hip
 run date/time: 2026-07-25T09:15:00
@@ -15,4 +15,4 @@ GPU kernel hotspots -- showing top 20 of 2 entries
     2      0.033000      5.8        1000       33.00  BoundaryKernel
 
 Note: this covers GPU kernel execution time only. '%total' is each kernel's share of total measured GPU time (summed across all scanned files); it will not add up to 100% if a --threshold/--top cut entries.
-For host-side (HIP API / launch overhead) hotspots, use scripts/rocprof_sys_profile.sh.
+For host-side (HIP API / launch overhead) hotspots, use scripts/profile_CPU_hotspots.sh.

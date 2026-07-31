@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Launch a lightweight rocprof-sys CPU-sampling profile of a single command, then
-# (by default) generate a short hotspots.txt via postprocess/rocprof_sys_hotspots.py.
+# (by default) generate a short hotspots.txt via postprocess/extract_CPU_hotspots.py.
 #
 # rocprof-sys-sample wraps exactly one process. For MPI runs, put mpirun/srun
 # *before* this script so each rank independently wraps its own process, e.g.:
 #
-#   mpirun -np 4 scripts/rocprof_sys_profile.sh -o results/run1 -- ./app arg1 arg2
+#   mpirun -np 4 scripts/profile_CPU_hotspots.sh -o results/run1 -- ./app arg1 arg2
 #
 # All ranks share the same -o output directory; rocprof-sys's own default
 # per-PID file naming keeps their output from colliding.
@@ -13,7 +13,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EXTRACTOR="$SCRIPT_DIR/../postprocess/rocprof_sys_hotspots.py"
+EXTRACTOR="$SCRIPT_DIR/../postprocess/extract_CPU_hotspots.py"
 
 OUTPUT_DIR="rocprof-sys-hotspots-output"
 FREQ_HZ=100
@@ -23,7 +23,21 @@ SELECTION_ARGS=()
 
 usage() {
   cat <<'EOF'
-Usage: rocprof_sys_profile.sh [options] -- <command> [args...]
+Usage: profile_CPU_hotspots.sh [options] -- <command> [args...]
+
+Runs your program once and measures which of its functions spend the most
+time on the CPU -- including time the CPU spends just waiting for the GPU
+to finish something. The result is a short, ranked text report telling you
+where the time actually goes, so you know what's worth investigating first.
+
+This is useful for finding CPU-side work that might be worth moving to the
+GPU ("offloading"), or CPU code that's simply slow. It does NOT tell you
+which GPU kernels are slow on the GPU itself -- for that, use
+profile_GPU_hotspots.sh, or profile_hotspots.sh for both at once.
+
+Numbers are reported as percentages of total measured time, good enough to
+spot your top bottleneck -- not a precise, reproducible benchmark. Safe to
+run repeatedly; it only observes your program, it doesn't change it.
 
 Options:
   -o, --output-dir DIR   rocprof-sys output directory (default: rocprof-sys-hotspots-output)

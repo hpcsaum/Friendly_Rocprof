@@ -43,6 +43,20 @@ TIME_OUTPUT_DIR_RE = re.compile(r"\d{4}-\d{2}-\d{2}_\d{2}\.\d{2}")
 # a fallback rank count (one file per process/rank) when metadata.json lacks a count.
 PID_SUFFIX_RE = re.compile(r"-(\d+)\.txt$")
 
+HELP_BLURB = """\
+Reads the output of a profile_CPU_hotspots.sh run (or any rocprof-sys output
+directory) and writes a short, ranked text report: which functions spend
+the most time on the CPU, including time spent just waiting for the GPU.
+
+Use this to find CPU-side work worth moving to the GPU ("offloading"), or
+CPU code that's simply slow. It does NOT tell you which GPU kernels are
+slow on the GPU itself -- for that, see extract_GPU_hotspots.py, or
+extract_hotspots.py for both combined.
+
+Numbers are percentages of total measured time -- good enough to spot your
+top bottleneck, not a precise, reproducible benchmark.
+"""
+
 
 def parse_table_file(path):
     """Parse one timemory pipe-delimited text table. Returns a list of dict rows, or None if this
@@ -329,7 +343,7 @@ def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False
         for f in db_files:
             parts.append(f"  - {f}\n")
     parts.append(
-        "For real GPU kernel hotspots, use scripts/rocprofv3_profile.sh "
+        "For real GPU kernel hotspots, use scripts/profile_GPU_hotspots.sh "
         "(or run: rocprofv3 --kernel-trace --stats --output-format csv -- <app>)\n"
     )
 
@@ -340,7 +354,7 @@ def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=HELP_BLURB, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("output_dir", help="rocprof-sys output directory to read")
     parser.add_argument("-o", "--output", dest="dest", default=None,
                          help="path to write the hotspots report (default: <output_dir>/hotspots.txt)")

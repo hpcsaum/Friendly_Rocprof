@@ -6,11 +6,11 @@ import tempfile
 import unittest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
-MODULE_PATH = os.path.join(os.path.dirname(__file__), "..", "rocprof_sys_hotspots.py")
+MODULE_PATH = os.path.join(os.path.dirname(__file__), "..", "extract_CPU_hotspots.py")
 
-spec = importlib.util.spec_from_file_location("rocprof_sys_hotspots", MODULE_PATH)
+spec = importlib.util.spec_from_file_location("extract_CPU_hotspots", MODULE_PATH)
 hotspots = importlib.util.module_from_spec(spec)
-sys.modules["rocprof_sys_hotspots"] = hotspots
+sys.modules["extract_CPU_hotspots"] = hotspots
 spec.loader.exec_module(hotspots)
 
 
@@ -196,7 +196,7 @@ class WriteReportTests(unittest.TestCase):
             self.assertIn("compute_stencil", report)
             self.assertIn("showing top 20 of", report)
             self.assertIn("true GPU kernel execution time is not present", report)
-            self.assertIn("scripts/rocprofv3_profile.sh", report)
+            self.assertIn("scripts/profile_GPU_hotspots.sh", report)
             self.assertIn("executable: jacobi_mpi", report)
             self.assertIn("run date/time: 2026-07-21T07:40:00", report)
             self.assertIn("total runtime: 21.824161 sec", report)

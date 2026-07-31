@@ -8,17 +8,32 @@ came from the same executable/test case/run. That's the caller's
 responsibility (garbage in, garbage out).
 
 Import note: this only works when run directly (`python3
-rocprof_combined_hotspots.py ...`), since it relies on Python putting this
-script's own directory at the front of sys.path so `rocprof_sys_hotspots` and
-`rocprofv3_hotspots` import as plain siblings with no path hacking.
+extract_hotspots.py ...`), since it relies on Python putting this
+script's own directory at the front of sys.path so `extract_CPU_hotspots` and
+`extract_GPU_hotspots` import as plain siblings with no path hacking.
 """
 
 import argparse
 import os
 from datetime import datetime
 
-import rocprof_sys_hotspots as cpu_tool
-import rocprofv3_hotspots as gpu_tool
+import extract_CPU_hotspots as cpu_tool
+import extract_GPU_hotspots as gpu_tool
+
+HELP_BLURB = """\
+Reads the output of a profile_hotspots.sh run (or a matching pair of
+rocprof-sys / rocprofv3 output directories) and writes ONE combined report:
+a single ranking that mixes CPU functions and GPU kernels together, telling
+you what's worth looking at first regardless of which side it's on.
+
+Also includes the three tables it was built from (CPU-only, GPU-only, and
+the CPU-side GPU-API/wait-time bucket it corrects for), so you can see
+exactly what fed into the combined ranking.
+
+Takes the two directories as-is and does NOT check they came from the same
+program/run -- that's on you. Numbers are percentages, good enough to find
+your top bottleneck, not a precise benchmark.
+"""
 
 
 def build_combined_view(rocprof_sys_dir, rocprofv3_dir):
@@ -162,7 +177,7 @@ def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=HELP_BLURB, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("rocprof_sys_dir", help="rocprof-sys output directory (CPU side)")
     parser.add_argument("rocprofv3_dir", help="rocprofv3 output directory (GPU side)")
     parser.add_argument("-o", "--output", dest="dest", default=None,
