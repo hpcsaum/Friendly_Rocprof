@@ -63,11 +63,22 @@ def build_combined_view(rocprof_sys_dir, rocprofv3_dir):
     tiny) non-blocking launch overhead in the same bucket -- accepted, since
     there's no reliable way to tell blocking from non-blocking HIP/HSA calls
     by name alone, and it's negligible next to the sync-wait time being fixed.
+
+    gpu_api_overhead_sec sums each row's self_sum, not its inclusive sum.
+    Several GPU-API-classified rows are themselves nested inside each other
+    (e.g. hipStreamCreate -> hip::hipStreamCreate(...) -> hip::ihipStreamCreate(...)
+    -> hip::Stream::Stream(...) can all be one call chain, each with the same
+    inclusive time) -- summing inclusive time across a whole bucket like that
+    would count the same overlapping wall-clock interval once per nesting
+    level. Self-time doesn't have this problem: by construction, every node's
+    self-time is disjoint from every other node's (parent or not, GPU-API or
+    not), so summing it over any subset of nodes always gives the real total
+    time spent inside that subset, however deep the matched chain is.
     """
     cpu_entries, cpu_gpu_api_entries, cpu_scanned, cpu_total_raw = cpu_tool.aggregate(rocprof_sys_dir)
     gpu_entries, gpu_scanned, gpu_total_ns = gpu_tool.aggregate(rocprofv3_dir)
 
-    gpu_api_overhead_sec = sum(e["sum"] for e in cpu_gpu_api_entries)
+    gpu_api_overhead_sec = sum(e["self_sum"] for e in cpu_gpu_api_entries)
     cpu_pure_total_sec = max(0.0, cpu_total_raw - gpu_api_overhead_sec)
     gpu_total_sec = gpu_total_ns / 1e9
     combined_total_sec = cpu_pure_total_sec + gpu_total_sec

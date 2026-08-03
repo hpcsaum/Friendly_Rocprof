@@ -26,6 +26,7 @@ GPU_DIR_SINGLE = os.path.join(FIXTURES, "rocprofv3_single_rank")
 CPU_DIR_EMPTY = os.path.join(FIXTURES, "no_timing_data")
 GPU_DIR_EMPTY = os.path.join(FIXTURES, "rocprofv3_no_data")
 CPU_DIR_DATED_SUBDIR = os.path.join(FIXTURES, "mpi_2rank_dated_subdir")
+CPU_DIR_GPU_API_NESTED_CHAIN = os.path.join(FIXTURES, "gpu_api_nested_chain")
 
 
 class BuildCombinedViewTests(unittest.TestCase):
@@ -40,7 +41,9 @@ class BuildCombinedViewTests(unittest.TestCase):
 
         exp_cpu_entries, exp_gpu_api_entries, exp_cpu_scanned, exp_cpu_total_raw = cpu_tool.aggregate(CPU_DIR)
         exp_gpu_entries, exp_gpu_scanned, exp_gpu_total_ns = gpu_tool.aggregate(GPU_DIR)
-        exp_overhead = sum(e["sum"] for e in exp_gpu_api_entries)
+        # self_sum, not inclusive sum -- see build_combined_view()'s own docstring:
+        # inclusive sum would double/triple-count a nested GPU-API call chain.
+        exp_overhead = sum(e["self_sum"] for e in exp_gpu_api_entries)
         exp_cpu_pure = max(0.0, exp_cpu_total_raw - exp_overhead)
         exp_gpu_total_sec = exp_gpu_total_ns / 1e9
         exp_combined_total = exp_cpu_pure + exp_gpu_total_sec
@@ -86,6 +89,19 @@ class BuildCombinedViewTests(unittest.TestCase):
         fused, cpu_entries, cpu_gpu_api_entries, gpu_entries, info = combined.build_combined_view(CPU_DIR_SINGLE, GPU_DIR)
         self.assertTrue(fused)
         self.assertGreater(info["combined_total_sec"], 0)
+
+    def test_gpu_api_overhead_does_not_overcount_a_nested_call_chain(self):
+        # gpu_api_nested_chain fixture: hipStreamCreate -> hip::hipStreamCreate(...) ->
+        # hip::ihipStreamCreate(...), each with inclusive sum=1.0s but only the
+        # innermost holding real self-time (0.998s; the other two are ~0.001s
+        # wrappers) -- one real second of wall-clock time, not three.
+        _fused, _cpu_entries, cpu_gpu_api_entries, _gpu_entries, info = combined.build_combined_view(
+            CPU_DIR_GPU_API_NESTED_CHAIN, GPU_DIR_SINGLE
+        )
+        self.assertEqual(len(cpu_gpu_api_entries), 3)
+        old_buggy_sum = sum(e["sum"] for e in cpu_gpu_api_entries)
+        self.assertAlmostEqual(old_buggy_sum, 3.0)  # what the bug used to compute
+        self.assertAlmostEqual(info["gpu_api_overhead_sec"], 1.0)  # the real, fixed total
 
 
 class WriteReportTests(unittest.TestCase):
