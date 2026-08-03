@@ -57,7 +57,8 @@ for details.
 
 Options:
   -o, --output-dir DIR   base output directory (default: profile_hotspots-output-<timestamp>)
-                          split into DIR/rocprof-sys and DIR/rocprofv3
+                          raw profiling data goes in DIR/rocprof-sys and DIR/rocprofv3;
+                          the combined hotspots.txt itself is written at DIR/hotspots.txt
   --top N                 hotspots per table to report (default: 20; last of --top/--threshold/--all wins)
   --threshold PCT         only report entries at or above PCT% of their table's total
                           (or, in the load-imbalance tables, at or above PCT% coefficient of variation)
@@ -102,6 +103,7 @@ fi
 
 CPU_DIR="$OUTPUT_DIR/rocprof-sys"
 GPU_DIR="$OUTPUT_DIR/rocprofv3"
+REPORT_DEST="$OUTPUT_DIR/hotspots.txt"
 
 MPI_FORWARD=()
 [[ -n "$MPI_STR" ]] && MPI_FORWARD=(--mpi "$MPI_STR")
@@ -110,7 +112,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   "$CPU_LAUNCHER" --no-summary --dry-run "${MPI_FORWARD[@]}" -o "$CPU_DIR" -- "$@"
   "$GPU_LAUNCHER" --no-summary --dry-run "${MPI_FORWARD[@]}" -o "$GPU_DIR" -- "$@"
   echo "would then run:"
-  printf '  python3 %q %q %q ' "$EXTRACTOR" "$CPU_DIR" "$GPU_DIR"
+  printf '  python3 %q %q %q -o %q ' "$EXTRACTOR" "$CPU_DIR" "$GPU_DIR" "$REPORT_DEST"
   printf '%q ' "${SELECTION_ARGS[@]}"
   echo
   exit 0
@@ -125,10 +127,10 @@ fi
 
 if [[ "$RUN_SUMMARY" -eq 1 ]]; then
   if command -v python3 >/dev/null 2>&1; then
-    python3 "$EXTRACTOR" "$CPU_DIR" "$GPU_DIR" "${SELECTION_ARGS[@]}" || \
+    python3 "$EXTRACTOR" "$CPU_DIR" "$GPU_DIR" -o "$REPORT_DEST" "${SELECTION_ARGS[@]}" || \
       echo "warning: combined hotspots extractor failed; profiling data is still in $CPU_DIR and $GPU_DIR" >&2
   else
     echo "warning: python3 not found, skipping combined summary; run it manually later:" >&2
-    echo "  python3 $EXTRACTOR $CPU_DIR $GPU_DIR ${SELECTION_ARGS[*]}" >&2
+    echo "  python3 $EXTRACTOR $CPU_DIR $GPU_DIR -o $REPORT_DEST ${SELECTION_ARGS[*]}" >&2
   fi
 fi

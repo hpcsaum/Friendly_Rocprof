@@ -1,5 +1,14 @@
 # Fix nested-output-dir bug, unify MPI invocation across all 4 tools, rename default dirs
 
+> **Post-implementation correction (2026-08-03):** this plan didn't address where
+> `profile_hotspots.sh` (tool 3) writes its final combined `hotspots.txt` relative to the
+> `-o DIR` the user passes. It was inheriting `extract_hotspots.py`'s own default
+> (`args.rocprof_sys_dir/hotspots.txt`, i.e. nested at `DIR/rocprof-sys/hotspots.txt`), not the
+> root of `DIR` — inconsistent with tools 1/2, where `hotspots.txt` always lands directly under
+> the directory the user specified. Fixed by having `profile_hotspots.sh` pass an explicit
+> `-o "$OUTPUT_DIR/hotspots.txt"` to the extractor instead of relying on its default. See
+> `docs/DEVELOPMENT_HISTORY.md` for the corresponding entry.
+
 ## Context
 
 **Bug report.** The user copied a real `rocprof-sys-sample` output directory from the HPC
