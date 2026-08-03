@@ -60,14 +60,28 @@ class LabelsFromOutputDirTests(unittest.TestCase):
         self.assertNotIn("hipLaunchKernel", labels)
 
     def test_top_n_selects_highest_only(self):
+        # By self-time (the default), compute_stencil beats main -- main's
+        # self_sum (2.43) is real but smaller than compute_stencil's (9.32) in
+        # this fixture.
         labels = selector.labels_from_output_dir(SINGLE_RANK, top=1)
+        self.assertEqual(labels, ["compute_stencil"])
+
+    def test_top_n_unfiltered_selects_main_by_inclusive_time(self):
+        labels = selector.labels_from_output_dir(SINGLE_RANK, top=1, unfiltered=True)
         self.assertEqual(labels, ["main"])
 
     def test_mpi_2rank_labels(self):
+        # main's self-time share of runtime here is ~0.1%, below the 1% default
+        # threshold -- correctly excluded as a pass-through wrapper, unlike its
+        # huge inclusive share which used to pull it in.
         labels = selector.labels_from_output_dir(MPI_2RANK, threshold=1.0)
         self.assertIn("compute_stencil", labels)
-        self.assertIn("main", labels)
+        self.assertNotIn("main", labels)
         self.assertNotIn("hipMemcpy", labels)
+
+    def test_mpi_2rank_labels_unfiltered_includes_main(self):
+        labels = selector.labels_from_output_dir(MPI_2RANK, threshold=1.0, unfiltered=True)
+        self.assertIn("main", labels)
 
     def test_no_timing_data_raises(self):
         with self.assertRaises(SystemExit):
@@ -82,7 +96,6 @@ class LabelsFromOutputDirTests(unittest.TestCase):
         # subdirectory must not make this tool 4 helper miss the hotspot functions.
         labels = selector.labels_from_output_dir(MPI_2RANK_DATED_SUBDIR, threshold=1.0)
         self.assertIn("compute_stencil", labels)
-        self.assertIn("main", labels)
 
 
 class LabelsFromReportTests(unittest.TestCase):
@@ -105,6 +118,25 @@ class LabelsFromReportTests(unittest.TestCase):
         self.assertIn("main", labels)
         self.assertNotIn("hipMemcpy", labels)
         self.assertNotIn("JacobiIterationKernel", labels)
+
+    def test_function_name_with_spaces_survives_the_new_column_count(self):
+        # cpu_tool.format_table() has 6 numeric/count columns ahead of the function
+        # name (self(s), %total, total(s), calls, %self) -- labels_from_report's
+        # maxsplit must match that exactly, or a multi-word C++ signature gets
+        # truncated/misparsed.
+        report = (
+            "rocprof-sys hotspots report (CPU-side only)\n\n"
+            "CPU compute hotspots (candidates for GPU offload) -- showing top 1 of 1 entries\n"
+            "    #      self(s)   %total      total(s)       calls    %self  function\n"
+            "    1     1.000000     10.0      2.000000          50    50.0  "
+            "MyNamespace::Foo(int, double) const\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            with open(dest, "w") as f:
+                f.write(report)
+            labels = selector.labels_from_report(dest)
+        self.assertEqual(labels, ["MyNamespace::Foo(int, double) const"])
 
     def test_malformed_text_raises(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -177,6 +209,12 @@ class MainResolveModeTests(unittest.TestCase):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             selector.main(["--output-dir", SINGLE_RANK, "--top", "1"])
+        self.assertIn("compute_stencil\tcompute_stencil", buf.getvalue())
+
+    def test_unfiltered_prints_main_by_inclusive_time(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            selector.main(["--output-dir", SINGLE_RANK, "--top", "1", "--unfiltered"])
         self.assertIn("main\tmain", buf.getvalue())
 
     def test_output_dir_must_exist(self):

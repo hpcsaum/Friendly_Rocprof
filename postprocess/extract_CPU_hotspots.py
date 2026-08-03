@@ -92,11 +92,16 @@ def parse_table_file(path):
         count, depth, metric, units, total, mean, vmin, vmax, var, stddev, pct_self = fields[-FIXED_FIELDS_AFTER_LABEL:]
         label = clean_label(raw_label)
         try:
+            total_f = float(total)
             rows.append({
                 "label": label,
                 "count": int(count),
-                "sum": float(total),
-                "pct_self": float(pct_self),
+                "sum": total_f,
+                # This node's own (self) time, in seconds -- % SELF is only ever
+                # meaningful per call-tree node, not once merged by label, so it's
+                # converted here and accumulated as a plain sum from then on (see
+                # aggregate()/aggregate_per_rank()); the raw % SELF isn't kept.
+                "self_sum": total_f * float(pct_self) / 100.0,
             })
         except ValueError:
             continue
@@ -126,13 +131,24 @@ def aggregate(output_dir):
     """Scan output_dir for timemory text tables and aggregate rows by clean function name.
 
     Returns (cpu_entries, gpu_entries, scanned_files, total_runtime) where each
-    entries list is [{"label", "count", "sum", "pct_self"}], unsorted, and
-    total_runtime is the denominator used for each entry's "% of total runtime":
-    the sum, across all scanned files, of that file's own largest SUM value (a
-    file's largest SUM is -- barring unusual instrumentation -- its outermost/
-    root scope, since inclusive time only grows going up the call stack; this
-    works whether the file is a hierarchical or a flattened profile, without
-    needing to guess the root function's name).
+    entries list is [{"label", "count", "sum", "self_sum", "pct_self", "pct_total"}],
+    unsorted, and total_runtime is the denominator used for each entry's "% of
+    total runtime": the sum, across all scanned files, of that file's own
+    largest SUM value (a file's largest SUM is -- barring unusual
+    instrumentation -- its outermost/root scope, since inclusive time only
+    grows going up the call stack; this works whether the file is a
+    hierarchical or a flattened profile, without needing to guess the root
+    function's name).
+
+    "sum" is inclusive time (this function plus everything it calls); "self_sum"
+    is its own time only, summed across every call-tree node with this label --
+    the metric select_entries() ranks by default, since it's the one that
+    actually tells apart a real hotspot from a function that just calls the
+    next thing (which is why a flat profile, where % SELF is always 100, can't
+    support this distinction -- see scripts/profile_CPU_hotspots.sh). Entries'
+    own "pct_total" here is self_sum-based (select_entries() recomputes it
+    against whichever metric it's actually ranking by, so this is just a
+    sensible default for callers that use aggregate()'s output directly).
     """
     scanned_files = []
     file_rows = []  # [(path, rows)]
@@ -149,26 +165,28 @@ def aggregate(output_dir):
 
     total_runtime = sum(max(row["sum"] for row in rows) for _, rows in file_rows if rows)
 
-    totals = {}  # label -> {"count": int, "sum": float, "pct_self": float, "gpu": bool}
+    totals = {}  # label -> {"count": int, "sum": float, "self_sum": float, "gpu": bool}
     for path, rows in file_rows:
         for row in rows:
             label = row["label"]
             gpu = is_gpu_entry(label, path)
-            entry = totals.setdefault(label, {"count": 0, "sum": 0.0, "pct_self": 0.0, "gpu": gpu})
+            entry = totals.setdefault(label, {"count": 0, "sum": 0.0, "self_sum": 0.0, "gpu": gpu})
             entry["count"] += row["count"]
             entry["sum"] += row["sum"]
-            entry["pct_self"] = row["pct_self"]
+            entry["self_sum"] += row["self_sum"]
             entry["gpu"] = entry["gpu"] or gpu
 
     cpu_entries = []
     gpu_entries = []
     for label, entry in totals.items():
-        pct_total = (entry["sum"] / total_runtime * 100.0) if total_runtime > 0 else None
+        pct_total = (entry["self_sum"] / total_runtime * 100.0) if total_runtime > 0 else None
+        pct_self = (entry["self_sum"] / entry["sum"] * 100.0) if entry["sum"] > 0 else None
         item = {
             "label": label,
             "count": entry["count"],
             "sum": entry["sum"],
-            "pct_self": entry["pct_self"],
+            "self_sum": entry["self_sum"],
+            "pct_self": pct_self,
             "pct_total": pct_total,
         }
         (gpu_entries if entry["gpu"] else cpu_entries).append(item)
@@ -176,17 +194,23 @@ def aggregate(output_dir):
     return cpu_entries, gpu_entries, scanned_files, total_runtime
 
 
-def aggregate_per_rank(output_dir):
+def aggregate_per_rank(output_dir, unfiltered=False):
     """Like aggregate(), but keeps each scanned file's CPU-only per-label
-    sums separate instead of merging them into one global total -- one
+    totals separate instead of merging them into one global total -- one
     scanned file is treated as one rank's contribution (same file-per-
     process assumption guess_num_ranks() already relies on), which is what
     a load-imbalance-across-ranks computation needs as its input.
 
+    Uses self-time by default (not inclusive) for the same reason aggregate()
+    ranks by it by default -- keeps the load-imbalance table's ranking
+    consistent with the main hotspots table in the same report; unfiltered=True
+    switches to inclusive time, matching aggregate()'s own --unfiltered view.
+
     Returns (per_file_totals, scanned_files) where per_file_totals is a
-    list of {label: sum} dicts, one per scanned file, in the same order as
-    scanned_files.
+    list of {label: value} dicts, one per scanned file, in the same order
+    as scanned_files.
     """
+    metric = "sum" if unfiltered else "self_sum"
     scanned_files = []
     per_file_totals = []
 
@@ -203,7 +227,7 @@ def aggregate_per_rank(output_dir):
             label = row["label"]
             if is_gpu_entry(label, path):
                 continue
-            file_totals[label] = file_totals.get(label, 0.0) + row["sum"]
+            file_totals[label] = file_totals.get(label, 0.0) + row[metric]
         per_file_totals.append(file_totals)
 
     return per_file_totals, scanned_files
@@ -262,15 +286,24 @@ def format_table_load_imbalance(entries):
     return "\n".join(lines) + "\n"
 
 
-def select_entries(entries, total_runtime, top=None, threshold=None, show_all=False):
-    """Pick which aggregated entries to report, always sorted by SUM descending.
+def select_entries(entries, total_runtime, top=None, threshold=None, show_all=False, rank_by="self"):
+    """Pick which aggregated entries to report, sorted by rank_by descending
+    ("self" -- self_sum, the default -- or "inclusive" -- sum, --unfiltered's
+    view). Each entry's "pct_total" is (re)computed here against whichever
+    metric is actually being ranked, so a % shown in the report always means
+    "% of total runtime by the metric this table is sorted by" -- overwrites
+    whatever aggregate() put there.
 
     Exactly one selection mode applies (show_all > threshold > top, in that
     precedence, though callers should only set one): show every entry, keep
     only entries at or above a %-of-total-runtime threshold, or keep the top N
-    by total time. Returns (selected_entries, description_for_report_header).
+    by the ranked metric. Returns (selected_entries, description_for_report_header).
     """
-    entries_sorted = sorted(entries, key=lambda e: e["sum"], reverse=True)
+    key_field = "sum" if rank_by == "inclusive" else "self_sum"
+    for e in entries:
+        e["pct_total"] = (e[key_field] / total_runtime * 100.0) if total_runtime > 0 else None
+
+    entries_sorted = sorted(entries, key=lambda e: e[key_field], reverse=True)
     total_count = len(entries_sorted)
 
     if show_all:
@@ -290,10 +323,16 @@ def format_table(entries):
     if not entries:
         return "  (none found)\n"
     lines = []
-    lines.append(f"  {'#':>3}  {'total(s)':>12}  {'%total':>7}  {'calls':>10}  {'%self':>7}  function")
+    lines.append(
+        f"  {'#':>3}  {'self(s)':>12}  {'%total':>7}  {'total(s)':>12}  {'calls':>10}  {'%self':>7}  function"
+    )
     for i, e in enumerate(entries, 1):
         pct_total_str = f"{e['pct_total']:.1f}" if e["pct_total"] is not None else "n/a"
-        lines.append(f"  {i:>3}  {e['sum']:>12.6f}  {pct_total_str:>7}  {e['count']:>10}  {e['pct_self']:>7.1f}  {e['label']}")
+        pct_self_str = f"{e['pct_self']:.1f}" if e.get("pct_self") is not None else "n/a"
+        lines.append(
+            f"  {i:>3}  {e['self_sum']:>12.6f}  {pct_total_str:>7}  {e['sum']:>12.6f}  "
+            f"{e['count']:>10}  {pct_self_str:>7}  {e['label']}"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -390,7 +429,7 @@ def gather_run_info(output_dir, scanned_files):
     }
 
 
-def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False):
+def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False, unfiltered=False):
     cpu_entries, gpu_entries, scanned_files, total_runtime = aggregate(output_dir)
     if not scanned_files:
         raise SystemExit(
@@ -402,8 +441,9 @@ def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False
     proto_files, db_files = find_extra_artifacts(output_dir)
     run_info = gather_run_info(output_dir, scanned_files)
 
-    cpu_selected, cpu_desc = select_entries(cpu_entries, total_runtime, top, threshold, show_all)
-    gpu_selected, gpu_desc = select_entries(gpu_entries, total_runtime, top, threshold, show_all)
+    rank_by = "inclusive" if unfiltered else "self"
+    cpu_selected, cpu_desc = select_entries(cpu_entries, total_runtime, top, threshold, show_all, rank_by)
+    gpu_selected, gpu_desc = select_entries(gpu_entries, total_runtime, top, threshold, show_all, rank_by)
 
     parts = []
     parts.append("rocprof-sys hotspots report (CPU-side only)\n")
@@ -416,6 +456,21 @@ def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False
     parts.append("files scanned:\n")
     for f in scanned_files:
         parts.append(f"  - {os.path.basename(f)}\n")
+    parts.append("\n")
+
+    if unfiltered:
+        parts.append(
+            "Ranked by inclusive (total) time -- a function that only calls other "
+            "functions can still rank high here. Drop --unfiltered for the "
+            "self-time view.\n"
+        )
+    else:
+        parts.append(
+            "Ranked by self time -- each function's own work, not counting time "
+            "spent in whatever it calls, so pass-through functions (a function "
+            "that just calls the next thing) fall out of the ranking on their "
+            "own. Pass --unfiltered for the old inclusive/cumulative-time view.\n"
+        )
     parts.append("\n")
 
     parts.append(f"CPU compute hotspots (candidates for GPU offload) -- showing {cpu_desc}\n")
@@ -436,7 +491,7 @@ def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False
     )
     parts.append("\n")
 
-    per_file_totals, imbalance_scanned = aggregate_per_rank(output_dir)
+    per_file_totals, imbalance_scanned = aggregate_per_rank(output_dir, unfiltered=unfiltered)
     if len(imbalance_scanned) < 2:
         parts.append(
             "CPU load imbalance across ranks -- skipped: only "
@@ -448,7 +503,8 @@ def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False
             f"CPU load imbalance across {len(imbalance_scanned)} ranks -- showing {imbalance_desc}\n"
         )
         parts.append(
-            "Each function's own total time on each rank, compared across ranks -- a rank "
+            ("Each function's own inclusive" if unfiltered else "Each function's own self")
+            + " time on each rank, compared across ranks -- a rank "
             "that never called a function counts as 0.0 for that rank, not omitted.\n"
         )
         parts.append(format_table_load_imbalance(imbalance_selected))
@@ -485,13 +541,18 @@ def main(argv=None):
                             help="only list entries at or above this %% of total runtime")
     selection.add_argument("--all", dest="show_all", action="store_true",
                             help="list every entry, no truncation")
+    parser.add_argument("--unfiltered", dest="unfiltered", action="store_true",
+                         help="rank by inclusive (total) time instead of self time -- the old "
+                              "behavior, where a function that just calls other functions can "
+                              "still rank high")
     args = parser.parse_args(argv)
 
     if not os.path.isdir(args.output_dir):
         raise SystemExit(f"error: no such directory: {args.output_dir!r}")
 
     dest = args.dest or os.path.join(args.output_dir, "hotspots.txt")
-    write_report(args.output_dir, dest, top=args.top, threshold=args.threshold, show_all=args.show_all)
+    write_report(args.output_dir, dest, top=args.top, threshold=args.threshold, show_all=args.show_all,
+                 unfiltered=args.unfiltered)
     print(f"wrote {dest}")
 
 

@@ -67,14 +67,17 @@ def escape_for_instrument_regex(name):
     return "".join(("\\" + c) if c in _REGEX_METACHARS else c for c in name)
 
 
-def labels_from_output_dir(rocprof_sys_dir, top=None, threshold=None, show_all=False):
+def labels_from_output_dir(rocprof_sys_dir, top=None, threshold=None, show_all=False, unfiltered=False):
     cpu_entries, _gpu_entries, scanned, total = cpu_tool.aggregate(rocprof_sys_dir)
     if not scanned:
         raise SystemExit(
             f"error: no rocprof-sys timemory text table found in {rocprof_sys_dir!r} -- "
             "nothing to select hotspot functions from"
         )
-    selected, _desc = cpu_tool.select_entries(cpu_entries, total, top=top, threshold=threshold, show_all=show_all)
+    rank_by = "inclusive" if unfiltered else "self"
+    selected, _desc = cpu_tool.select_entries(
+        cpu_entries, total, top=top, threshold=threshold, show_all=show_all, rank_by=rank_by
+    )
     return sorted({e["label"] for e in selected})
 
 
@@ -111,10 +114,13 @@ def labels_from_report(report_path):
     for line in lines[header + 1:]:
         if not line.strip():
             break
-        parts = line.split(maxsplit=5)
-        if len(parts) < 6:
+        # cpu_tool.format_table()'s columns: # self(s) %total total(s) calls %self function --
+        # maxsplit=6 keeps the function name (which may itself contain spaces, e.g. a C++
+        # signature) intact as the 7th and last piece.
+        parts = line.split(maxsplit=6)
+        if len(parts) < 7:
             continue
-        labels.append(parts[5].strip())
+        labels.append(parts[6].strip())
 
     if not labels:
         raise SystemExit(
@@ -181,6 +187,11 @@ def main(argv=None):
                             help="only select functions at or above this %% of total runtime (default: 1.0)")
     selection.add_argument("--all", dest="show_all", action="store_true", default=False,
                             help="select every function, no truncation")
+    parser.add_argument("--unfiltered", dest="unfiltered", action="store_true",
+                         help="with --output-dir, select by inclusive (total) time instead of "
+                              "self time -- the old behavior, which can pick a function that "
+                              "just calls other functions rather than one that does real work; "
+                              "ignored with --report (that just reads whatever's in the file)")
     parser.add_argument("--check-instrumented", dest="check_instrumented", default=None,
                          help="switch to lost-function mode: read requested labels from stdin "
                               "(one per line) and warn about any missing from this "
@@ -188,7 +199,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     if args.check_instrumented:
-        if args.report or args.output_dir or args.top is not None or args.threshold is not None or args.show_all:
+        if (args.report or args.output_dir or args.top is not None or args.threshold is not None
+                or args.show_all or args.unfiltered):
             raise SystemExit("error: --check-instrumented can't be combined with --report/--output-dir/selection flags")
         labels = [line.strip() for line in sys.stdin if line.strip()]
         try:
@@ -219,7 +231,10 @@ def main(argv=None):
     else:
         if not os.path.isdir(args.output_dir):
             raise SystemExit(f"error: no such directory: {args.output_dir!r}")
-        labels = labels_from_output_dir(args.output_dir, top=args.top, threshold=args.threshold, show_all=args.show_all)
+        labels = labels_from_output_dir(
+            args.output_dir, top=args.top, threshold=args.threshold, show_all=args.show_all,
+            unfiltered=args.unfiltered,
+        )
 
     if not labels:
         raise SystemExit("error: no hotspot functions resolved -- nothing to instrument")

@@ -23,6 +23,7 @@ RUN_SUMMARY=1
 DRY_RUN=0
 MPI_STR=""
 SELECTION_ARGS=()
+UNFILTERED=0
 
 usage() {
   cat <<'EOF'
@@ -42,6 +43,13 @@ Numbers are reported as percentages of total measured time, good enough to
 spot your top bottleneck -- not a precise, reproducible benchmark. Safe to
 run repeatedly; it only observes your program, it doesn't change it.
 
+Ranks functions by their own (self) time, not counting time spent in
+functions they call -- so a function that just calls other functions won't
+crowd out the ones that actually do the work. This needs real call-tree
+data, which has somewhat more overhead than a flat profile; set
+ROCPROFSYS_FLAT_PROFILE=1 yourself beforehand if you need the lighter-weight
+(but self-time-blind) mode back for an overhead-sensitive run.
+
 For MPI runs, the report also includes a load-imbalance table (each
 function's average/min/max time and how much it varies across ranks,
 including MPI calls) after the main hotspots tables. If your program needs
@@ -60,6 +68,9 @@ Options:
                           (or, in the load-imbalance table, at or above PCT% coefficient of variation)
   --all                   report every entry, no truncation
   --no-summary            skip auto-running the hotspots extractor afterwards
+  --unfiltered            rank by inclusive (total) time instead of self time -- the old
+                          behavior, where a function that just calls other functions can
+                          still rank high
   --mpi "<launch cmd>"    MPI launch command to prefix the profiling run with (e.g. "mpirun -np 4")
   --dry-run               print the command and env vars that would run, don't execute
   -h, --help              show this help
@@ -80,6 +91,8 @@ while [[ $# -gt 0 ]]; do
       SELECTION_ARGS=(--all); shift ;;
     --no-summary)
       RUN_SUMMARY=0; shift ;;
+    --unfiltered)
+      UNFILTERED=1; shift ;;
     --mpi)
       MPI_STR="$2"; shift 2 ;;
     --dry-run)
@@ -108,13 +121,15 @@ fi
 export ROCPROFSYS_OUTPUT_PATH="$OUTPUT_DIR"
 export ROCPROFSYS_TEXT_OUTPUT=1
 export ROCPROFSYS_JSON_OUTPUT=1
-export ROCPROFSYS_FLAT_PROFILE=1
+export ROCPROFSYS_FLAT_PROFILE=0
 export ROCPROFSYS_TRACE=0
 
 MPI_ARR=()
 if [[ -n "$MPI_STR" ]]; then
   read -ra MPI_ARR <<< "$MPI_STR"
 fi
+UNFILTERED_ARGS=()
+[[ "$UNFILTERED" -eq 1 ]] && UNFILTERED_ARGS=(--unfiltered)
 
 CMD=("${MPI_ARR[@]}" rocprof-sys-sample -f "$FREQ_HZ" -- "$@")
 
@@ -125,6 +140,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "  ROCPROFSYS_JSON_OUTPUT=$ROCPROFSYS_JSON_OUTPUT"
   echo "  ROCPROFSYS_FLAT_PROFILE=$ROCPROFSYS_FLAT_PROFILE"
   echo "  ROCPROFSYS_TRACE=$ROCPROFSYS_TRACE"
+  echo "  (hierarchical call-tree data -- needed for the extractor's self-time ranking; see -h)"
   echo "would run:"
   printf '  %q ' "${CMD[@]}"
   echo
@@ -138,11 +154,11 @@ set -e
 
 if [[ "$RUN_SUMMARY" -eq 1 ]]; then
   if command -v python3 >/dev/null 2>&1; then
-    python3 "$EXTRACTOR" "$OUTPUT_DIR" "${SELECTION_ARGS[@]}" || \
+    python3 "$EXTRACTOR" "$OUTPUT_DIR" "${SELECTION_ARGS[@]}" "${UNFILTERED_ARGS[@]}" || \
       echo "warning: hotspots extractor failed; profiling data is still in $OUTPUT_DIR" >&2
   else
     echo "warning: python3 not found, skipping hotspots summary; run it manually later:" >&2
-    echo "  python3 $EXTRACTOR $OUTPUT_DIR ${SELECTION_ARGS[*]}" >&2
+    echo "  python3 $EXTRACTOR $OUTPUT_DIR ${SELECTION_ARGS[*]} ${UNFILTERED_ARGS[*]}" >&2
   fi
 fi
 

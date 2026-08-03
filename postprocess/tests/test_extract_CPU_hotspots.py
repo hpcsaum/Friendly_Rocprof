@@ -77,7 +77,9 @@ class AggregateTests(unittest.TestCase):
         # single file -> total_runtime is just that file's largest SUM ("main")
         self.assertAlmostEqual(total_runtime, 13.360265)
         by_label = {e["label"]: e for e in cpu}
-        self.assertAlmostEqual(by_label["compute_stencil"]["pct_total"], 9.812345 / 13.360265 * 100)
+        # self_sum = sum * (% SELF / 100); pct_total (aggregate()'s own default) is self-based
+        self.assertAlmostEqual(by_label["compute_stencil"]["self_sum"], 9.812345 * 0.95)
+        self.assertAlmostEqual(by_label["compute_stencil"]["pct_total"], 9.812345 * 0.95 / 13.360265 * 100)
 
     def test_mpi_ranks_aggregate_by_function_name_and_total_runtime(self):
         cpu, gpu, scanned, total_runtime = hotspots.aggregate(os.path.join(FIXTURES, "mpi_2rank"))
@@ -90,7 +92,18 @@ class AggregateTests(unittest.TestCase):
         self.assertAlmostEqual(gpu_by_label["hipMemcpy"]["sum"], 0.0395)
         # total_runtime = rank0's main (10.924161) + rank1's main (10.900000)
         self.assertAlmostEqual(total_runtime, 21.824161)
-        self.assertAlmostEqual(by_label["compute_stencil"]["pct_total"], 18.9 / 21.824161 * 100)
+        expected_self_sum = 9.5 * 0.94 + 9.4 * 0.935
+        self.assertAlmostEqual(by_label["compute_stencil"]["self_sum"], expected_self_sum)
+        self.assertAlmostEqual(by_label["compute_stencil"]["pct_total"], expected_self_sum / 21.824161 * 100)
+
+    def test_main_has_near_zero_self_time_despite_huge_inclusive_time(self):
+        # main's % SELF is 0.1 in this fixture (it just calls compute_stencil) --
+        # this is the exact "pass-through wrapper" pollution this feature targets.
+        cpu, _gpu, _scanned, _total = hotspots.aggregate(os.path.join(FIXTURES, "mpi_2rank"))
+        by_label = {e["label"]: e for e in cpu}
+        self.assertAlmostEqual(by_label["main"]["sum"], 21.824161)  # huge inclusive time
+        self.assertLess(by_label["main"]["self_sum"], 0.03)  # but almost no self time
+        self.assertLess(by_label["main"]["self_sum"], by_label["compute_stencil"]["self_sum"])
 
     def test_directory_with_no_timing_files(self):
         cpu, gpu, scanned, total_runtime = hotspots.aggregate(os.path.join(FIXTURES, "no_timing_data"))
@@ -101,16 +114,22 @@ class AggregateTests(unittest.TestCase):
 
 
 class SelectEntriesTests(unittest.TestCase):
+    # self_sum deliberately diverges from sum for "a" so rank_by="self" vs
+    # "inclusive" pick different top entries (see the two ordering tests below).
     ENTRIES = [
-        {"label": "a", "count": 1, "sum": 1.0, "pct_self": 10.0, "pct_total": 10.0},
-        {"label": "b", "count": 1, "sum": 5.0, "pct_self": 10.0, "pct_total": 50.0},
-        {"label": "c", "count": 1, "sum": 3.0, "pct_self": 10.0, "pct_total": 30.0},
+        {"label": "a", "count": 1, "sum": 9.0, "self_sum": 1.0},
+        {"label": "b", "count": 1, "sum": 5.0, "self_sum": 5.0},
+        {"label": "c", "count": 1, "sum": 3.0, "self_sum": 3.0},
     ]
 
-    def test_default_top_is_20(self):
+    def test_default_ranks_by_self_time(self):
         selected, desc = hotspots.select_entries(self.ENTRIES, total_runtime=10.0)
         self.assertEqual([e["label"] for e in selected], ["b", "c", "a"])
         self.assertIn("top 20", desc)
+
+    def test_rank_by_inclusive_reverses_a_and_b(self):
+        selected, desc = hotspots.select_entries(self.ENTRIES, total_runtime=10.0, rank_by="inclusive")
+        self.assertEqual([e["label"] for e in selected], ["a", "b", "c"])
 
     def test_top_n_truncates(self):
         selected, desc = hotspots.select_entries(self.ENTRIES, total_runtime=10.0, top=2)
@@ -118,6 +137,7 @@ class SelectEntriesTests(unittest.TestCase):
         self.assertIn("top 2 of 3", desc)
 
     def test_threshold_filters_by_pct_total(self):
+        # by self_sum: b=50%, c=30%, a=10% of total_runtime=10
         selected, desc = hotspots.select_entries(self.ENTRIES, total_runtime=10.0, threshold=30.0)
         self.assertEqual([e["label"] for e in selected], ["b", "c"])
         self.assertIn(">= 30% of total runtime (2 of 3 entries)", desc)
@@ -132,16 +152,27 @@ class SelectEntriesTests(unittest.TestCase):
         self.assertEqual(len(selected), 3)
         self.assertIn("all 3 entries", desc)
 
+    def test_pct_total_reflects_rank_by_metric(self):
+        selected, _ = hotspots.select_entries(self.ENTRIES, total_runtime=10.0, show_all=True)
+        by_label = {e["label"]: e for e in selected}
+        self.assertAlmostEqual(by_label["a"]["pct_total"], 10.0)  # self_sum-based: 1.0/10*100
+        selected, _ = hotspots.select_entries(self.ENTRIES, total_runtime=10.0, show_all=True, rank_by="inclusive")
+        by_label = {e["label"]: e for e in selected}
+        self.assertAlmostEqual(by_label["a"]["pct_total"], 90.0)  # sum-based: 9.0/10*100
+
 
 class FormatTableTests(unittest.TestCase):
-    def test_includes_pct_total_column(self):
-        entries = [{"label": "a", "count": 1, "sum": 1.0, "pct_self": 10.0, "pct_total": 25.0}]
+    def test_includes_self_and_pct_total_columns(self):
+        entries = [{"label": "a", "count": 1, "sum": 4.0, "self_sum": 1.0, "pct_self": 25.0, "pct_total": 25.0}]
         table = hotspots.format_table(entries)
+        self.assertIn("self(s)", table)
         self.assertIn("%total", table)
         self.assertIn("25.0", table)
+        self.assertIn("1.000000", table)  # self_sum
+        self.assertIn("4.000000", table)  # sum (total(s))
 
     def test_pct_total_none_renders_as_na(self):
-        entries = [{"label": "a", "count": 1, "sum": 1.0, "pct_self": 10.0, "pct_total": None}]
+        entries = [{"label": "a", "count": 1, "sum": 1.0, "self_sum": 0.1, "pct_self": 10.0, "pct_total": None}]
         table = hotspots.format_table(entries)
         self.assertIn("n/a", table)
 
@@ -198,15 +229,22 @@ class AggregatePerRankTests(unittest.TestCase):
         self.assertNotIn("hipMemcpy", per_file[0])
 
     def test_mpi_2rank_keeps_ranks_separate(self):
+        # default (self-time) values: compute_stencil is 9.5*0.94 / 9.4*0.935, not the raw sum
         per_file, scanned = hotspots.aggregate_per_rank(os.path.join(FIXTURES, "mpi_2rank"))
         self.assertEqual(len(scanned), 2)
         self.assertEqual(len(per_file), 2)
         values = sorted(ft["compute_stencil"] for ft in per_file)
-        self.assertAlmostEqual(values[0], 9.4)
-        self.assertAlmostEqual(values[1], 9.5)
+        self.assertAlmostEqual(values[0], 9.4 * 0.935)
+        self.assertAlmostEqual(values[1], 9.5 * 0.94)
         # GPU-API bucket excluded per-rank the same way aggregate() excludes it globally
         for ft in per_file:
             self.assertNotIn("hipMemcpy", ft)
+
+    def test_mpi_2rank_unfiltered_uses_inclusive_time(self):
+        per_file, _scanned = hotspots.aggregate_per_rank(os.path.join(FIXTURES, "mpi_2rank"), unfiltered=True)
+        values = sorted(ft["compute_stencil"] for ft in per_file)
+        self.assertAlmostEqual(values[0], 9.4)
+        self.assertAlmostEqual(values[1], 9.5)
 
     def test_no_timing_data_returns_empty(self):
         per_file, scanned = hotspots.aggregate_per_rank(os.path.join(FIXTURES, "no_timing_data"))
@@ -342,6 +380,24 @@ class WriteReportTests(unittest.TestCase):
             dest = os.path.join(tmp, "hotspots.txt")
             report = hotspots.write_report(os.path.join(FIXTURES, "single_rank"), dest)
             self.assertIn("CPU load imbalance across ranks -- skipped: only 1 rank/file found", report)
+
+    def test_default_ranks_by_self_time_compute_stencil_beats_main(self):
+        # main has huge inclusive time but near-zero self time in this fixture --
+        # the exact pollution this feature targets.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            report = hotspots.write_report(os.path.join(FIXTURES, "mpi_2rank"), dest, show_all=True)
+            self.assertIn("Ranked by self time", report)
+            hotspots_section = report[report.index("CPU compute hotspots"):report.index("GPU API")]
+            self.assertLess(hotspots_section.index("compute_stencil"), hotspots_section.index("main"))
+
+    def test_unfiltered_ranks_by_inclusive_time_main_beats_compute_stencil(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            report = hotspots.write_report(os.path.join(FIXTURES, "mpi_2rank"), dest, show_all=True, unfiltered=True)
+            self.assertIn("Ranked by inclusive (total) time", report)
+            hotspots_section = report[report.index("CPU compute hotspots"):report.index("GPU API")]
+            self.assertLess(hotspots_section.index("main"), hotspots_section.index("compute_stencil"))
 
 
 class NestedDatedSubdirectoryTests(unittest.TestCase):

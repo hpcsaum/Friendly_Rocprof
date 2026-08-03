@@ -41,7 +41,17 @@ date/time, total runtime, and MPI rank count when available (best-effort,
 since none of that lives in the timing data itself) — any field it couldn't
 find is just left blank.
 
-By default the report lists the top 20 entries per section, ranked by total
+CPU entries are ranked by **self time** (a function's own work, not counting
+time spent in whatever it calls) rather than inclusive/cumulative time — a
+function that just calls the next thing (`main`, a thin wrapper, ...) won't
+crowd out the ones actually doing the work. This needs real call-tree data,
+so the launcher runs with `ROCPROFSYS_FLAT_PROFILE=0` (hierarchical mode) —
+somewhat more overhead than the old flat-profile default; set
+`ROCPROFSYS_FLAT_PROFILE=1` yourself beforehand if you need the lighter,
+self-time-blind mode back for an overhead-sensitive run. Pass `--unfiltered`
+(launcher and extractor both) for the old inclusive-time ranking.
+
+By default the report lists the top 20 entries per section, ranked by self
 time. Pass `--top N` for a different count, `--threshold PCT` to instead
 list every entry at or above PCT% of total runtime, or `--all` to list
 everything with no truncation (works on both the launcher and the extractor):
@@ -64,7 +74,7 @@ Skipped (with a one-line note) if fewer than 2 ranks were profiled.
 The extractor also works standalone against any existing `rocprof-sys` output directory:
 
 ```bash
-python3 postprocess/extract_CPU_hotspots.py <rocprof-sys-output-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all]
+python3 postprocess/extract_CPU_hotspots.py <rocprof-sys-output-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all] [--unfiltered]
 ```
 
 ### GPU hotspots — `profile_GPU_hotspots.sh`
@@ -135,14 +145,16 @@ imbalance across ranks, reusing tool 1's own load-imbalance logic; (6) GPU
 kernel load imbalance across ranks, reusing tool 2's. Same
 `--top`/`--threshold`/`--all` selection as the other two tools, applied to
 every table (tables 5-6 rank by std_dev, with `--threshold` meaning
-coefficient of variation there instead of % of runtime).
+coefficient of variation there instead of % of runtime). CPU-side entries
+(tables 1, 2, and 5) rank by self time, same as tool 1 — pass `--unfiltered`
+for the old inclusive-time view.
 
 The extractor takes both tools' output directories directly and does **not**
 check that they came from the same executable or test case — that's on you
 (garbage in, garbage out):
 
 ```bash
-python3 postprocess/extract_hotspots.py <rocprof-sys-output-dir> <rocprofv3-output-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all]
+python3 postprocess/extract_hotspots.py <rocprof-sys-output-dir> <rocprofv3-output-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all] [--unfiltered]
 ```
 
 ### Selective instrumentation — `instrument_hotspots.sh`
@@ -168,6 +180,10 @@ scripts/instrument_hotspots.sh instrument -- ./app arg1 arg2
 scripts/instrument_hotspots.sh trace --report results/run1/hotspots.txt -- ./app arg1 arg2
 ```
 
+Auto-profiling picks hotspot functions by self time, same as tool 1 — pass
+`--unfiltered` for the old inclusive-time selection (which tends to pick
+pass-through wrapper functions rather than the ones doing real work).
+
 Same `--mpi "<launch cmd>"` convention as the other three tools, but the
 binary rewrite itself must happen exactly once, not once per rank — this
 script places `--mpi` wherever it's actually needed (the auto-profiling
@@ -184,6 +200,6 @@ After the rewrite, this tool checks `rocprof-sys-instrument`'s own
 binary — inlining, optimization, or a name mismatch can all cause that.
 
 ```bash
-python3 postprocess/select_hotspot_functions.py --output-dir <rocprof-sys-output-dir> [-n TOP_N | --threshold PCT | --all]
+python3 postprocess/select_hotspot_functions.py --output-dir <rocprof-sys-output-dir> [-n TOP_N | --threshold PCT | --all] [--unfiltered]
 python3 postprocess/select_hotspot_functions.py --report results/run1/hotspots.txt
 ```
