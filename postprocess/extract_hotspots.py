@@ -63,22 +63,44 @@ def build_combined_view(rocprof_sys_dir, rocprofv3_dir):
     tiny) non-blocking launch overhead in the same bucket -- accepted, since
     there's no reliable way to tell blocking from non-blocking HIP/HSA calls
     by name alone, and it's negligible next to the sync-wait time being fixed.
+
+    gpu_api_overhead_sec sums each row's self_sum, not its inclusive sum.
+    Several GPU-API-classified rows are themselves nested inside each other
+    (e.g. hipStreamCreate -> hip::hipStreamCreate(...) -> hip::ihipStreamCreate(...)
+    -> hip::Stream::Stream(...) can all be one call chain, each with the same
+    inclusive time) -- summing inclusive time across a whole bucket like that
+    would count the same overlapping wall-clock interval once per nesting
+    level. Self-time doesn't have this problem: by construction, every node's
+    self-time is disjoint from every other node's (parent or not, GPU-API or
+    not), so summing it over any subset of nodes always gives the real total
+    time spent inside that subset, however deep the matched chain is.
     """
     cpu_entries, cpu_gpu_api_entries, cpu_scanned, cpu_total_raw = cpu_tool.aggregate(rocprof_sys_dir)
     gpu_entries, gpu_scanned, gpu_total_ns = gpu_tool.aggregate(rocprofv3_dir)
 
-    gpu_api_overhead_sec = sum(e["sum"] for e in cpu_gpu_api_entries)
+    gpu_api_overhead_sec = sum(e["self_sum"] for e in cpu_gpu_api_entries)
     cpu_pure_total_sec = max(0.0, cpu_total_raw - gpu_api_overhead_sec)
     gpu_total_sec = gpu_total_ns / 1e9
     combined_total_sec = cpu_pure_total_sec + gpu_total_sec
 
+    # self_sum drives the fused ranking by default (see cpu_tool.select_entries's
+    # rank_by) -- for GPU kernel entries there's no self-vs-inclusive distinction
+    # (a kernel is already a leaf event), so self_sum == sum there. pct_total here
+    # is self-based, same convention as cpu_tool.aggregate()'s own output --
+    # select_entries() recomputes it against whichever metric it actually ranks by.
     fused_entries = []
     for e in cpu_entries:
-        pct = (e["sum"] / combined_total_sec * 100.0) if combined_total_sec > 0 else None
-        fused_entries.append({"label": e["label"], "domain": "CPU", "count": e["count"], "sum": e["sum"], "pct_total": pct})
+        pct = (e["self_sum"] / combined_total_sec * 100.0) if combined_total_sec > 0 else None
+        fused_entries.append({
+            "label": e["label"], "domain": "CPU", "count": e["count"],
+            "sum": e["sum"], "self_sum": e["self_sum"], "pct_total": pct,
+        })
     for e in gpu_entries:
         pct = (e["sum"] / combined_total_sec * 100.0) if combined_total_sec > 0 else None
-        fused_entries.append({"label": e["label"], "domain": "GPU", "count": e["count"], "sum": e["sum"], "pct_total": pct})
+        fused_entries.append({
+            "label": e["label"], "domain": "GPU", "count": e["count"],
+            "sum": e["sum"], "self_sum": e["sum"], "pct_total": pct,
+        })
 
     info = {
         "cpu_scanned": cpu_scanned,
@@ -96,15 +118,20 @@ def format_table_fused(entries):
     if not entries:
         return "  (none found)\n"
     lines = []
-    lines.append(f"  {'#':>3}  {'total(s)':>12}  {'%total':>7}  {'dom':>3}  {'calls':>10}  name")
+    lines.append(f"  {'#':>3}  {'self(s)':>12}  {'%total':>7}  {'total(s)':>12}  {'dom':>3}  {'calls':>10}  name")
     for i, e in enumerate(entries, 1):
         pct_str = f"{e['pct_total']:.1f}" if e["pct_total"] is not None else "n/a"
-        lines.append(f"  {i:>3}  {e['sum']:>12.6f}  {pct_str:>7}  {e['domain']:>3}  {e['count']:>10}  {e['label']}")
+        lines.append(
+            f"  {i:>3}  {e['self_sum']:>12.6f}  {pct_str:>7}  {e['sum']:>12.6f}  "
+            f"{e['domain']:>3}  {e['count']:>10}  {e['label']}"
+        )
     return "\n".join(lines) + "\n"
 
 
-def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=None, show_all=False):
+def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=None, show_all=False,
+                  unfiltered=False):
     fused_entries, cpu_entries, cpu_gpu_api_entries, gpu_entries, info = build_combined_view(rocprof_sys_dir, rocprofv3_dir)
+    rank_by = "inclusive" if unfiltered else "self"
 
     if not info["cpu_scanned"]:
         raise SystemExit(
@@ -118,8 +145,12 @@ def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=
     cpu_run_info = cpu_tool.gather_run_info(rocprof_sys_dir, info["cpu_scanned"])
     gpu_run_info = gpu_tool.gather_run_info(rocprofv3_dir, info["gpu_scanned"])
 
-    fused_selected, fused_desc = cpu_tool.select_entries(fused_entries, info["combined_total_sec"], top, threshold, show_all)
-    cpu_selected, cpu_desc = cpu_tool.select_entries(cpu_entries, info["cpu_total_raw"], top, threshold, show_all)
+    fused_selected, fused_desc = cpu_tool.select_entries(
+        fused_entries, info["combined_total_sec"], top, threshold, show_all, rank_by
+    )
+    cpu_selected, cpu_desc = cpu_tool.select_entries(
+        cpu_entries, info["cpu_total_raw"], top, threshold, show_all, rank_by
+    )
     gpu_selected, gpu_desc = gpu_tool.select_entries(gpu_entries, info["gpu_total_sec"], top, threshold, show_all)
 
     parts = []
@@ -139,6 +170,19 @@ def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=
         "Note: the two directories above are not checked against each other "
         "(same executable/test case/run) -- that's the caller's responsibility.\n"
     )
+    parts.append("\n")
+    if unfiltered:
+        parts.append(
+            "Ranked by inclusive (total) time -- a function that just calls other "
+            "functions can still rank high. Drop --unfiltered for the self-time view.\n"
+        )
+    else:
+        parts.append(
+            "Ranked by self time (each function/kernel's own work, not counting time "
+            "spent in what it calls) -- pass-through CPU functions fall out of the "
+            "ranking on their own; GPU kernels are unaffected (already leaf events). "
+            "Pass --unfiltered for the old inclusive/cumulative-time view.\n"
+        )
     parts.append("\n")
     parts.append("Combined-pool arithmetic (see the footer note below for why):\n")
     parts.append(f"  CPU run raw total:              {info['cpu_total_raw']:.6f} sec\n")
@@ -177,7 +221,7 @@ def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=
     parts.append(cpu_tool.format_table(gpu_api_selected))
     parts.append("\n")
 
-    cpu_per_rank, cpu_imbalance_scanned = cpu_tool.aggregate_per_rank(rocprof_sys_dir)
+    cpu_per_rank, cpu_imbalance_scanned = cpu_tool.aggregate_per_rank(rocprof_sys_dir, unfiltered=unfiltered)
     if len(cpu_imbalance_scanned) < 2:
         parts.append(
             "=== 5. CPU load imbalance across ranks (rocprof-sys run) -- skipped: only "
@@ -190,7 +234,8 @@ def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=
             f"-- showing {cpu_imbalance_desc} ===\n"
         )
         parts.append(
-            "Each function's own total time on each rank, compared across ranks -- a rank "
+            ("Each function's own inclusive" if unfiltered else "Each function's own self")
+            + " time on each rank, compared across ranks -- a rank "
             "that never called a function counts as 0.0 for that rank, not omitted.\n"
         )
         parts.append(cpu_tool.format_table_load_imbalance(cpu_imbalance_selected))
@@ -233,6 +278,10 @@ def main(argv=None):
                             help="only list entries at or above this %% of their table's total")
     selection.add_argument("--all", dest="show_all", action="store_true",
                             help="list every entry, no truncation")
+    parser.add_argument("--unfiltered", dest="unfiltered", action="store_true",
+                         help="rank CPU-side entries by inclusive (total) time instead of self "
+                              "time -- the old behavior, where a function that just calls other "
+                              "functions can still rank high")
     args = parser.parse_args(argv)
 
     if not os.path.isdir(args.rocprof_sys_dir):
@@ -241,7 +290,8 @@ def main(argv=None):
         raise SystemExit(f"error: no such directory: {args.rocprofv3_dir!r}")
 
     dest = args.dest or os.path.join(args.rocprof_sys_dir, "hotspots.txt")
-    write_report(args.rocprof_sys_dir, args.rocprofv3_dir, dest, top=args.top, threshold=args.threshold, show_all=args.show_all)
+    write_report(args.rocprof_sys_dir, args.rocprofv3_dir, dest, top=args.top, threshold=args.threshold,
+                 show_all=args.show_all, unfiltered=args.unfiltered)
     print(f"wrote {dest}")
 
 

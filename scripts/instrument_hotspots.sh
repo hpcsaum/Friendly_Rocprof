@@ -77,6 +77,9 @@ Options:
   --threshold PCT          only select functions at or above PCT% of total runtime (default: 1)
   --all                    select every function found, no truncation
   --no-summary             skip writing the auto-profiling run's own hotspots.txt
+  --unfiltered             select hotspot functions by inclusive (total) time instead of self
+                           time -- the old behavior, which can pick a function that just calls
+                           other functions rather than one that does real work
   --mpi "<launch cmd>"     MPI launch command to prefix the auto-profiling run with (e.g. "mpirun -np 4")
   --out-binary PATH        path for the instrumented binary (default: <executable>.inst)
   --dry-run                print what would run, don't execute
@@ -116,6 +119,9 @@ Options:
   --threshold PCT             only select functions at or above PCT% of total runtime (default: 1)
   --all                       select every function found, no truncation
   --no-summary                 skip writing the auto-profiling run's own hotspots.txt
+  --unfiltered                 select hotspot functions by inclusive (total) time instead of
+                               self time -- the old behavior, which can pick a function that
+                               just calls other functions rather than one that does real work
   --mpi "<launch cmd>"        MPI launch command, reused for the profiling run and the trace run
   --out-binary PATH            path for the instrumented binary (default: <executable>.inst)
   --trace-output-dir DIR      directory for the trace output (default: instrument_hotspots-trace-output-<timestamp>)
@@ -155,6 +161,7 @@ TRACE_OUTPUT_DIR="instrument_hotspots-trace-output-$RUN_TS"
 REPORT=""
 SELECTION_ARGS=()
 NO_SUMMARY=0
+UNFILTERED=0
 MPI_STR=""
 OUT_BINARY=""
 DRY_RUN=0
@@ -173,6 +180,8 @@ while [[ $# -gt 0 ]]; do
       SELECTION_ARGS=(--all); shift ;;
     --no-summary)
       NO_SUMMARY=1; shift ;;
+    --unfiltered)
+      UNFILTERED=1; shift ;;
     --mpi)
       MPI_STR="$2"; shift 2 ;;
     --out-binary)
@@ -224,6 +233,8 @@ if [[ -n "$MPI_STR" ]]; then
 fi
 MPI_FORWARD=()
 [[ -n "$MPI_STR" ]] && MPI_FORWARD=(--mpi "$MPI_STR")
+UNFILTERED_ARGS=()
+[[ "$UNFILTERED" -eq 1 ]] && UNFILTERED_ARGS=(--unfiltered)
 
 if ! command -v rocprof-sys-instrument >/dev/null 2>&1; then
   echo "error: 'rocprof-sys-instrument' not found on PATH." >&2
@@ -246,7 +257,7 @@ fi
 if [[ -z "$REPORT" ]]; then
   NO_SUMMARY_ARGS=()
   [[ "$NO_SUMMARY" -eq 1 ]] && NO_SUMMARY_ARGS=(--no-summary)
-  PROFILE_CMD=("$HOTSPOTS_LAUNCHER" "${MPI_FORWARD[@]}" "${SELECTION_ARGS[@]}" "${NO_SUMMARY_ARGS[@]}" -o "$OUTPUT_DIR" -- "${APP_ARGS[@]}")
+  PROFILE_CMD=("$HOTSPOTS_LAUNCHER" "${MPI_FORWARD[@]}" "${SELECTION_ARGS[@]}" "${UNFILTERED_ARGS[@]}" "${NO_SUMMARY_ARGS[@]}" -o "$OUTPUT_DIR" -- "${APP_ARGS[@]}")
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "would run:"
     printf '  %q ' "${PROFILE_CMD[@]}"
@@ -269,7 +280,7 @@ if [[ -n "$REPORT" ]]; then
   [[ "$SELECTOR_EXIT" -eq 0 ]] || exit "$SELECTOR_EXIT"
 elif [[ "$DRY_RUN" -ne 1 ]]; then
   set +e
-  PAIRS_OUTPUT="$(python3 "$SELECTOR" --output-dir "$OUTPUT_DIR/rocprof-sys" "${SELECTION_ARGS[@]}")"
+  PAIRS_OUTPUT="$(python3 "$SELECTOR" --output-dir "$OUTPUT_DIR/rocprof-sys" "${SELECTION_ARGS[@]}" "${UNFILTERED_ARGS[@]}")"
   SELECTOR_EXIT=$?
   set -e
   [[ "$SELECTOR_EXIT" -eq 0 ]] || exit "$SELECTOR_EXIT"

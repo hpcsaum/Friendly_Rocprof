@@ -27,6 +27,7 @@ RUN_SUMMARY=1
 DRY_RUN=0
 MPI_STR=""
 SELECTION_ARGS=()
+UNFILTERED=0
 
 usage() {
   cat <<'EOF'
@@ -64,6 +65,9 @@ Options:
                           (or, in the load-imbalance tables, at or above PCT% coefficient of variation)
   --all                   report every entry, no truncation
   --no-summary            skip auto-running the combined extractor afterwards
+  --unfiltered            rank CPU-side entries by inclusive (total) time instead of self time
+                          -- the old behavior, where a function that just calls other functions
+                          can still rank high
   --mpi "<launch cmd>"    MPI launch command, forwarded to both sub-launcher runs
   --dry-run               print what would run, don't execute
   -h, --help              show this help
@@ -82,6 +86,8 @@ while [[ $# -gt 0 ]]; do
       SELECTION_ARGS=(--all); shift ;;
     --no-summary)
       RUN_SUMMARY=0; shift ;;
+    --unfiltered)
+      UNFILTERED=1; shift ;;
     --mpi)
       MPI_STR="$2"; shift 2 ;;
     --dry-run)
@@ -107,13 +113,15 @@ REPORT_DEST="$OUTPUT_DIR/hotspots.txt"
 
 MPI_FORWARD=()
 [[ -n "$MPI_STR" ]] && MPI_FORWARD=(--mpi "$MPI_STR")
+UNFILTERED_ARGS=()
+[[ "$UNFILTERED" -eq 1 ]] && UNFILTERED_ARGS=(--unfiltered)
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
   "$CPU_LAUNCHER" --no-summary --dry-run "${MPI_FORWARD[@]}" -o "$CPU_DIR" -- "$@"
   "$GPU_LAUNCHER" --no-summary --dry-run "${MPI_FORWARD[@]}" -o "$GPU_DIR" -- "$@"
   echo "would then run:"
   printf '  python3 %q %q %q -o %q ' "$EXTRACTOR" "$CPU_DIR" "$GPU_DIR" "$REPORT_DEST"
-  printf '%q ' "${SELECTION_ARGS[@]}"
+  printf '%q ' "${SELECTION_ARGS[@]}" "${UNFILTERED_ARGS[@]}"
   echo
   exit 0
 fi
@@ -127,10 +135,10 @@ fi
 
 if [[ "$RUN_SUMMARY" -eq 1 ]]; then
   if command -v python3 >/dev/null 2>&1; then
-    python3 "$EXTRACTOR" "$CPU_DIR" "$GPU_DIR" -o "$REPORT_DEST" "${SELECTION_ARGS[@]}" || \
+    python3 "$EXTRACTOR" "$CPU_DIR" "$GPU_DIR" -o "$REPORT_DEST" "${SELECTION_ARGS[@]}" "${UNFILTERED_ARGS[@]}" || \
       echo "warning: combined hotspots extractor failed; profiling data is still in $CPU_DIR and $GPU_DIR" >&2
   else
     echo "warning: python3 not found, skipping combined summary; run it manually later:" >&2
-    echo "  python3 $EXTRACTOR $CPU_DIR $GPU_DIR -o $REPORT_DEST ${SELECTION_ARGS[*]}" >&2
+    echo "  python3 $EXTRACTOR $CPU_DIR $GPU_DIR -o $REPORT_DEST ${SELECTION_ARGS[*]} ${UNFILTERED_ARGS[*]}" >&2
   fi
 fi
