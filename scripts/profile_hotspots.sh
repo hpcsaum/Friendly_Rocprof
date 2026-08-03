@@ -5,10 +5,11 @@
 # and scripts/profile_GPU_hotspots.sh directly instead of re-implementing their
 # dependency checks / flag handling here.
 #
-# Same MPI convention as the other two launchers: put mpirun/srun *before* this
-# script, e.g.:
+# For MPI runs, this script is still called exactly once -- pass the MPI launch
+# command as data via --mpi "<launch cmd>" (e.g. --mpi "mpirun -np 4"), and it's
+# forwarded to both sub-launchers, e.g.:
 #
-#   mpirun -np 4 scripts/profile_hotspots.sh -o results/run1 -- ./app arg1 arg2
+#   scripts/profile_hotspots.sh --mpi "mpirun -np 4" -o results/run1 -- ./app arg1 arg2
 #
 # Note: the app runs TWICE here (once under each profiler) with possibly
 # different timing/perturbation each time -- that's inherent to combining two
@@ -21,9 +22,10 @@ EXTRACTOR="$SCRIPT_DIR/../postprocess/extract_hotspots.py"
 CPU_LAUNCHER="$SCRIPT_DIR/profile_CPU_hotspots.sh"
 GPU_LAUNCHER="$SCRIPT_DIR/profile_GPU_hotspots.sh"
 
-OUTPUT_DIR="rocprof-combined-hotspots-output"
+OUTPUT_DIR="profile_hotspots-output-$(date +%F_%H.%M.%S)"
 RUN_SUMMARY=1
 DRY_RUN=0
+MPI_STR=""
 SELECTION_ARGS=()
 
 usage() {
@@ -43,7 +45,10 @@ same program and the same workload; nothing checks that for you.
 
 For MPI runs, the report also includes CPU and GPU load-imbalance tables
 (each function/kernel's average/min/max time and how much it varies
-across ranks) after the four hotspots tables.
+across ranks) after the four hotspots tables. If your program needs MPI to
+run at all, pass --mpi "<launch command>" (e.g. --mpi "mpirun -np 4") --
+this script is still called exactly once; it's forwarded to both of the
+sub-launcher runs described above.
 
 Under the hood, this uses AMD's rocprof-sys and rocprofv3 -- see
 https://rocm.docs.amd.com/projects/rocprofiler-systems/en/latest/ and
@@ -51,13 +56,14 @@ https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-rocpro
 for details.
 
 Options:
-  -o, --output-dir DIR   base output directory (default: rocprof-combined-hotspots-output)
+  -o, --output-dir DIR   base output directory (default: profile_hotspots-output-<timestamp>)
                           split into DIR/rocprof-sys and DIR/rocprofv3
   --top N                 hotspots per table to report (default: 20; last of --top/--threshold/--all wins)
   --threshold PCT         only report entries at or above PCT% of their table's total
                           (or, in the load-imbalance tables, at or above PCT% coefficient of variation)
   --all                   report every entry, no truncation
   --no-summary            skip auto-running the combined extractor afterwards
+  --mpi "<launch cmd>"    MPI launch command, forwarded to both sub-launcher runs
   --dry-run               print what would run, don't execute
   -h, --help              show this help
 EOF
@@ -75,6 +81,8 @@ while [[ $# -gt 0 ]]; do
       SELECTION_ARGS=(--all); shift ;;
     --no-summary)
       RUN_SUMMARY=0; shift ;;
+    --mpi)
+      MPI_STR="$2"; shift 2 ;;
     --dry-run)
       DRY_RUN=1; shift ;;
     -h|--help)
@@ -95,9 +103,12 @@ fi
 CPU_DIR="$OUTPUT_DIR/rocprof-sys"
 GPU_DIR="$OUTPUT_DIR/rocprofv3"
 
+MPI_FORWARD=()
+[[ -n "$MPI_STR" ]] && MPI_FORWARD=(--mpi "$MPI_STR")
+
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  "$CPU_LAUNCHER" --no-summary --dry-run -o "$CPU_DIR" -- "$@"
-  "$GPU_LAUNCHER" --no-summary --dry-run -o "$GPU_DIR" -- "$@"
+  "$CPU_LAUNCHER" --no-summary --dry-run "${MPI_FORWARD[@]}" -o "$CPU_DIR" -- "$@"
+  "$GPU_LAUNCHER" --no-summary --dry-run "${MPI_FORWARD[@]}" -o "$GPU_DIR" -- "$@"
   echo "would then run:"
   printf '  python3 %q %q %q ' "$EXTRACTOR" "$CPU_DIR" "$GPU_DIR"
   printf '%q ' "${SELECTION_ARGS[@]}"
@@ -109,18 +120,15 @@ fi
 # before ever starting the GPU run, rather than combining a failed run's
 # partial data with a fresh one. Each sub-launcher already checks its own
 # tool is on PATH and fails fast with a clear message if not.
-"$CPU_LAUNCHER" --no-summary -o "$CPU_DIR" -- "$@"
-"$GPU_LAUNCHER" --no-summary -o "$GPU_DIR" -- "$@"
+"$CPU_LAUNCHER" --no-summary "${MPI_FORWARD[@]}" -o "$CPU_DIR" -- "$@"
+"$GPU_LAUNCHER" --no-summary "${MPI_FORWARD[@]}" -o "$GPU_DIR" -- "$@"
 
 if [[ "$RUN_SUMMARY" -eq 1 ]]; then
-  RANK="${OMPI_COMM_WORLD_RANK:-${PMI_RANK:-${SLURM_PROCID:-0}}}"
-  if [[ "$RANK" -eq 0 ]]; then
-    if command -v python3 >/dev/null 2>&1; then
-      python3 "$EXTRACTOR" "$CPU_DIR" "$GPU_DIR" "${SELECTION_ARGS[@]}" || \
-        echo "warning: combined hotspots extractor failed; profiling data is still in $CPU_DIR and $GPU_DIR" >&2
-    else
-      echo "warning: python3 not found, skipping combined summary; run it manually later:" >&2
-      echo "  python3 $EXTRACTOR $CPU_DIR $GPU_DIR ${SELECTION_ARGS[*]}" >&2
-    fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 "$EXTRACTOR" "$CPU_DIR" "$GPU_DIR" "${SELECTION_ARGS[@]}" || \
+      echo "warning: combined hotspots extractor failed; profiling data is still in $CPU_DIR and $GPU_DIR" >&2
+  else
+    echo "warning: python3 not found, skipping combined summary; run it manually later:" >&2
+    echo "  python3 $EXTRACTOR $CPU_DIR $GPU_DIR ${SELECTION_ARGS[*]}" >&2
   fi
 fi

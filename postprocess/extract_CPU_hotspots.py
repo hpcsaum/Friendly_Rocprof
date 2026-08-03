@@ -137,7 +137,7 @@ def aggregate(output_dir):
     scanned_files = []
     file_rows = []  # [(path, rows)]
 
-    candidates = sorted(glob.glob(os.path.join(output_dir, "*.txt")))
+    candidates = sorted(glob.glob(os.path.join(output_dir, "**", "*.txt"), recursive=True))
     for path in candidates:
         if os.path.basename(path) in NON_TIMING_FILES:
             continue
@@ -190,7 +190,7 @@ def aggregate_per_rank(output_dir):
     scanned_files = []
     per_file_totals = []
 
-    candidates = sorted(glob.glob(os.path.join(output_dir, "*.txt")))
+    candidates = sorted(glob.glob(os.path.join(output_dir, "**", "*.txt"), recursive=True))
     for path in candidates:
         if os.path.basename(path) in NON_TIMING_FILES:
             continue
@@ -298,17 +298,17 @@ def format_table(entries):
 
 
 def find_extra_artifacts(output_dir):
-    proto_files = sorted(glob.glob(os.path.join(output_dir, "*.proto")))
-    db_files = sorted(glob.glob(os.path.join(output_dir, "*.db")))
+    proto_files = sorted(glob.glob(os.path.join(output_dir, "**", "*.proto"), recursive=True))
+    db_files = sorted(glob.glob(os.path.join(output_dir, "**", "*.db"), recursive=True))
     return proto_files, db_files
 
 
 def load_metadata(output_dir):
-    path = os.path.join(output_dir, METADATA_FILENAME)
-    if not os.path.isfile(path):
+    candidates = sorted(glob.glob(os.path.join(output_dir, "**", METADATA_FILENAME), recursive=True))
+    if not candidates:
         return {}
     try:
-        with open(path) as f:
+        with open(candidates[0]) as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
         return {}
@@ -342,12 +342,21 @@ def guess_executable(metadata):
     return None
 
 
-def guess_run_datetime(metadata, output_dir):
+def guess_run_datetime(metadata, output_dir, scanned_files=()):
     val = find_first_key(metadata, RUN_DATETIME_KEYS)
     if isinstance(val, str) and val.strip():
         return val.strip()
     m = TIME_OUTPUT_DIR_RE.search(output_dir)
-    return m.group(0) if m else None
+    if m:
+        return m.group(0)
+    # rocprof-sys's default time-stamped subdirectory is found via a recursive glob rather
+    # than being part of the output_dir path passed in -- look for it in each scanned file's
+    # own directory instead.
+    for path in scanned_files:
+        m = TIME_OUTPUT_DIR_RE.search(os.path.dirname(path))
+        if m:
+            return m.group(0)
+    return None
 
 
 def guess_total_runtime(metadata):
@@ -375,7 +384,7 @@ def gather_run_info(output_dir, scanned_files):
     metadata = load_metadata(output_dir)
     return {
         "executable": guess_executable(metadata),
-        "run_datetime": guess_run_datetime(metadata, output_dir),
+        "run_datetime": guess_run_datetime(metadata, output_dir, scanned_files),
         "total_runtime": guess_total_runtime(metadata),
         "num_ranks": guess_num_ranks(metadata, scanned_files),
     }

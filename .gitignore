@@ -4,7 +4,11 @@
 *.db
 *.proto
 results/
-rocprof-sys-*-output/
+profile_CPU_hotspots-output-*/
+profile_GPU_hotspots-output-*/
+profile_hotspots-output-*/
+instrument_hotspots-scan-*/
+instrument_hotspots-trace-output-*/
 __pycache__/
 
 # test fixtures are checked-in sample data, not generated output

@@ -27,8 +27,8 @@ without opening a full trace viewer (under the hood: a `rocprof-sys` run).
 # non-MPI
 scripts/profile_CPU_hotspots.sh -o results/run1 -- ./app arg1 arg2
 
-# MPI: put mpirun/srun before the script, one rank per profiled process
-mpirun -np 4 scripts/profile_CPU_hotspots.sh -o results/run1 -- ./app arg1 arg2
+# MPI: pass the launch command as data via --mpi, one rank per profiled process
+scripts/profile_CPU_hotspots.sh --mpi "mpirun -np 4" -o results/run1 -- ./app arg1 arg2
 ```
 
 This runs a lightweight call-stack sample (no binary instrumentation needed)
@@ -77,8 +77,8 @@ executing *on the device*, ranked by total time (under the hood: a
 # non-MPI
 scripts/profile_GPU_hotspots.sh -o results/run1 -- ./app arg1 arg2
 
-# MPI: put mpirun/srun before the script, same convention as the CPU tool
-mpirun -np 4 scripts/profile_GPU_hotspots.sh -o results/run1 -- ./app arg1 arg2
+# MPI: same --mpi convention as the CPU tool
+scripts/profile_GPU_hotspots.sh --mpi "mpirun -np 4" -o results/run1 -- ./app arg1 arg2
 ```
 
 No rebuild or instrumentation needed either, and generates
@@ -110,8 +110,8 @@ to figure out whether your top bottleneck is a CPU function or a GPU kernel.
 # non-MPI
 scripts/profile_hotspots.sh -o results/run1 -- ./app arg1 arg2
 
-# MPI: same convention as the other two tools
-mpirun -np 4 scripts/profile_hotspots.sh -o results/run1 -- ./app arg1 arg2
+# MPI: same --mpi convention as the other two tools
+scripts/profile_hotspots.sh --mpi "mpirun -np 4" -o results/run1 -- ./app arg1 arg2
 ```
 
 Combining two separately-measured runs isn't as simple as adding their
@@ -168,12 +168,11 @@ scripts/instrument_hotspots.sh instrument -- ./app arg1 arg2
 scripts/instrument_hotspots.sh trace --report results/run1/hotspots.txt -- ./app arg1 arg2
 ```
 
-Unlike the other three tools, `mpirun`/`srun` does **not** go in front of
-this script — the binary rewrite must happen exactly once, not once per
-rank. Instead, pass the MPI launch command as data via `--mpi`, and this
-script places it wherever it's actually needed (the auto-profiling run, and
-`trace` mode's final run) — never in front of the one-time build step,
-which doesn't execute your program at all:
+Same `--mpi "<launch cmd>"` convention as the other three tools, but the
+binary rewrite itself must happen exactly once, not once per rank — this
+script places `--mpi` wherever it's actually needed (the auto-profiling
+run, and `trace` mode's final run) and never in front of the one-time
+build step, which doesn't execute your program at all:
 
 ```bash
 scripts/instrument_hotspots.sh trace --mpi "mpirun -np 4" -- ./app arg1 arg2

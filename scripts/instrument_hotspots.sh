@@ -12,11 +12,11 @@
 # output; each invocation builds its own instrumented binary.
 #
 # MPI is driven by this script itself via --mpi "<launch command>" (e.g.
-# --mpi "mpirun -np 4"), not by wrapping the whole script under mpirun/srun
-# the way the other launchers in this project do: the binary rewrite must
-# happen exactly once, never once per rank, so this script expects to be
-# invoked exactly once per use (e.g. from inside an existing SLURM/PBS
-# allocation), and decides internally where the given MPI command applies.
+# --mpi "mpirun -np 4") -- same convention as every other launcher in this
+# project: the binary rewrite must happen exactly once, never once per rank,
+# so this script expects to be invoked exactly once per use (e.g. from inside
+# an existing SLURM/PBS allocation), and decides internally where the given
+# MPI command applies.
 
 set -euo pipefail
 
@@ -71,7 +71,7 @@ https://rocm.docs.amd.com/projects/rocprofiler-systems/en/docs-7.0.2/how-to/inst
 for details.
 
 Options:
-  -o, --output-dir DIR    directory for the auto-profiling scan (default: rocprof-sys-instrument-scan)
+  -o, --output-dir DIR    directory for the auto-profiling scan (default: instrument_hotspots-scan-<timestamp>)
   --report FILE            reuse an existing hotspots.txt instead of auto-profiling
   --top N                  hotspot functions to select (last of --top/--threshold/--all wins)
   --threshold PCT          only select functions at or above PCT% of total runtime (default: 1)
@@ -110,7 +110,7 @@ https://rocm.docs.amd.com/projects/rocprofiler-systems/en/docs-7.0.2/how-to/conf
 for details.
 
 Options:
-  -o, --output-dir DIR       directory for the auto-profiling scan (default: rocprof-sys-instrument-scan)
+  -o, --output-dir DIR       directory for the auto-profiling scan (default: instrument_hotspots-scan-<timestamp>)
   --report FILE               reuse an existing hotspots.txt instead of auto-profiling
   --top N                     hotspot functions to select (last of --top/--threshold/--all wins)
   --threshold PCT             only select functions at or above PCT% of total runtime (default: 1)
@@ -118,7 +118,7 @@ Options:
   --no-summary                 skip writing the auto-profiling run's own hotspots.txt
   --mpi "<launch cmd>"        MPI launch command, reused for the profiling run and the trace run
   --out-binary PATH            path for the instrumented binary (default: <executable>.inst)
-  --trace-output-dir DIR      directory for the trace output (default: rocprof-sys-instrumented-trace-output)
+  --trace-output-dir DIR      directory for the trace output (default: instrument_hotspots-trace-output-<timestamp>)
   --dry-run                    print what would run, don't execute
   -h, --help                    show this help
 EOF
@@ -149,8 +149,9 @@ usage() {
 # manually reconstructing every flag.
 ORIGINAL_ARGS=("$@")
 
-OUTPUT_DIR="rocprof-sys-instrument-scan"
-TRACE_OUTPUT_DIR="rocprof-sys-instrumented-trace-output"
+RUN_TS="$(date +%F_%H.%M.%S)"
+OUTPUT_DIR="instrument_hotspots-scan-$RUN_TS"
+TRACE_OUTPUT_DIR="instrument_hotspots-trace-output-$RUN_TS"
 REPORT=""
 SELECTION_ARGS=()
 NO_SUMMARY=0
@@ -221,6 +222,8 @@ MPI_ARR=()
 if [[ -n "$MPI_STR" ]]; then
   read -ra MPI_ARR <<< "$MPI_STR"
 fi
+MPI_FORWARD=()
+[[ -n "$MPI_STR" ]] && MPI_FORWARD=(--mpi "$MPI_STR")
 
 if ! command -v rocprof-sys-instrument >/dev/null 2>&1; then
   echo "error: 'rocprof-sys-instrument' not found on PATH." >&2
@@ -243,7 +246,7 @@ fi
 if [[ -z "$REPORT" ]]; then
   NO_SUMMARY_ARGS=()
   [[ "$NO_SUMMARY" -eq 1 ]] && NO_SUMMARY_ARGS=(--no-summary)
-  PROFILE_CMD=("${MPI_ARR[@]}" "$HOTSPOTS_LAUNCHER" "${SELECTION_ARGS[@]}" "${NO_SUMMARY_ARGS[@]}" -o "$OUTPUT_DIR" -- "${APP_ARGS[@]}")
+  PROFILE_CMD=("$HOTSPOTS_LAUNCHER" "${MPI_FORWARD[@]}" "${SELECTION_ARGS[@]}" "${NO_SUMMARY_ARGS[@]}" -o "$OUTPUT_DIR" -- "${APP_ARGS[@]}")
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "would run:"
     printf '  %q ' "${PROFILE_CMD[@]}"

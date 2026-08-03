@@ -1,0 +1,7 @@
+{
+  "argv": ["/home/user/app/jacobi_mpi", "--iters", "1000"],
+  "elapsed": 21.824161,
+  "settings": {
+    "world_size": 2
+  }
+}

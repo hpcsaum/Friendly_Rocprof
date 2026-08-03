@@ -31,6 +31,7 @@ SINGLE_RANK = os.path.join(FIXTURES, "single_rank")
 MPI_2RANK = os.path.join(FIXTURES, "mpi_2rank")
 NO_TIMING_DATA = os.path.join(FIXTURES, "no_timing_data")
 GPU_MPI_2RANK = os.path.join(FIXTURES, "rocprofv3_mpi_2rank")
+MPI_2RANK_DATED_SUBDIR = os.path.join(FIXTURES, "mpi_2rank_dated_subdir")
 
 
 class EscapeForInstrumentRegexTests(unittest.TestCase):
@@ -75,6 +76,13 @@ class LabelsFromOutputDirTests(unittest.TestCase):
     def test_sorted_and_deduped(self):
         labels = selector.labels_from_output_dir(SINGLE_RANK, show_all=True)
         self.assertEqual(labels, sorted(set(labels)))
+
+    def test_finds_files_nested_in_a_dated_subdirectory(self):
+        # Reproduces the reported bug: rocprof-sys's default time-stamped output
+        # subdirectory must not make this tool 4 helper miss the hotspot functions.
+        labels = selector.labels_from_output_dir(MPI_2RANK_DATED_SUBDIR, threshold=1.0)
+        self.assertIn("compute_stencil", labels)
+        self.assertIn("main", labels)
 
 
 class LabelsFromReportTests(unittest.TestCase):

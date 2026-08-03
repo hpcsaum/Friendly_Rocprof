@@ -344,5 +344,44 @@ class WriteReportTests(unittest.TestCase):
             self.assertIn("CPU load imbalance across ranks -- skipped: only 1 rank/file found", report)
 
 
+class NestedDatedSubdirectoryTests(unittest.TestCase):
+    """rocprof-sys's default ROCPROFSYS_TIME_OUTPUT behavior nests every per-process file one
+    level deeper, inside an auto-generated timestamped subdirectory (e.g. "2026-08-03_09.24/") --
+    reported as a real bug against this fixture's real-world equivalent. Every scan in this
+    module must find files there, not just directly under output_dir."""
+
+    DIR = os.path.join(FIXTURES, "mpi_2rank_dated_subdir")
+
+    def test_aggregate_finds_files_one_level_down(self):
+        cpu, gpu, scanned, total_runtime = hotspots.aggregate(self.DIR)
+        self.assertEqual(len(scanned), 2)
+        by_label = {e["label"]: e for e in cpu}
+        self.assertAlmostEqual(by_label["compute_stencil"]["sum"], 18.9)
+        self.assertAlmostEqual(total_runtime, 21.824161)
+
+    def test_aggregate_per_rank_finds_files_one_level_down(self):
+        per_file, scanned = hotspots.aggregate_per_rank(self.DIR)
+        self.assertEqual(len(scanned), 2)
+        self.assertEqual(len(per_file), 2)
+
+    def test_load_metadata_finds_nested_metadata_json(self):
+        metadata = hotspots.load_metadata(self.DIR)
+        self.assertEqual(hotspots.guess_executable(metadata), "jacobi_mpi")
+        self.assertEqual(hotspots.guess_num_ranks(metadata, []), 2)
+
+    def test_guess_run_datetime_falls_back_to_nested_scanned_file_dirname(self):
+        _cpu, _gpu, scanned, _total = hotspots.aggregate(self.DIR)
+        metadata = hotspots.load_metadata(self.DIR)  # no start_time field in this fixture
+        self.assertEqual(hotspots.guess_run_datetime(metadata, self.DIR, scanned), "2026-08-03_09.24")
+
+    def test_write_report_succeeds_instead_of_raising(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            report = hotspots.write_report(self.DIR, dest)
+            self.assertIn("compute_stencil", report)
+            self.assertIn("run date/time: 2026-08-03_09.24", report)
+            self.assertIn("MPI ranks: 2", report)
+
+
 if __name__ == "__main__":
     unittest.main()

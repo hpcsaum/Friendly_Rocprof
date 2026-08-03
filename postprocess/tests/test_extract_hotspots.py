@@ -25,6 +25,7 @@ CPU_DIR_SINGLE = os.path.join(FIXTURES, "single_rank")
 GPU_DIR_SINGLE = os.path.join(FIXTURES, "rocprofv3_single_rank")
 CPU_DIR_EMPTY = os.path.join(FIXTURES, "no_timing_data")
 GPU_DIR_EMPTY = os.path.join(FIXTURES, "rocprofv3_no_data")
+CPU_DIR_DATED_SUBDIR = os.path.join(FIXTURES, "mpi_2rank_dated_subdir")
 
 
 class BuildCombinedViewTests(unittest.TestCase):
@@ -198,6 +199,15 @@ class WriteReportTests(unittest.TestCase):
             report = combined.write_report(CPU_DIR_SINGLE, GPU_DIR_SINGLE, dest)
             self.assertIn("CPU load imbalance across ranks (rocprof-sys run) -- skipped", report)
             self.assertIn("GPU kernel load imbalance across ranks (rocprofv3 run) -- skipped", report)
+
+    def test_cpu_side_nested_in_dated_subdirectory_still_succeeds(self):
+        # Reproduces the reported bug: rocprof-sys's default time-stamped output
+        # subdirectory must not make the combined tool fail either.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            report = combined.write_report(CPU_DIR_DATED_SUBDIR, GPU_DIR, dest)
+            self.assertIn("=== 1. Combined hotspots", report)
+            self.assertIn("compute_stencil", report)
 
 
 if __name__ == "__main__":

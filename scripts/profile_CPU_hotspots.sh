@@ -2,10 +2,12 @@
 # Launch a lightweight rocprof-sys CPU-sampling profile of a single command, then
 # (by default) generate a short hotspots.txt via postprocess/extract_CPU_hotspots.py.
 #
-# rocprof-sys-sample wraps exactly one process. For MPI runs, put mpirun/srun
-# *before* this script so each rank independently wraps its own process, e.g.:
+# rocprof-sys-sample wraps exactly one process. For MPI runs, this script is still
+# called exactly once -- pass the MPI launch command as data via --mpi "<launch cmd>"
+# (e.g. --mpi "mpirun -np 4"), and this script places it in front of the profiling
+# run for you, e.g.:
 #
-#   mpirun -np 4 scripts/profile_CPU_hotspots.sh -o results/run1 -- ./app arg1 arg2
+#   scripts/profile_CPU_hotspots.sh --mpi "mpirun -np 4" -o results/run1 -- ./app arg1 arg2
 #
 # All ranks share the same -o output directory; rocprof-sys's own default
 # per-PID file naming keeps their output from colliding.
@@ -15,10 +17,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXTRACTOR="$SCRIPT_DIR/../postprocess/extract_CPU_hotspots.py"
 
-OUTPUT_DIR="rocprof-sys-hotspots-output"
+OUTPUT_DIR="profile_CPU_hotspots-output-$(date +%F_%H.%M.%S)"
 FREQ_HZ=100
 RUN_SUMMARY=1
 DRY_RUN=0
+MPI_STR=""
 SELECTION_ARGS=()
 
 usage() {
@@ -41,19 +44,23 @@ run repeatedly; it only observes your program, it doesn't change it.
 
 For MPI runs, the report also includes a load-imbalance table (each
 function's average/min/max time and how much it varies across ranks,
-including MPI calls) after the main hotspots tables.
+including MPI calls) after the main hotspots tables. If your program needs
+MPI to run at all, pass --mpi "<launch command>" (e.g. --mpi "mpirun -np 4")
+-- this script is still called exactly once; it places the launch command in
+front of the profiling run for you.
 
 Under the hood, this uses AMD's rocprof-sys (ROCm Systems Profiler) -- see
 https://rocm.docs.amd.com/projects/rocprofiler-systems/en/latest/ for details.
 
 Options:
-  -o, --output-dir DIR   rocprof-sys output directory (default: rocprof-sys-hotspots-output)
+  -o, --output-dir DIR   rocprof-sys output directory (default: profile_CPU_hotspots-output-<timestamp>)
   -f, --freq HZ           sampling frequency in Hz (default: 100)
   --top N                 hotspots per section to report (default: 20; last of --top/--threshold/--all wins)
   --threshold PCT         only report entries at or above PCT% of total runtime
                           (or, in the load-imbalance table, at or above PCT% coefficient of variation)
   --all                   report every entry, no truncation
   --no-summary            skip auto-running the hotspots extractor afterwards
+  --mpi "<launch cmd>"    MPI launch command to prefix the profiling run with (e.g. "mpirun -np 4")
   --dry-run               print the command and env vars that would run, don't execute
   -h, --help              show this help
 EOF
@@ -73,6 +80,8 @@ while [[ $# -gt 0 ]]; do
       SELECTION_ARGS=(--all); shift ;;
     --no-summary)
       RUN_SUMMARY=0; shift ;;
+    --mpi)
+      MPI_STR="$2"; shift 2 ;;
     --dry-run)
       DRY_RUN=1; shift ;;
     -h|--help)
@@ -102,7 +111,12 @@ export ROCPROFSYS_JSON_OUTPUT=1
 export ROCPROFSYS_FLAT_PROFILE=1
 export ROCPROFSYS_TRACE=0
 
-CMD=(rocprof-sys-sample -f "$FREQ_HZ" -- "$@")
+MPI_ARR=()
+if [[ -n "$MPI_STR" ]]; then
+  read -ra MPI_ARR <<< "$MPI_STR"
+fi
+
+CMD=("${MPI_ARR[@]}" rocprof-sys-sample -f "$FREQ_HZ" -- "$@")
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "would export:"
@@ -123,15 +137,12 @@ APP_EXIT=$?
 set -e
 
 if [[ "$RUN_SUMMARY" -eq 1 ]]; then
-  RANK="${OMPI_COMM_WORLD_RANK:-${PMI_RANK:-${SLURM_PROCID:-0}}}"
-  if [[ "$RANK" -eq 0 ]]; then
-    if command -v python3 >/dev/null 2>&1; then
-      python3 "$EXTRACTOR" "$OUTPUT_DIR" "${SELECTION_ARGS[@]}" || \
-        echo "warning: hotspots extractor failed; profiling data is still in $OUTPUT_DIR" >&2
-    else
-      echo "warning: python3 not found, skipping hotspots summary; run it manually later:" >&2
-      echo "  python3 $EXTRACTOR $OUTPUT_DIR ${SELECTION_ARGS[*]}" >&2
-    fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 "$EXTRACTOR" "$OUTPUT_DIR" "${SELECTION_ARGS[@]}" || \
+      echo "warning: hotspots extractor failed; profiling data is still in $OUTPUT_DIR" >&2
+  else
+    echo "warning: python3 not found, skipping hotspots summary; run it manually later:" >&2
+    echo "  python3 $EXTRACTOR $OUTPUT_DIR ${SELECTION_ARGS[*]}" >&2
   fi
 fi
 
