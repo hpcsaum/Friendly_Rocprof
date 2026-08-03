@@ -9,6 +9,8 @@ profile_GPU_hotspots-output-*/
 profile_hotspots-output-*/
 instrument_hotspots-scan-*/
 instrument_hotspots-trace-output-*/
+profile_hotspot_kernels-scan-*/
+profile_hotspot_kernels-workload-*/
 __pycache__/
 
 # test fixtures are checked-in sample data, not generated output

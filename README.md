@@ -203,3 +203,63 @@ binary — inlining, optimization, or a name mismatch can all cause that.
 python3 postprocess/select_hotspot_functions.py --output-dir <rocprof-sys-output-dir> [-n TOP_N | --threshold PCT | --all] [--unfiltered]
 python3 postprocess/select_hotspot_functions.py --report results/run1/hotspots.txt
 ```
+
+### GPU kernel deep-dive — `profile_hotspot_kernels.sh`
+
+Once `profile_GPU_hotspots.sh` (above) has told you which GPU kernels are the biggest, this
+tool goes deep on just those: it builds and runs a `rocprof-compute` command that collects
+detailed hardware-counter data (occupancy, cache behavior, memory bandwidth, and more) for
+*only* those kernels, instead of every kernel the application launches.
+
+```bash
+# non-MPI: auto-finds hotspots, then profiles them in detail
+scripts/profile_hotspot_kernels.sh -- ./app arg1 arg2
+
+# reuse a report you already have instead of re-profiling
+scripts/profile_hotspot_kernels.sh --report results/run1/hotspots.txt -- ./app arg1 arg2
+```
+
+Each selected kernel is profiled on its **second** call only, not its first — a kernel's first
+dispatch is usually slower than its steady-state cost (first-touch memory-allocation penalties,
+page faults, and similar one-time overhead), so profiling it would give a skewed picture. A
+kernel that only ran once has no second call to target and is left out entirely by default.
+
+`--all-dispatches` overrides this and profiles *every* call of every selected kernel instead
+(also bringing single-call kernels back in). Only use this for a small test case specifically
+sized for this kind of profiling: for a kernel called N times, this can multiply how long
+profiling takes by roughly N, on top of the multiple passes `rocprof-compute` may already need
+per kernel to collect every counter it wants. For a normal, long-running application, leave
+this off.
+
+```bash
+scripts/profile_hotspot_kernels.sh --all-dispatches -- ./small_test_case
+```
+
+After profiling, this auto-runs `rocprof-compute analyze` and shows its own output directly
+(saved alongside the raw data too) — no extra parsing step, since `analyze` is already meant
+to be read directly. Pass `--no-summary` to skip that and inspect the raw workload directory
+yourself.
+
+**MPI note:** `rocprof-compute`'s own support for safely profiling multiple MPI ranks at once
+(so ranks don't overwrite each other's output) is a real feature in some version of the tool,
+but is confirmed **absent** through `rocprofiler-compute` 3.4.0 (the version ROCm 7.2.x ships) —
+no publicly released version could be confirmed to have it. Rather than assume either way, this
+script checks your installed `rocprof-compute`'s own `profile --help` output for evidence of
+that support, and separately determines how many ranks your `--mpi` launch command actually
+produces. If more than one rank is detected and the installed version shows no sign of
+supporting that safely, the script refuses to run rather than risk silent data corruption from
+concurrent ranks writing into the same directory.
+
+```bash
+scripts/profile_hotspot_kernels.sh --mpi "mpirun -np 4" -- ./app arg1 arg2
+```
+
+There's currently no cross-check confirming that a requested kernel actually got profiled (the
+way `instrument_hotspots.sh` checks against `rocprof-sys-instrument`'s own `instrumented.json`)
+— a kernel that matches nothing (a typo, or one that just didn't run this time) fails silently
+for now.
+
+```bash
+python3 postprocess/select_hotspot_kernels.py --output-dir <rocprofv3-output-dir> [-n TOP_N | --threshold PCT | --all] [--all-dispatches]
+python3 postprocess/select_hotspot_kernels.py --report results/run1/hotspots.txt
+```
