@@ -1,6 +1,7 @@
 import importlib.util
 import os
 import shutil
+import statistics
 import sys
 import tempfile
 import unittest
@@ -187,6 +188,102 @@ class MetadataGuessingTests(unittest.TestCase):
         self.assertEqual(info["num_ranks"], 1)  # one distinct pid (1234) among scanned files
 
 
+class AggregatePerRankTests(unittest.TestCase):
+    def test_single_rank_returns_one_dict(self):
+        per_file, scanned = hotspots.aggregate_per_rank(os.path.join(FIXTURES, "single_rank"))
+        self.assertEqual(len(scanned), 1)
+        self.assertEqual(len(per_file), 1)
+        self.assertEqual(set(per_file[0]), {"main", "compute_stencil", "apply_boundary"})
+        self.assertNotIn("hipLaunchKernel", per_file[0])
+        self.assertNotIn("hipMemcpy", per_file[0])
+
+    def test_mpi_2rank_keeps_ranks_separate(self):
+        per_file, scanned = hotspots.aggregate_per_rank(os.path.join(FIXTURES, "mpi_2rank"))
+        self.assertEqual(len(scanned), 2)
+        self.assertEqual(len(per_file), 2)
+        values = sorted(ft["compute_stencil"] for ft in per_file)
+        self.assertAlmostEqual(values[0], 9.4)
+        self.assertAlmostEqual(values[1], 9.5)
+        # GPU-API bucket excluded per-rank the same way aggregate() excludes it globally
+        for ft in per_file:
+            self.assertNotIn("hipMemcpy", ft)
+
+    def test_no_timing_data_returns_empty(self):
+        per_file, scanned = hotspots.aggregate_per_rank(os.path.join(FIXTURES, "no_timing_data"))
+        self.assertEqual(per_file, [])
+        self.assertEqual(scanned, [])
+
+
+class ComputeLoadImbalanceTests(unittest.TestCase):
+    def test_matches_independently_computed_statistics_on_real_fixture(self):
+        per_file, _ = hotspots.aggregate_per_rank(os.path.join(FIXTURES, "mpi_2rank"))
+        selected, _ = hotspots.compute_load_imbalance(per_file, show_all=True)
+        by_label = {e["label"]: e for e in selected}
+
+        cs_values = [ft["compute_stencil"] for ft in per_file]
+        self.assertAlmostEqual(by_label["compute_stencil"]["avg"], statistics.mean(cs_values))
+        self.assertAlmostEqual(by_label["compute_stencil"]["std_dev"], statistics.pstdev(cs_values))
+        self.assertAlmostEqual(by_label["compute_stencil"]["min"], min(cs_values))
+        self.assertAlmostEqual(by_label["compute_stencil"]["max"], max(cs_values))
+
+        main_values = [ft["main"] for ft in per_file]
+        self.assertAlmostEqual(by_label["main"]["std_dev"], statistics.pstdev(main_values))
+
+        # compute_stencil varies more (9.4 vs 9.5) than main (10.9 vs 10.924161)
+        # in absolute terms -- confirm it sorts first when ranked by std_dev.
+        self.assertGreater(by_label["compute_stencil"]["std_dev"], by_label["main"]["std_dev"])
+        sorted_labels = [e["label"] for e in selected]
+        self.assertEqual(sorted_labels.index("compute_stencil"), 0)
+
+    def test_missing_rank_scores_zero_not_omitted(self):
+        per_file_totals = [{"only_on_rank0": 10.0}, {}]
+        selected, _ = hotspots.compute_load_imbalance(per_file_totals, show_all=True)
+        entry = next(e for e in selected if e["label"] == "only_on_rank0")
+        self.assertAlmostEqual(entry["avg"], 5.0)
+        self.assertAlmostEqual(entry["std_dev"], 5.0)
+        self.assertAlmostEqual(entry["min"], 0.0)
+        self.assertAlmostEqual(entry["max"], 10.0)
+
+    def test_top_n_selects_highest_std_dev(self):
+        per_file_totals = [
+            {"a": 10.0, "b": 5.0, "c": 100.0},
+            {"a": 10.0, "b": 15.0, "c": 100.0},
+        ]
+        selected, desc = hotspots.compute_load_imbalance(per_file_totals, top=1)
+        self.assertEqual([e["label"] for e in selected], ["b"])
+        self.assertIn("top 1 of 3", desc)
+
+    def test_threshold_is_coefficient_of_variation(self):
+        per_file_totals = [
+            {"a": 10.0, "b": 5.0, "c": 100.0},
+            {"a": 10.0, "b": 15.0, "c": 100.0},
+        ]
+        # b: avg=10, std_dev=5 -> cv=50%; a and c: std_dev=0 -> cv=0%
+        selected, desc = hotspots.compute_load_imbalance(per_file_totals, threshold=10.0)
+        self.assertEqual([e["label"] for e in selected], ["b"])
+        self.assertIn("coefficient of variation", desc)
+
+    def test_show_all(self):
+        per_file_totals = [{"a": 1.0}, {"a": 2.0}, {"a": 3.0}]
+        selected, desc = hotspots.compute_load_imbalance(per_file_totals, show_all=True)
+        self.assertEqual(len(selected), 1)
+        self.assertIn("all 1 entries", desc)
+
+
+class FormatTableLoadImbalanceTests(unittest.TestCase):
+    def test_includes_expected_columns(self):
+        entries = [{"label": "foo", "avg": 1.0, "std_dev": 0.5, "min": 0.5, "max": 1.5, "cv_pct": 50.0}]
+        table = hotspots.format_table_load_imbalance(entries)
+        self.assertIn("avg(s)", table)
+        self.assertIn("std_dev", table)
+        self.assertIn("min(s)", table)
+        self.assertIn("max(s)", table)
+        self.assertIn("foo", table)
+
+    def test_empty_entries(self):
+        self.assertIn("none found", hotspots.format_table_load_imbalance([]))
+
+
 class WriteReportTests(unittest.TestCase):
     def test_end_to_end_on_mpi_fixture_default_top20(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -229,6 +326,22 @@ class WriteReportTests(unittest.TestCase):
             dest = os.path.join(tmp, "hotspots.txt")
             with self.assertRaises(SystemExit):
                 hotspots.write_report(os.path.join(FIXTURES, "no_timing_data"), dest)
+
+    def test_load_imbalance_table_present_after_hotspots_tables_on_mpi_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            report = hotspots.write_report(os.path.join(FIXTURES, "mpi_2rank"), dest)
+            i_hotspots = report.index("CPU compute hotspots")
+            i_gpu_api = report.index("GPU API / launch overhead")
+            i_imbalance = report.index("CPU load imbalance across 2 ranks")
+            self.assertTrue(i_hotspots < i_gpu_api < i_imbalance)
+            self.assertIn("compute_stencil", report[i_imbalance:])
+
+    def test_load_imbalance_table_skipped_on_single_rank_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            report = hotspots.write_report(os.path.join(FIXTURES, "single_rank"), dest)
+            self.assertIn("CPU load imbalance across ranks -- skipped: only 1 rank/file found", report)
 
 
 if __name__ == "__main__":

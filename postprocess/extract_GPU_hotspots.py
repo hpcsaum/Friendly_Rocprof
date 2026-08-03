@@ -13,6 +13,7 @@ import glob
 import json
 import os
 import re
+import statistics
 import sys
 from datetime import datetime
 
@@ -110,6 +111,84 @@ def aggregate(output_dir):
         })
 
     return entries, scanned_files, total_ns
+
+
+def aggregate_per_rank(output_dir):
+    """Like aggregate(), but keeps each scanned file's per-kernel sums
+    separate instead of merging them into one global total -- one scanned
+    file is treated as one rank's contribution (same file-per-process
+    assumption guess_num_ranks() already relies on). rocprofv3 already
+    aggregates duplicate kernel names within one file internally, so each
+    file's own rows are already a clean per-rank subtotal, same as
+    aggregate() itself relies on.
+
+    Returns (per_file_totals, scanned_files) where per_file_totals is a
+    list of {kernel_name: total_seconds} dicts, one per scanned file, in
+    the same order as scanned_files.
+    """
+    scanned_files = []
+    per_file_totals = []
+
+    candidates = sorted(glob.glob(os.path.join(output_dir, "**", "*_kernel_stats.csv"), recursive=True))
+    for path in candidates:
+        rows = parse_kernel_stats_csv(path)
+        if rows is None:
+            continue
+        scanned_files.append(path)
+        file_totals = {}
+        for row in rows:
+            file_totals[row["label"]] = file_totals.get(row["label"], 0.0) + row["total_ns"] / 1e9
+        per_file_totals.append(file_totals)
+
+    return per_file_totals, scanned_files
+
+
+def compute_load_imbalance(per_file_totals, top=None, threshold=None, show_all=False):
+    """Same shape and semantics as extract_CPU_hotspots.py's function of the
+    same name (duplicated rather than imported, matching this module's
+    existing stand-alone-by-design relationship to that one) -- per-kernel
+    avg/std_dev/min/max of each rank's own total time in that kernel,
+    across all ranks in per_file_totals. A rank missing a kernel counts as
+    0.0 for that rank, not omitted. --threshold here means coefficient of
+    variation (std_dev / avg, as a %), not % of total GPU time.
+    """
+    labels = {label for ft in per_file_totals for label in ft}
+    entries = []
+    for label in labels:
+        values = [ft.get(label, 0.0) for ft in per_file_totals]
+        avg = statistics.mean(values)
+        std_dev = statistics.pstdev(values)
+        entries.append({
+            "label": label,
+            "avg": avg,
+            "std_dev": std_dev,
+            "min": min(values),
+            "max": max(values),
+            "cv_pct": (std_dev / avg * 100.0) if avg > 0 else None,
+        })
+
+    entries_sorted = sorted(entries, key=lambda e: e["std_dev"], reverse=True)
+    total_count = len(entries_sorted)
+
+    if show_all:
+        return entries_sorted, f"all {total_count} entries"
+
+    if threshold is not None:
+        filtered = [e for e in entries_sorted if e["cv_pct"] is not None and e["cv_pct"] >= threshold]
+        return filtered, f">= {threshold:g}% coefficient of variation ({len(filtered)} of {total_count} entries)"
+
+    n = 20 if top is None else top
+    return entries_sorted[:n], f"top {n} of {total_count} entries by std_dev"
+
+
+def format_table_load_imbalance(entries):
+    if not entries:
+        return "  (none found)\n"
+    lines = []
+    lines.append(f"  {'#':>3}  {'avg(s)':>12}  {'std_dev':>10}  {'min(s)':>12}  {'max(s)':>12}  kernel")
+    for i, e in enumerate(entries, 1):
+        lines.append(f"  {i:>3}  {e['avg']:>12.6f}  {e['std_dev']:>10.6f}  {e['min']:>12.6f}  {e['max']:>12.6f}  {e['label']}")
+    return "\n".join(lines) + "\n"
 
 
 def select_entries(entries, total_ns, top=None, threshold=None, show_all=False):
@@ -255,6 +334,24 @@ def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False
         "files); it will not add up to 100% if a --threshold/--top cut entries.\n"
         "For host-side (HIP API / launch overhead) hotspots, use scripts/profile_CPU_hotspots.sh.\n"
     )
+    parts.append("\n")
+
+    per_file_totals, imbalance_scanned = aggregate_per_rank(output_dir)
+    if len(imbalance_scanned) < 2:
+        parts.append(
+            "GPU kernel load imbalance across ranks -- skipped: only "
+            f"{len(imbalance_scanned)} rank/file found, need at least 2 to compare.\n"
+        )
+    else:
+        imbalance_selected, imbalance_desc = compute_load_imbalance(per_file_totals, top, threshold, show_all)
+        parts.append(
+            f"GPU kernel load imbalance across {len(imbalance_scanned)} ranks -- showing {imbalance_desc}\n"
+        )
+        parts.append(
+            "Each kernel's own total time on each rank, compared across ranks -- a rank "
+            "that never launched a kernel counts as 0.0 for that rank, not omitted.\n"
+        )
+        parts.append(format_table_load_imbalance(imbalance_selected))
 
     report = "".join(parts)
     with open(dest_path, "w") as f:

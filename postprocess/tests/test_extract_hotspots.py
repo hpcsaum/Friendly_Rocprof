@@ -166,6 +166,39 @@ class WriteReportTests(unittest.TestCase):
             report = combined.write_report(CPU_DIR, GPU_DIR, dest, show_all=True)
             self.assertIn("showing all", report)
 
+    def test_load_imbalance_tables_5_and_6_present_after_table_4(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            report = combined.write_report(CPU_DIR, GPU_DIR, dest)
+            i4 = report.index("=== 4. GPU API / launch overhead")
+            i5 = report.index("=== 5. CPU load imbalance")
+            i6 = report.index("=== 6. GPU kernel load imbalance")
+            self.assertTrue(i4 < i5 < i6)
+            self.assertIn("compute_stencil", report[i5:i6])
+            self.assertIn("JacobiIterationKernel", report[i6:])
+
+    def test_load_imbalance_tables_match_standalone_tool_output(self):
+        import extract_CPU_hotspots as cpu_tool
+        import extract_GPU_hotspots as gpu_tool
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            report = combined.write_report(CPU_DIR, GPU_DIR, dest)
+
+        cpu_per_rank, _ = cpu_tool.aggregate_per_rank(CPU_DIR)
+        cpu_selected, _ = cpu_tool.compute_load_imbalance(cpu_per_rank)
+        self.assertIn(cpu_tool.format_table_load_imbalance(cpu_selected).strip(), report)
+
+        gpu_per_rank, _ = gpu_tool.aggregate_per_rank(GPU_DIR)
+        gpu_selected, _ = gpu_tool.compute_load_imbalance(gpu_per_rank)
+        self.assertIn(gpu_tool.format_table_load_imbalance(gpu_selected).strip(), report)
+
+    def test_load_imbalance_tables_skipped_on_single_rank_pairing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            report = combined.write_report(CPU_DIR_SINGLE, GPU_DIR_SINGLE, dest)
+            self.assertIn("CPU load imbalance across ranks (rocprof-sys run) -- skipped", report)
+            self.assertIn("GPU kernel load imbalance across ranks (rocprofv3 run) -- skipped", report)
+
 
 if __name__ == "__main__":
     unittest.main()

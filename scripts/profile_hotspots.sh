@@ -41,6 +41,10 @@ between the two runs -- only the relative percentages matter here, not
 exact times. The two measurements are merged assuming they came from the
 same program and the same workload; nothing checks that for you.
 
+For MPI runs, the report also includes CPU and GPU load-imbalance tables
+(each function/kernel's average/min/max time and how much it varies
+across ranks) after the four hotspots tables.
+
 Under the hood, this uses AMD's rocprof-sys and rocprofv3 -- see
 https://rocm.docs.amd.com/projects/rocprofiler-systems/en/latest/ and
 https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-rocprofv3.html
@@ -51,6 +55,7 @@ Options:
                           split into DIR/rocprof-sys and DIR/rocprofv3
   --top N                 hotspots per table to report (default: 20; last of --top/--threshold/--all wins)
   --threshold PCT         only report entries at or above PCT% of their table's total
+                          (or, in the load-imbalance tables, at or above PCT% coefficient of variation)
   --all                   report every entry, no truncation
   --no-summary            skip auto-running the combined extractor afterwards
   --dry-run               print what would run, don't execute

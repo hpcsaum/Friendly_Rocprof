@@ -39,6 +39,10 @@ Numbers are reported as percentages of total measured time, good enough to
 spot your top bottleneck -- not a precise, reproducible benchmark. Safe to
 run repeatedly; it only observes your program, it doesn't change it.
 
+For MPI runs, the report also includes a load-imbalance table (each
+function's average/min/max time and how much it varies across ranks,
+including MPI calls) after the main hotspots tables.
+
 Under the hood, this uses AMD's rocprof-sys (ROCm Systems Profiler) -- see
 https://rocm.docs.amd.com/projects/rocprofiler-systems/en/latest/ for details.
 
@@ -47,6 +51,7 @@ Options:
   -f, --freq HZ           sampling frequency in Hz (default: 100)
   --top N                 hotspots per section to report (default: 20; last of --top/--threshold/--all wins)
   --threshold PCT         only report entries at or above PCT% of total runtime
+                          (or, in the load-imbalance table, at or above PCT% coefficient of variation)
   --all                   report every entry, no truncation
   --no-summary            skip auto-running the hotspots extractor afterwards
   --dry-run               print the command and env vars that would run, don't execute

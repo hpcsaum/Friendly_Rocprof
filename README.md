@@ -50,6 +50,17 @@ everything with no truncation (works on both the launcher and the extractor):
 scripts/profile_CPU_hotspots.sh -o results/run1 --threshold 5 -- ./app arg1
 ```
 
+For MPI runs, the report also includes a **CPU load imbalance** table:
+each function's average/min/max time and how much it varies across
+ranks (std_dev), including MPI calls — a rank that never called a
+function counts as 0.0 for that rank rather than being left out, so a
+function that only runs on some ranks shows up as maximally imbalanced.
+This table is its own independent ranking by `std_dev`, using the same
+`--top`/`--all` flags; `--threshold PCT` here means *coefficient of
+variation* (`std_dev / avg >= PCT%`) instead of % of total runtime, since
+a runtime-based cutoff has no equivalent meaning for a std_dev ranking.
+Skipped (with a one-line note) if fewer than 2 ranks were profiled.
+
 The extractor also works standalone against any existing `rocprof-sys` output directory:
 
 ```bash
@@ -84,6 +95,10 @@ available on 7.0.2.
 python3 postprocess/extract_GPU_hotspots.py <rocprofv3-output-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all]
 ```
 
+For MPI runs, the report also includes a **GPU kernel load imbalance**
+table, same shape and `--top`/`--threshold`(coefficient-of-variation)/`--all`
+semantics as the CPU tool's load-imbalance table above.
+
 ### Combined CPU+GPU hotspots — `profile_hotspots.sh`
 
 Runs both of the above against the same command (one after the other — each
@@ -110,14 +125,17 @@ its "CPU compute" bucket) is subtracted out before the two totals are added:
 `combined pool = (CPU total − GPU API/overhead) + GPU kernel total`. The
 report shows this arithmetic explicitly rather than hiding it.
 
-The generated `hotspots.txt` has four tables: (1) the fused CPU+GPU ranking
+The generated `hotspots.txt` has six tables: (1) the fused CPU+GPU ranking
 against that combined pool — the headline answer; (2) CPU compute hotspots
 exactly as `extract_CPU_hotspots.py` would report them standalone; (3) GPU
 kernel hotspots exactly as `extract_GPU_hotspots.py` would report them
 standalone; (4) the GPU API/launch-overhead bucket that was subtracted out
-of table 1, so you can see precisely what got removed and why. Same
+of table 1, so you can see precisely what got removed and why; (5) CPU load
+imbalance across ranks, reusing tool 1's own load-imbalance logic; (6) GPU
+kernel load imbalance across ranks, reusing tool 2's. Same
 `--top`/`--threshold`/`--all` selection as the other two tools, applied to
-every table.
+every table (tables 5-6 rank by std_dev, with `--threshold` meaning
+coefficient of variation there instead of % of runtime).
 
 The extractor takes both tools' output directories directly and does **not**
 check that they came from the same executable or test case — that's on you

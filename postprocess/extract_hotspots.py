@@ -175,6 +175,44 @@ def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=
         "bucket subtracted out of table 1's combined pool.\n"
     )
     parts.append(cpu_tool.format_table(gpu_api_selected))
+    parts.append("\n")
+
+    cpu_per_rank, cpu_imbalance_scanned = cpu_tool.aggregate_per_rank(rocprof_sys_dir)
+    if len(cpu_imbalance_scanned) < 2:
+        parts.append(
+            "=== 5. CPU load imbalance across ranks (rocprof-sys run) -- skipped: only "
+            f"{len(cpu_imbalance_scanned)} rank/file found, need at least 2 to compare ===\n"
+        )
+    else:
+        cpu_imbalance_selected, cpu_imbalance_desc = cpu_tool.compute_load_imbalance(cpu_per_rank, top, threshold, show_all)
+        parts.append(
+            f"=== 5. CPU load imbalance across {len(cpu_imbalance_scanned)} ranks (rocprof-sys run) "
+            f"-- showing {cpu_imbalance_desc} ===\n"
+        )
+        parts.append(
+            "Each function's own total time on each rank, compared across ranks -- a rank "
+            "that never called a function counts as 0.0 for that rank, not omitted.\n"
+        )
+        parts.append(cpu_tool.format_table_load_imbalance(cpu_imbalance_selected))
+    parts.append("\n")
+
+    gpu_per_rank, gpu_imbalance_scanned = gpu_tool.aggregate_per_rank(rocprofv3_dir)
+    if len(gpu_imbalance_scanned) < 2:
+        parts.append(
+            "=== 6. GPU kernel load imbalance across ranks (rocprofv3 run) -- skipped: only "
+            f"{len(gpu_imbalance_scanned)} rank/file found, need at least 2 to compare ===\n"
+        )
+    else:
+        gpu_imbalance_selected, gpu_imbalance_desc = gpu_tool.compute_load_imbalance(gpu_per_rank, top, threshold, show_all)
+        parts.append(
+            f"=== 6. GPU kernel load imbalance across {len(gpu_imbalance_scanned)} ranks (rocprofv3 run) "
+            f"-- showing {gpu_imbalance_desc} ===\n"
+        )
+        parts.append(
+            "Each kernel's own total time on each rank, compared across ranks -- a rank "
+            "that never launched a kernel counts as 0.0 for that rank, not omitted.\n"
+        )
+        parts.append(gpu_tool.format_table_load_imbalance(gpu_imbalance_selected))
 
     report = "".join(parts)
     with open(dest_path, "w") as f:

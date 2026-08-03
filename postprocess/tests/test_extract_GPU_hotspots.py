@@ -1,5 +1,6 @@
 import importlib.util
 import os
+import statistics
 import sys
 import tempfile
 import unittest
@@ -138,6 +139,81 @@ class ConfigJsonGuessingTests(unittest.TestCase):
         self.assertIsNone(hotspots.guess_num_ranks({}, []))
 
 
+class AggregatePerRankTests(unittest.TestCase):
+    def test_single_rank_returns_one_dict(self):
+        per_file, scanned = hotspots.aggregate_per_rank(os.path.join(FIXTURES, "rocprofv3_single_rank"))
+        self.assertEqual(len(scanned), 1)
+        self.assertEqual(len(per_file), 1)
+        self.assertAlmostEqual(per_file[0]["JacobiIterationKernel"], 537449866 / 1e9)
+
+    def test_mpi_2rank_keeps_ranks_separate(self):
+        per_file, scanned = hotspots.aggregate_per_rank(os.path.join(FIXTURES, "rocprofv3_mpi_2rank"))
+        self.assertEqual(len(scanned), 2)
+        values = sorted(ft["JacobiIterationKernel"] for ft in per_file)
+        self.assertAlmostEqual(values[0], 268000000 / 1e9)
+        self.assertAlmostEqual(values[1], 268724933 / 1e9)
+
+    def test_no_kernel_stats_csv_found(self):
+        per_file, scanned = hotspots.aggregate_per_rank(os.path.join(FIXTURES, "rocprofv3_no_data"))
+        self.assertEqual(per_file, [])
+        self.assertEqual(scanned, [])
+
+
+class ComputeLoadImbalanceTests(unittest.TestCase):
+    def test_matches_independently_computed_statistics_on_real_fixture(self):
+        per_file, _ = hotspots.aggregate_per_rank(os.path.join(FIXTURES, "rocprofv3_mpi_2rank"))
+        selected, _ = hotspots.compute_load_imbalance(per_file, show_all=True)
+        by_label = {e["label"]: e for e in selected}
+
+        jacobi_values = [ft["JacobiIterationKernel"] for ft in per_file]
+        self.assertAlmostEqual(by_label["JacobiIterationKernel"]["avg"], statistics.mean(jacobi_values))
+        self.assertAlmostEqual(by_label["JacobiIterationKernel"]["std_dev"], statistics.pstdev(jacobi_values))
+        self.assertAlmostEqual(by_label["JacobiIterationKernel"]["min"], min(jacobi_values))
+        self.assertAlmostEqual(by_label["JacobiIterationKernel"]["max"], max(jacobi_values))
+
+    def test_missing_rank_scores_zero_not_omitted(self):
+        per_file_totals = [{"only_on_rank0": 10.0}, {}]
+        selected, _ = hotspots.compute_load_imbalance(per_file_totals, show_all=True)
+        entry = next(e for e in selected if e["label"] == "only_on_rank0")
+        self.assertAlmostEqual(entry["avg"], 5.0)
+        self.assertAlmostEqual(entry["std_dev"], 5.0)
+        self.assertAlmostEqual(entry["min"], 0.0)
+        self.assertAlmostEqual(entry["max"], 10.0)
+
+    def test_top_n_selects_highest_std_dev(self):
+        per_file_totals = [
+            {"a": 10.0, "b": 5.0, "c": 100.0},
+            {"a": 10.0, "b": 15.0, "c": 100.0},
+        ]
+        selected, desc = hotspots.compute_load_imbalance(per_file_totals, top=1)
+        self.assertEqual([e["label"] for e in selected], ["b"])
+        self.assertIn("top 1 of 3", desc)
+
+    def test_threshold_is_coefficient_of_variation(self):
+        per_file_totals = [
+            {"a": 10.0, "b": 5.0, "c": 100.0},
+            {"a": 10.0, "b": 15.0, "c": 100.0},
+        ]
+        selected, desc = hotspots.compute_load_imbalance(per_file_totals, threshold=10.0)
+        self.assertEqual([e["label"] for e in selected], ["b"])
+        self.assertIn("coefficient of variation", desc)
+
+
+class FormatTableLoadImbalanceTests(unittest.TestCase):
+    def test_includes_expected_columns(self):
+        entries = [{"label": "MyKernel", "avg": 1.0, "std_dev": 0.5, "min": 0.5, "max": 1.5, "cv_pct": 50.0}]
+        table = hotspots.format_table_load_imbalance(entries)
+        self.assertIn("avg(s)", table)
+        self.assertIn("std_dev", table)
+        self.assertIn("min(s)", table)
+        self.assertIn("max(s)", table)
+        self.assertIn("kernel", table)
+        self.assertIn("MyKernel", table)
+
+    def test_empty_entries(self):
+        self.assertIn("none found", hotspots.format_table_load_imbalance([]))
+
+
 class WriteReportTests(unittest.TestCase):
     def test_end_to_end_mpi_fixture(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -181,6 +257,21 @@ class WriteReportTests(unittest.TestCase):
             dest = os.path.join(tmp, "hotspots.txt")
             with self.assertRaises(SystemExit):
                 hotspots.write_report(os.path.join(FIXTURES, "rocprofv3_no_data"), dest)
+
+    def test_load_imbalance_table_present_after_hotspots_table_on_mpi_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            report = hotspots.write_report(os.path.join(FIXTURES, "rocprofv3_mpi_2rank"), dest)
+            i_hotspots = report.index("GPU kernel hotspots")
+            i_imbalance = report.index("GPU kernel load imbalance across 2 ranks")
+            self.assertTrue(i_hotspots < i_imbalance)
+            self.assertIn("JacobiIterationKernel", report[i_imbalance:])
+
+    def test_load_imbalance_table_skipped_on_single_rank_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            report = hotspots.write_report(os.path.join(FIXTURES, "rocprofv3_single_rank"), dest)
+            self.assertIn("GPU kernel load imbalance across ranks -- skipped: only 1 rank/file found", report)
 
 
 if __name__ == "__main__":

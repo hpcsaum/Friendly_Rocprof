@@ -12,6 +12,7 @@ import glob
 import json
 import os
 import re
+import statistics
 import sys
 from datetime import datetime
 
@@ -173,6 +174,92 @@ def aggregate(output_dir):
         (gpu_entries if entry["gpu"] else cpu_entries).append(item)
 
     return cpu_entries, gpu_entries, scanned_files, total_runtime
+
+
+def aggregate_per_rank(output_dir):
+    """Like aggregate(), but keeps each scanned file's CPU-only per-label
+    sums separate instead of merging them into one global total -- one
+    scanned file is treated as one rank's contribution (same file-per-
+    process assumption guess_num_ranks() already relies on), which is what
+    a load-imbalance-across-ranks computation needs as its input.
+
+    Returns (per_file_totals, scanned_files) where per_file_totals is a
+    list of {label: sum} dicts, one per scanned file, in the same order as
+    scanned_files.
+    """
+    scanned_files = []
+    per_file_totals = []
+
+    candidates = sorted(glob.glob(os.path.join(output_dir, "*.txt")))
+    for path in candidates:
+        if os.path.basename(path) in NON_TIMING_FILES:
+            continue
+        rows = parse_table_file(path)
+        if rows is None:
+            continue
+        scanned_files.append(path)
+        file_totals = {}
+        for row in rows:
+            label = row["label"]
+            if is_gpu_entry(label, path):
+                continue
+            file_totals[label] = file_totals.get(label, 0.0) + row["sum"]
+        per_file_totals.append(file_totals)
+
+    return per_file_totals, scanned_files
+
+
+def compute_load_imbalance(per_file_totals, top=None, threshold=None, show_all=False):
+    """Per-label avg/std_dev/min/max of each rank's own total time in that
+    label, across all ranks in per_file_totals. A rank that never shows up
+    for a given label contributes 0.0 (it genuinely spent no time there),
+    not a skipped/missing value -- a function that only runs on some ranks
+    is real, extreme imbalance, not something to hide.
+
+    Selection mirrors select_entries()'s top/threshold/show_all shape, but
+    ranked by std_dev (not total time), and --threshold here means
+    coefficient of variation (std_dev / avg, as a %) instead of % of total
+    runtime -- a %-of-runtime cutoff has no equivalent meaning for a
+    std_dev ranking. Returns (selected, description), same shape as
+    select_entries().
+    """
+    labels = {label for ft in per_file_totals for label in ft}
+    entries = []
+    for label in labels:
+        values = [ft.get(label, 0.0) for ft in per_file_totals]
+        avg = statistics.mean(values)
+        std_dev = statistics.pstdev(values)
+        entries.append({
+            "label": label,
+            "avg": avg,
+            "std_dev": std_dev,
+            "min": min(values),
+            "max": max(values),
+            "cv_pct": (std_dev / avg * 100.0) if avg > 0 else None,
+        })
+
+    entries_sorted = sorted(entries, key=lambda e: e["std_dev"], reverse=True)
+    total_count = len(entries_sorted)
+
+    if show_all:
+        return entries_sorted, f"all {total_count} entries"
+
+    if threshold is not None:
+        filtered = [e for e in entries_sorted if e["cv_pct"] is not None and e["cv_pct"] >= threshold]
+        return filtered, f">= {threshold:g}% coefficient of variation ({len(filtered)} of {total_count} entries)"
+
+    n = 20 if top is None else top
+    return entries_sorted[:n], f"top {n} of {total_count} entries by std_dev"
+
+
+def format_table_load_imbalance(entries):
+    if not entries:
+        return "  (none found)\n"
+    lines = []
+    lines.append(f"  {'#':>3}  {'avg(s)':>12}  {'std_dev':>10}  {'min(s)':>12}  {'max(s)':>12}  function")
+    for i, e in enumerate(entries, 1):
+        lines.append(f"  {i:>3}  {e['avg']:>12.6f}  {e['std_dev']:>10.6f}  {e['min']:>12.6f}  {e['max']:>12.6f}  {e['label']}")
+    return "\n".join(lines) + "\n"
 
 
 def select_entries(entries, total_runtime, top=None, threshold=None, show_all=False):
@@ -338,6 +425,26 @@ def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False
         "'%total' is each function's share of total measured time (summed across "
         "all scanned files); it will not add up to 100% across both tables.\n"
     )
+    parts.append("\n")
+
+    per_file_totals, imbalance_scanned = aggregate_per_rank(output_dir)
+    if len(imbalance_scanned) < 2:
+        parts.append(
+            "CPU load imbalance across ranks -- skipped: only "
+            f"{len(imbalance_scanned)} rank/file found, need at least 2 to compare.\n"
+        )
+    else:
+        imbalance_selected, imbalance_desc = compute_load_imbalance(per_file_totals, top, threshold, show_all)
+        parts.append(
+            f"CPU load imbalance across {len(imbalance_scanned)} ranks -- showing {imbalance_desc}\n"
+        )
+        parts.append(
+            "Each function's own total time on each rank, compared across ranks -- a rank "
+            "that never called a function counts as 0.0 for that rank, not omitted.\n"
+        )
+        parts.append(format_table_load_imbalance(imbalance_selected))
+    parts.append("\n")
+
     if proto_files:
         parts.append("A Perfetto trace was also found (not parsed by this tool):\n")
         for f in proto_files:

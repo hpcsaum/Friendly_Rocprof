@@ -40,6 +40,10 @@ enough to spot your top bottleneck -- not a precise, reproducible
 benchmark. Safe to run repeatedly; it only observes your program, it
 doesn't change it or require rebuilding it.
 
+For MPI runs, the report also includes a kernel load-imbalance table
+(each kernel's average/min/max time and how much it varies across ranks)
+after the main hotspots table.
+
 Under the hood, this uses AMD's rocprofv3 -- see
 https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-rocprofv3.html
 for details.
@@ -48,6 +52,7 @@ Options:
   -o, --output-dir DIR   rocprofv3 output directory (default: rocprofv3-hotspots-output)
   --top N                 hotspots to report (default: 20; last of --top/--threshold/--all wins)
   --threshold PCT         only report kernels at or above PCT% of total GPU time
+                          (or, in the load-imbalance table, at or above PCT% coefficient of variation)
   --all                   report every kernel, no truncation
   --no-summary            skip auto-running the hotspots extractor afterwards
   --dry-run               print the command that would run, don't execute
