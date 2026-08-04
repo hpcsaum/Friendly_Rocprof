@@ -17,8 +17,22 @@ import sys
 from datetime import datetime
 
 NON_TIMING_FILES = {"available.txt", "instrumented.txt", "excluded.txt", "overlapping.txt"}
+# rocprof-sys's default config (ROCPROFSYS_FLAT_PROFILE=0, sampling on) writes THREE
+# per-rank text tables, not one: wall_clock-<N>.txt (exact instrumented call-tree),
+# sampling_wall_clock-<N>.txt and sampling_cpu_clock-<N>.txt (the same statistically-
+# sampled call tree, timed two different ways). The CPU-clock variant is an alternate
+# measurement of the same intervals sampling_wall_clock already captures, not an
+# independent contribution -- keeping both would double-count every sampled function's
+# self-time. Excluded by filename prefix (the numeric rank suffix varies) before
+# parse_table_file() is even called, same treatment NON_TIMING_FILES gets.
+EXCLUDED_METRIC_FILE_PREFIXES = ("sampling_cpu_clock-",)
 
-GPU_API_PREFIXES = ("hip", "hsa", "roctx", "kfd", "rocdecode", "rocjpeg")
+GPU_API_PREFIXES = ("hip", "hsa", "roctx", "kfd", "rocdecode", "rocjpeg", "rocr")
+# "rocr" specifically covers ROCr (ROCm Runtime) internals like
+# rocr::core::BusyWaitSignal::WaitAcquire, rocr::os::ThreadTrampoline, and
+# rocr::core::Runtime::AsyncEventsLoop -- driver-internal busy-wait/event-loop
+# threads, not application code, so they belong in the GPU-API/overhead bucket
+# (table 4) rather than being mistaken for real CPU compute hotspots (tables 1/2).
 GPU_FILE_HINTS = ("roctracer", "hsa")
 
 EXPECTED_HEADER_FIELDS = ["LABEL", "COUNT", "DEPTH", "METRIC", "UNITS", "SUM", "MEAN", "MIN", "MAX", "VAR", "STDDEV", "% SELF"]
@@ -102,10 +116,24 @@ def parse_table_file(path):
                 # converted here and accumulated as a plain sum from then on (see
                 # aggregate()/aggregate_per_rank()); the raw % SELF isn't kept.
                 "self_sum": total_f * float(pct_self) / 100.0,
+                # depth/thread_id -- kept (not just parsed-and-discarded like before)
+                # so scan_ranks() can reconstruct each row's place in the call tree;
+                # see attach_ancestry().
+                "depth": int(depth),
+                "thread_id": thread_id_from_raw_label(raw_label),
             })
         except ValueError:
             continue
     return rows
+
+
+def thread_id_from_raw_label(raw_label):
+    """The OS-thread index a raw LABEL field's prefix identifies -- the last
+    "|"-delimited segment before ">>>" (e.g. "|1>>>foo" -> "1"; the MPI form
+    "00|00>>>foo" -> "00", the rank/thread pair's thread half)."""
+    prefix = raw_label.split(">>>", 1)[0]
+    segments = [s for s in prefix.split("|") if s != ""]
+    return segments[-1] if segments else ""
 
 
 def clean_label(raw_label):
@@ -127,18 +155,162 @@ def is_gpu_entry(label, filename):
     return any(hint in fname for hint in GPU_FILE_HINTS)
 
 
+def attach_ancestry(rows):
+    """Reconstruct each row's parent in the call tree from DEPTH + file order
+    (rows already arrive in call-tree pre-order) via a depth-stack walk: a
+    row's parent is the most recent prior row at depth-1. Mutates rows in
+    place, adding "parent" (a reference to the parent row dict, or None at a
+    true root) and "is_thread_root" (True when this row's thread_id differs
+    from its parent's -- i.e. this row is where a NEW OS thread's own subtree
+    begins in this file's listing, right after whatever call spawned it).
+
+    General-purpose: this is the reusable first step for a future real
+    call-tree view (walk "parent" links to render nesting/indentation), not
+    specific to any one classification decision -- classify_gpu() below is
+    just its first consumer.
+    """
+    stack = []
+    for row in rows:
+        while stack and stack[-1]["depth"] >= row["depth"]:
+            stack.pop()
+        parent = stack[-1] if stack else None
+        row["parent"] = parent
+        row["is_thread_root"] = parent is not None and parent["thread_id"] != row["thread_id"]
+        stack.append(row)
+    return rows
+
+
+def classify_gpu(row, path):
+    """Like is_gpu_entry(), but a thread-root row (see attach_ancestry()) that
+    doesn't match by its own label also inherits GPU classification if ANY
+    ancestor in its call-tree does -- e.g. a background thread the HIP runtime
+    spawns as a side effect of hipRuntimeGetVersion/hipStreamCreate shows up as
+    a generic "start_thread" node with no further instrumented breakdown
+    (100% self, often spanning nearly the whole run), which would otherwise be
+    mistaken for real CPU application work. A thread spawned directly by real
+    application code has no GPU-classified ancestor, so it's untouched.
+    Non-thread-root rows are never affected by ancestry -- only a thread-root
+    node's own classification can come from something other than its own
+    label.
+    """
+    if is_gpu_entry(row["label"], path):
+        return True
+    if row.get("is_thread_root"):
+        ancestor = row["parent"]
+        while ancestor is not None:
+            if is_gpu_entry(ancestor["label"], path):
+                return True
+            ancestor = ancestor["parent"]
+    return False
+
+
+def scan_ranks(output_dir):
+    """Scan output_dir for timemory text tables and group them by RANK, not by
+    file -- rocprof-sys's default config (sampling on) writes multiple per-rank
+    metric-type files (wall_clock-<N>.txt, sampling_wall_clock-<N>.txt,
+    sampling_cpu_clock-<N>.txt), and treating each file as its own rank (the
+    bug this replaces) inflates every rank-based number by however many
+    metric-type files exist per rank.
+
+    Rank grouping uses the same numeric filename suffix guess_num_ranks() relies
+    on (PID_SUFFIX_RE) -- a file with no recognizable suffix becomes its own
+    single-file rank, preserving today's behavior for non-conforming inputs.
+    sampling_cpu_clock-<N>.txt is excluded entirely (see
+    EXCLUDED_METRIC_FILE_PREFIXES). Within a rank, wall_clock's row for a label
+    wins over the sampling bucket's row for that same label -- a handful of
+    functions are both explicitly instrumented and caught by sampling, and the
+    exact instrumented value is preferred over the statistical one.
+
+    Returns a list of {"rank_key": str, "rows": [...merged, each tagged with
+    "gpu": bool...], "files": [source paths], "root_sum": float}, one entry
+    per distinct rank, in the same order the sorted glob produces. "root_sum"
+    is that rank's largest RAW row SUM across all its included files, from
+    before same-label rows were merged together -- deliberately NOT
+    recomputed from the merged rows, because a rank's wall_clock table has
+    one raw row per call-tree node (e.g. one "start_thread" row per worker
+    thread), and merging those by label first (as aggregate()'s per-label
+    totals need) can make a leaf label's summed SUM exceed the true root
+    scope's own SUM -- the same "outermost scope has the single largest raw
+    SUM" assumption aggregate() always relied on, just computed correctly
+    per rank now instead of per file.
+    """
+    candidates = sorted(glob.glob(os.path.join(output_dir, "**", "*.txt"), recursive=True))
+    per_rank = {}
+    order = []
+
+    for path in candidates:
+        base = os.path.basename(path)
+        if base in NON_TIMING_FILES or base.startswith(EXCLUDED_METRIC_FILE_PREFIXES):
+            continue
+        rows = parse_table_file(path)
+        if rows is None:
+            continue
+        attach_ancestry(rows)
+
+        m = PID_SUFFIX_RE.search(base)
+        rank_key = m.group(1) if m else path
+        if rank_key not in per_rank:
+            per_rank[rank_key] = {"files": [], "wall_clock": {}, "sampling": {}, "root_sum": 0.0}
+            order.append(rank_key)
+        bucket = per_rank[rank_key]
+        bucket["files"].append(path)
+        if rows:
+            bucket["root_sum"] = max(bucket["root_sum"], max(row["sum"] for row in rows))
+
+        # Keyed by (label, gpu), not just label -- two rows can share a generic
+        # label (e.g. "start_thread") while classify_gpu() tells them apart by
+        # ancestry; merging them by label alone would silently recombine what
+        # ancestry just split apart.
+        target = bucket["wall_clock"] if base.startswith("wall_clock-") else bucket["sampling"]
+        for row in rows:
+            gpu = classify_gpu(row, path)
+            row = {
+                "label": row["label"],
+                "count": row["count"],
+                "sum": row["sum"],
+                "self_sum": row["self_sum"],
+                "gpu": gpu,
+            }
+            key = (row["label"], gpu)
+            existing = target.get(key)
+            if existing is None:
+                target[key] = row
+            else:
+                existing["count"] += row["count"]
+                existing["sum"] += row["sum"]
+                existing["self_sum"] += row["self_sum"]
+
+    ranks = []
+    for rank_key in order:
+        bucket = per_rank[rank_key]
+        merged = dict(bucket["wall_clock"])
+        for key, row in bucket["sampling"].items():
+            if key not in merged:
+                merged[key] = row
+        ranks.append({
+            "rank_key": rank_key,
+            "rows": list(merged.values()),
+            "files": bucket["files"],
+            "root_sum": bucket["root_sum"],
+        })
+
+    return ranks
+
+
 def aggregate(output_dir):
     """Scan output_dir for timemory text tables and aggregate rows by clean function name.
 
     Returns (cpu_entries, gpu_entries, scanned_files, total_runtime) where each
     entries list is [{"label", "count", "sum", "self_sum", "pct_self", "pct_total"}],
     unsorted, and total_runtime is the denominator used for each entry's "% of
-    total runtime": the sum, across all scanned files, of that file's own
-    largest SUM value (a file's largest SUM is -- barring unusual
-    instrumentation -- its outermost/root scope, since inclusive time only
-    grows going up the call stack; this works whether the file is a
-    hierarchical or a flattened profile, without needing to guess the root
-    function's name).
+    total runtime": the sum, across all ranks (see scan_ranks()), of that
+    rank's own "root_sum" (its largest RAW row SUM, before same-label rows are
+    merged -- a rank's largest raw SUM is -- barring unusual instrumentation --
+    its outermost/root scope, since inclusive time only grows going up the
+    call stack; this works whether the underlying file is a hierarchical or a
+    flattened profile, without needing to guess the root function's name).
+    Computed per rank, not per file, so a rank with multiple metric-type files
+    doesn't inflate this sum.
 
     "sum" is inclusive time (this function plus everything it calls); "self_sum"
     is its own time only, summed across every call-tree node with this label --
@@ -150,35 +322,26 @@ def aggregate(output_dir):
     against whichever metric it's actually ranking by, so this is just a
     sensible default for callers that use aggregate()'s output directly).
     """
-    scanned_files = []
-    file_rows = []  # [(path, rows)]
+    ranks = scan_ranks(output_dir)
+    scanned_files = [f for r in ranks for f in r["files"]]
+    total_runtime = sum(r["root_sum"] for r in ranks)
 
-    candidates = sorted(glob.glob(os.path.join(output_dir, "**", "*.txt"), recursive=True))
-    for path in candidates:
-        if os.path.basename(path) in NON_TIMING_FILES:
-            continue
-        rows = parse_table_file(path)
-        if rows is None:
-            continue
-        scanned_files.append(path)
-        file_rows.append((path, rows))
-
-    total_runtime = sum(max(row["sum"] for row in rows) for _, rows in file_rows if rows)
-
-    totals = {}  # label -> {"count": int, "sum": float, "self_sum": float, "gpu": bool}
-    for path, rows in file_rows:
-        for row in rows:
-            label = row["label"]
-            gpu = is_gpu_entry(label, path)
-            entry = totals.setdefault(label, {"count": 0, "sum": 0.0, "self_sum": 0.0, "gpu": gpu})
+    # Keyed by (label, gpu), not just label -- see scan_ranks()'s same note:
+    # the same generic label (e.g. "start_thread") can be classified
+    # differently by ancestry across occurrences, and merging by label alone
+    # would recombine what that classification just told apart.
+    totals = {}  # (label, gpu) -> {"count": int, "sum": float, "self_sum": float}
+    for r in ranks:
+        for row in r["rows"]:
+            key = (row["label"], row["gpu"])
+            entry = totals.setdefault(key, {"count": 0, "sum": 0.0, "self_sum": 0.0})
             entry["count"] += row["count"]
             entry["sum"] += row["sum"]
             entry["self_sum"] += row["self_sum"]
-            entry["gpu"] = entry["gpu"] or gpu
 
     cpu_entries = []
     gpu_entries = []
-    for label, entry in totals.items():
+    for (label, gpu), entry in totals.items():
         pct_total = (entry["self_sum"] / total_runtime * 100.0) if total_runtime > 0 else None
         pct_self = (entry["self_sum"] / entry["sum"] * 100.0) if entry["sum"] > 0 else None
         item = {
@@ -189,48 +352,40 @@ def aggregate(output_dir):
             "pct_self": pct_self,
             "pct_total": pct_total,
         }
-        (gpu_entries if entry["gpu"] else cpu_entries).append(item)
+        (gpu_entries if gpu else cpu_entries).append(item)
 
     return cpu_entries, gpu_entries, scanned_files, total_runtime
 
 
 def aggregate_per_rank(output_dir, unfiltered=False):
-    """Like aggregate(), but keeps each scanned file's CPU-only per-label
-    totals separate instead of merging them into one global total -- one
-    scanned file is treated as one rank's contribution (same file-per-
-    process assumption guess_num_ranks() already relies on), which is what
-    a load-imbalance-across-ranks computation needs as its input.
+    """Like aggregate(), but keeps each RANK's (see scan_ranks()) CPU-only
+    per-label totals separate instead of merging them into one global total --
+    this is what a load-imbalance-across-ranks computation needs as its input.
+    A rank with multiple metric-type files (wall_clock + sampling_wall_clock)
+    still contributes exactly one entry here, not one per file.
 
     Uses self-time by default (not inclusive) for the same reason aggregate()
     ranks by it by default -- keeps the load-imbalance table's ranking
     consistent with the main hotspots table in the same report; unfiltered=True
     switches to inclusive time, matching aggregate()'s own --unfiltered view.
 
-    Returns (per_file_totals, scanned_files) where per_file_totals is a
-    list of {label: value} dicts, one per scanned file, in the same order
-    as scanned_files.
+    Returns (per_rank_totals, rank_keys) where per_rank_totals is a
+    list of {label: value} dicts, one per rank, in the same order as
+    rank_keys.
     """
     metric = "sum" if unfiltered else "self_sum"
-    scanned_files = []
-    per_file_totals = []
+    ranks = scan_ranks(output_dir)
+    per_rank_totals = []
 
-    candidates = sorted(glob.glob(os.path.join(output_dir, "**", "*.txt"), recursive=True))
-    for path in candidates:
-        if os.path.basename(path) in NON_TIMING_FILES:
-            continue
-        rows = parse_table_file(path)
-        if rows is None:
-            continue
-        scanned_files.append(path)
+    for r in ranks:
         file_totals = {}
-        for row in rows:
-            label = row["label"]
-            if is_gpu_entry(label, path):
+        for row in r["rows"]:
+            if row["gpu"]:
                 continue
-            file_totals[label] = file_totals.get(label, 0.0) + row[metric]
-        per_file_totals.append(file_totals)
+            file_totals[row["label"]] = file_totals.get(row["label"], 0.0) + row[metric]
+        per_rank_totals.append(file_totals)
 
-    return per_file_totals, scanned_files
+    return per_rank_totals, [r["rank_key"] for r in ranks]
 
 
 def compute_load_imbalance(per_file_totals, top=None, threshold=None, show_all=False):

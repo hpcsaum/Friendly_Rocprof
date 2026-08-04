@@ -27,11 +27,14 @@ CPU_DIR_EMPTY = os.path.join(FIXTURES, "no_timing_data")
 GPU_DIR_EMPTY = os.path.join(FIXTURES, "rocprofv3_no_data")
 CPU_DIR_DATED_SUBDIR = os.path.join(FIXTURES, "mpi_2rank_dated_subdir")
 CPU_DIR_GPU_API_NESTED_CHAIN = os.path.join(FIXTURES, "gpu_api_nested_chain")
+CPU_DIR_GPU_SYNC_WAIT = os.path.join(FIXTURES, "gpu_sync_wait")
 
 
 class BuildCombinedViewTests(unittest.TestCase):
     def test_subtraction_arithmetic_matches_documented_formula(self):
-        fused, cpu_entries, cpu_gpu_api_entries, gpu_entries, info = combined.build_combined_view(CPU_DIR, GPU_DIR)
+        fused, cpu_entries, cpu_gpu_api_entries, gpu_entries, info = combined.build_combined_view(
+            CPU_DIR_GPU_SYNC_WAIT, GPU_DIR_SINGLE
+        )
 
         # Independently recompute expected numbers straight from the sibling
         # modules' own aggregate() on the same fixtures, rather than hand-typing
@@ -39,23 +42,38 @@ class BuildCombinedViewTests(unittest.TestCase):
         import extract_CPU_hotspots as cpu_tool
         import extract_GPU_hotspots as gpu_tool
 
-        exp_cpu_entries, exp_gpu_api_entries, exp_cpu_scanned, exp_cpu_total_raw = cpu_tool.aggregate(CPU_DIR)
-        exp_gpu_entries, exp_gpu_scanned, exp_gpu_total_ns = gpu_tool.aggregate(GPU_DIR)
-        # self_sum, not inclusive sum -- see build_combined_view()'s own docstring:
-        # inclusive sum would double/triple-count a nested GPU-API call chain.
-        exp_overhead = sum(e["self_sum"] for e in exp_gpu_api_entries)
+        exp_cpu_entries, exp_gpu_api_entries, exp_cpu_scanned, exp_cpu_total_raw = cpu_tool.aggregate(
+            CPU_DIR_GPU_SYNC_WAIT
+        )
+        exp_gpu_entries, exp_gpu_scanned, exp_gpu_total_ns = gpu_tool.aggregate(GPU_DIR_SINGLE)
+        # self_sum, not inclusive sum, and ONLY the two sync-wait labels -- see
+        # build_combined_view()'s own docstring for why the rest of the GPU-API
+        # bucket (which can include multi-thread-inflated self-time sums) is excluded.
+        exp_overhead = sum(
+            e["self_sum"] for e in exp_gpu_api_entries if e["label"] in combined.SYNC_WAIT_LABELS
+        )
         exp_cpu_pure = max(0.0, exp_cpu_total_raw - exp_overhead)
         exp_gpu_total_sec = exp_gpu_total_ns / 1e9
         exp_combined_total = exp_cpu_pure + exp_gpu_total_sec
 
         self.assertAlmostEqual(info["cpu_total_raw"], exp_cpu_total_raw)
         self.assertAlmostEqual(info["gpu_api_overhead_sec"], exp_overhead)
-        self.assertGreater(info["gpu_api_overhead_sec"], 0)  # fixture's hipMemcpy bucket is non-zero
+        self.assertAlmostEqual(info["gpu_api_overhead_sec"], 3.5)  # hipStreamSynchronize(2.0) + hipDeviceSynchronize(1.5)
         self.assertAlmostEqual(info["cpu_pure_total_sec"], exp_cpu_pure)
         self.assertAlmostEqual(info["gpu_total_sec"], exp_gpu_total_sec)
         self.assertAlmostEqual(info["combined_total_sec"], exp_combined_total)
         # the subtraction must have actually removed something, not be a no-op
         self.assertLess(info["cpu_pure_total_sec"], info["cpu_total_raw"])
+
+    def test_gpu_api_overhead_excludes_non_sync_wait_calls(self):
+        # hipLaunchKernel is a real GPU-API entry (table 4 will still show it)
+        # but it isn't a blocking sync call -- it must not feed the subtraction.
+        _fused, _cpu_entries, cpu_gpu_api_entries, _gpu_entries, info = combined.build_combined_view(
+            CPU_DIR_GPU_SYNC_WAIT, GPU_DIR_SINGLE
+        )
+        gpu_api_labels = {e["label"] for e in cpu_gpu_api_entries}
+        self.assertIn("hipLaunchKernel", gpu_api_labels)  # still in table 4's source data
+        self.assertAlmostEqual(info["gpu_api_overhead_sec"], 3.5)  # NOT 3.5 + hipLaunchKernel's 0.5
 
     def test_fused_pct_total_differs_from_each_sides_own_standalone_pct(self):
         fused, cpu_entries, cpu_gpu_api_entries, gpu_entries, info = combined.build_combined_view(CPU_DIR, GPU_DIR)
@@ -92,16 +110,15 @@ class BuildCombinedViewTests(unittest.TestCase):
 
     def test_gpu_api_overhead_does_not_overcount_a_nested_call_chain(self):
         # gpu_api_nested_chain fixture: hipStreamCreate -> hip::hipStreamCreate(...) ->
-        # hip::ihipStreamCreate(...), each with inclusive sum=1.0s but only the
-        # innermost holding real self-time (0.998s; the other two are ~0.001s
-        # wrappers) -- one real second of wall-clock time, not three.
+        # hip::ihipStreamCreate(...) -- none of these three labels is
+        # hipStreamSynchronize/hipDeviceSynchronize, so this whole chain (a real
+        # GPU-API cost, just not a blocking sync wait) contributes NOTHING to
+        # the table-1 subtraction, even though table 4 still shows all three.
         _fused, _cpu_entries, cpu_gpu_api_entries, _gpu_entries, info = combined.build_combined_view(
             CPU_DIR_GPU_API_NESTED_CHAIN, GPU_DIR_SINGLE
         )
         self.assertEqual(len(cpu_gpu_api_entries), 3)
-        old_buggy_sum = sum(e["sum"] for e in cpu_gpu_api_entries)
-        self.assertAlmostEqual(old_buggy_sum, 3.0)  # what the bug used to compute
-        self.assertAlmostEqual(info["gpu_api_overhead_sec"], 1.0)  # the real, fixed total
+        self.assertAlmostEqual(info["gpu_api_overhead_sec"], 0.0)
 
 
 class WriteReportTests(unittest.TestCase):

@@ -1,0 +1,4 @@
+|LABEL|COUNT|DEPTH|METRIC|UNITS|SUM|MEAN|MIN|MAX|VAR|STDDEV|% SELF|
+|00>>>main|1|0|wall_clock|sec|20.000000|20.000000|20.000000|20.000000|0.000000|0.000000|1.0|
+|00>>>compute_stencil|1000|0|wall_clock|sec|15.000000|0.015000|0.014000|0.016000|0.000000|0.000010|95.0|
+|00>>>rocr::core::BusyWaitSignal::WaitAcquire(hsa_signal_condition_t, long)|500|0|wall_clock|sec|3.000000|0.006000|0.005000|0.007000|0.000000|0.000010|100.0|

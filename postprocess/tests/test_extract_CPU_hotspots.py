@@ -65,6 +65,12 @@ class IsGpuEntryTests(unittest.TestCase):
     def test_roctracer_filename_forces_gpu(self):
         self.assertTrue(hotspots.is_gpu_entry("some_wrapped_call", "roctracer-1.txt"))
 
+    def test_rocr_prefix_is_gpu(self):
+        self.assertTrue(hotspots.is_gpu_entry(
+            "rocr::core::BusyWaitSignal::WaitAcquire(hsa_signal_condition_t, long)", "wall_clock-1.txt"
+        ))
+        self.assertTrue(hotspots.is_gpu_entry("rocr::os::ThreadTrampoline(void*)", "wall_clock-1.txt"))
+
 
 class AggregateTests(unittest.TestCase):
     def test_single_rank_bucketing_and_total_runtime(self):
@@ -111,6 +117,182 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual(cpu, [])
         self.assertEqual(gpu, [])
         self.assertEqual(total_runtime, 0)
+
+
+class ScanRanksMultiMetricFileTests(unittest.TestCase):
+    """rocprof-sys's default (sampling-enabled) config writes THREE per-rank
+    text tables (wall_clock, sampling_wall_clock, sampling_cpu_clock) -- these
+    exercise the fix that stops each metric-type file from being counted as
+    its own rank, confirmed against a real HPC-generated directory that hit
+    this exact bug (see DEVELOPMENT_HISTORY.md)."""
+
+    DIR = os.path.join(FIXTURES, "multi_metric_rank")
+
+    def test_aggregate_counts_two_ranks_not_six_files(self):
+        cpu, _gpu, scanned, total_runtime = hotspots.aggregate(self.DIR)
+        # 2 ranks x 2 included files each (wall_clock, sampling_wall_clock) --
+        # sampling_cpu_clock is excluded outright, so never "scanned".
+        self.assertEqual(len(scanned), 4)
+        # total_runtime = rank0's own max (main=10.0) + rank1's own max (main=10.5),
+        # NOT the sum of all 4 files' own maxes (which would double-count main).
+        self.assertAlmostEqual(total_runtime, 20.5)
+        by_label = {e["label"]: e for e in cpu}
+        self.assertAlmostEqual(by_label["main"]["sum"], 20.5)
+
+    def test_wall_clock_wins_over_sampling_wall_clock_for_shared_label(self):
+        cpu, _gpu, _scanned, _total = hotspots.aggregate(self.DIR)
+        by_label = {e["label"]: e for e in cpu}
+        # shared_func is in both wall_clock (2.0/2.1) and sampling_wall_clock
+        # (2.5/2.6) per rank -- wall_clock's values must win outright, not sum.
+        self.assertAlmostEqual(by_label["shared_func"]["sum"], 2.0 + 2.1)
+
+    def test_sampling_wall_clock_used_when_label_only_there(self):
+        cpu, _gpu, _scanned, _total = hotspots.aggregate(self.DIR)
+        by_label = {e["label"]: e for e in cpu}
+        self.assertAlmostEqual(by_label["compute_A"]["sum"], 5.0 + 5.2)
+
+    def test_total_runtime_not_corrupted_by_multi_thread_same_label_rows(self):
+        # Each rank's wall_clock file has TWO raw rows labeled "worker_loop"
+        # (mirrors real rocprof-sys output, where e.g. "start_thread" gets one
+        # row per worker thread). Merged by label, worker_loop's summed value
+        # (12.5/12.8 per rank) exceeds "main"'s own value (10.0/10.5) -- but
+        # total_runtime must still be driven by main (the true root scope, by
+        # raw per-row SUM before merging), not the merged worker_loop total.
+        cpu, _gpu, _scanned, total_runtime = hotspots.aggregate(self.DIR)
+        self.assertAlmostEqual(total_runtime, 20.5)
+        by_label = {e["label"]: e for e in cpu}
+        self.assertAlmostEqual(by_label["worker_loop"]["sum"], 6.0 + 6.5 + 6.2 + 6.6)
+
+    def test_sampling_cpu_clock_data_never_appears(self):
+        cpu, gpu, _scanned, _total = hotspots.aggregate(self.DIR)
+        all_labels = {e["label"] for e in cpu} | {e["label"] for e in gpu}
+        self.assertNotIn("cpu_only_ghost", all_labels)
+
+    def test_aggregate_per_rank_returns_two_dicts_not_six(self):
+        per_rank, rank_keys = hotspots.aggregate_per_rank(self.DIR)
+        self.assertEqual(len(rank_keys), 2)
+        self.assertEqual(len(per_rank), 2)
+        for ft in per_rank:
+            self.assertNotIn("cpu_only_ghost", ft)
+        shared_values = sorted(ft["shared_func"] for ft in per_rank)
+        self.assertAlmostEqual(shared_values[0], 2.0)
+        self.assertAlmostEqual(shared_values[1], 2.1)
+        compute_a_values = sorted(ft["compute_A"] for ft in per_rank)
+        self.assertAlmostEqual(compute_a_values[0], 5.0)
+        self.assertAlmostEqual(compute_a_values[1], 5.2)
+
+
+class RocrClassificationTests(unittest.TestCase):
+    DIR = os.path.join(FIXTURES, "rocr_runtime_internals")
+
+    def test_rocr_functions_land_in_gpu_bucket_not_cpu(self):
+        cpu, gpu, _scanned, _total = hotspots.aggregate(self.DIR)
+        cpu_labels = {e["label"] for e in cpu}
+        gpu_labels = {e["label"] for e in gpu}
+        self.assertEqual(cpu_labels, {"main", "compute_stencil"})
+        self.assertIn("rocr::core::BusyWaitSignal::WaitAcquire(hsa_signal_condition_t, long)", gpu_labels)
+
+
+class AttachAncestryTests(unittest.TestCase):
+    def test_chain_within_one_thread(self):
+        rows = [
+            {"label": "a", "depth": 0, "thread_id": "0"},
+            {"label": "b", "depth": 1, "thread_id": "0"},
+            {"label": "c", "depth": 2, "thread_id": "0"},
+        ]
+        hotspots.attach_ancestry(rows)
+        self.assertIsNone(rows[0]["parent"])
+        self.assertFalse(rows[0]["is_thread_root"])
+        self.assertIs(rows[1]["parent"], rows[0])
+        self.assertFalse(rows[1]["is_thread_root"])
+        self.assertIs(rows[2]["parent"], rows[1])
+        self.assertFalse(rows[2]["is_thread_root"])
+
+    def test_sibling_depth_zero_rows_have_no_parent(self):
+        rows = [
+            {"label": "a", "depth": 0, "thread_id": "0"},
+            {"label": "b", "depth": 0, "thread_id": "0"},
+        ]
+        hotspots.attach_ancestry(rows)
+        self.assertIsNone(rows[1]["parent"])
+        self.assertFalse(rows[1]["is_thread_root"])
+
+    def test_thread_change_relative_to_parent_flags_thread_root(self):
+        rows = [
+            {"label": "a", "depth": 0, "thread_id": "0"},
+            {"label": "b", "depth": 1, "thread_id": "0"},
+            {"label": "c", "depth": 2, "thread_id": "1"},
+        ]
+        hotspots.attach_ancestry(rows)
+        self.assertIs(rows[2]["parent"], rows[1])
+        self.assertTrue(rows[2]["is_thread_root"])
+
+    def test_same_thread_as_parent_is_not_a_thread_root(self):
+        rows = [
+            {"label": "a", "depth": 0, "thread_id": "0"},
+            {"label": "b", "depth": 1, "thread_id": "0"},
+            {"label": "c", "depth": 2, "thread_id": "0"},
+        ]
+        hotspots.attach_ancestry(rows)
+        self.assertFalse(rows[2]["is_thread_root"])
+
+
+class ClassifyGpuTests(unittest.TestCase):
+    def test_thread_root_with_gpu_ancestor_classifies_as_gpu(self):
+        rows = [
+            {"label": "hipRuntimeGetVersion", "depth": 0, "thread_id": "0"},
+            {"label": "pthread_create", "depth": 1, "thread_id": "0"},
+            {"label": "start_thread", "depth": 2, "thread_id": "1"},
+        ]
+        hotspots.attach_ancestry(rows)
+        self.assertTrue(hotspots.classify_gpu(rows[2], "wall_clock-0.txt"))
+
+    def test_thread_root_with_no_gpu_ancestor_stays_cpu(self):
+        rows = [
+            {"label": "compute_stencil", "depth": 0, "thread_id": "0"},
+            {"label": "pthread_create", "depth": 1, "thread_id": "0"},
+            {"label": "start_thread", "depth": 2, "thread_id": "1"},
+        ]
+        hotspots.attach_ancestry(rows)
+        self.assertFalse(hotspots.classify_gpu(rows[2], "wall_clock-0.txt"))
+
+    def test_non_thread_root_row_ignores_gpu_ancestor(self):
+        # Only a thread-root node's OWN classification can come from ancestry --
+        # a normal (non-thread-root) row is classified purely by its own label,
+        # regardless of what its ancestors look like.
+        rows = [
+            {"label": "hipRuntimeGetVersion", "depth": 0, "thread_id": "0"},
+            {"label": "some_cpu_helper", "depth": 1, "thread_id": "0"},
+        ]
+        hotspots.attach_ancestry(rows)
+        self.assertFalse(rows[1]["is_thread_root"])
+        self.assertFalse(hotspots.classify_gpu(rows[1], "wall_clock-0.txt"))
+
+    def test_own_label_match_wins_outright(self):
+        rows = [{"label": "hipLaunchKernel", "depth": 0, "thread_id": "0"}]
+        hotspots.attach_ancestry(rows)
+        self.assertTrue(hotspots.classify_gpu(rows[0], "wall_clock-0.txt"))
+
+
+class GpuSpawnedThreadFixtureTests(unittest.TestCase):
+    DIR = os.path.join(FIXTURES, "gpu_spawned_thread")
+
+    def test_hip_spawned_thread_lands_in_gpu_bucket(self):
+        cpu, gpu, _scanned, _total = hotspots.aggregate(self.DIR)
+        gpu_labels = {e["label"] for e in gpu}
+        self.assertIn("start_thread", gpu_labels)
+        by_label = {e["label"]: e for e in gpu}
+        self.assertAlmostEqual(by_label["start_thread"]["self_sum"], 18.0)
+
+    def test_app_spawned_thread_stays_in_cpu_bucket(self):
+        # Both start_thread rows share the exact same label -- they must NOT be
+        # merged together across buckets; the app-spawned one (12.0s, no GPU
+        # ancestor) has to be told apart from the HIP-spawned one (18.0s).
+        cpu, gpu, _scanned, _total = hotspots.aggregate(self.DIR)
+        cpu_labels = {e["label"] for e in cpu}
+        self.assertIn("start_thread", cpu_labels)
+        by_label = {e["label"]: e for e in cpu}
+        self.assertAlmostEqual(by_label["start_thread"]["self_sum"], 12.0)
 
 
 class SelectEntriesTests(unittest.TestCase):

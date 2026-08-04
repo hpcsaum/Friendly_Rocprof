@@ -20,6 +20,12 @@ from datetime import datetime
 import extract_CPU_hotspots as cpu_tool
 import extract_GPU_hotspots as gpu_tool
 
+# The only two HIP calls that actually mean "block the CPU until the GPU
+# catches up" -- see build_combined_view()'s docstring for why the rest of
+# the GPU-API bucket (hsakmt_ioctl, rocr::core::BusyWaitSignal::WaitAcquire,
+# etc.) is deliberately excluded from the table-1 subtraction.
+SYNC_WAIT_LABELS = {"hipStreamSynchronize", "hipDeviceSynchronize"}
+
 HELP_BLURB = """\
 Reads the output of a profile_hotspots.sh run (or a matching pair of
 rocprof-sys / rocprofv3 output directories) and writes ONE combined report:
@@ -55,30 +61,32 @@ def build_combined_view(rocprof_sys_dir, rocprofv3_dir):
     feeds the fused %total, so the report can show its own arithmetic.
 
     The double-counting fix: rocprof-sys's CPU total is inclusive of time
-    blocked inside hipStreamSynchronize/hipDeviceSynchronize/a synchronous
-    hipMemcpy, etc. (cpu_gpu_api_entries) -- the same physical interval
-    rocprofv3's kernel TotalDurationNs already counts from the device side.
-    Subtracting that bucket out of the CPU total before adding the GPU total
-    avoids counting that overlap twice. This also strips the (comparatively
-    tiny) non-blocking launch overhead in the same bucket -- accepted, since
-    there's no reliable way to tell blocking from non-blocking HIP/HSA calls
-    by name alone, and it's negligible next to the sync-wait time being fixed.
+    blocked inside hipStreamSynchronize/hipDeviceSynchronize -- the same
+    physical interval rocprofv3's kernel TotalDurationNs already counts from
+    the device side. Subtracting that out of the CPU total before adding the
+    GPU total avoids counting that overlap twice.
 
-    gpu_api_overhead_sec sums each row's self_sum, not its inclusive sum.
-    Several GPU-API-classified rows are themselves nested inside each other
-    (e.g. hipStreamCreate -> hip::hipStreamCreate(...) -> hip::ihipStreamCreate(...)
-    -> hip::Stream::Stream(...) can all be one call chain, each with the same
-    inclusive time) -- summing inclusive time across a whole bucket like that
-    would count the same overlapping wall-clock interval once per nesting
-    level. Self-time doesn't have this problem: by construction, every node's
-    self-time is disjoint from every other node's (parent or not, GPU-API or
-    not), so summing it over any subset of nodes always gives the real total
-    time spent inside that subset, however deep the matched chain is.
+    gpu_api_overhead_sec sums ONLY these two exact labels' self_sum --
+    deliberately not every GPU-API-classified entry in cpu_gpu_api_entries
+    (that bucket still holds everything, unabridged, for table 4). The wider
+    bucket includes things like hsakmt_ioctl and
+    rocr::core::BusyWaitSignal::WaitAcquire, whose self-time is summed across
+    however many concurrent threads call them -- on a real multi-threaded run
+    that sum can legitimately exceed a single rank's own wall-clock span
+    (several threads can be simultaneously blocked on the GPU at once), which
+    made this subtraction clamp cpu_pure_total_sec to 0 even on realistic
+    data. hipStreamSynchronize/hipDeviceSynchronize are the two calls that
+    actually mean "block the CPU until the GPU catches up" -- a good enough
+    beginner-tool approximation of "time spent on the GPU" without that
+    multi-thread-sum inflation. Self-time (not inclusive sum) still matters
+    here too: if either label appears as more than one raw row (e.g. called
+    from multiple threads), self_sum sums correctly across them since every
+    node's self-time is disjoint from every other's.
     """
     cpu_entries, cpu_gpu_api_entries, cpu_scanned, cpu_total_raw = cpu_tool.aggregate(rocprof_sys_dir)
     gpu_entries, gpu_scanned, gpu_total_ns = gpu_tool.aggregate(rocprofv3_dir)
 
-    gpu_api_overhead_sec = sum(e["self_sum"] for e in cpu_gpu_api_entries)
+    gpu_api_overhead_sec = sum(e["self_sum"] for e in cpu_gpu_api_entries if e["label"] in SYNC_WAIT_LABELS)
     cpu_pure_total_sec = max(0.0, cpu_total_raw - gpu_api_overhead_sec)
     gpu_total_sec = gpu_total_ns / 1e9
     combined_total_sec = cpu_pure_total_sec + gpu_total_sec
@@ -186,7 +194,7 @@ def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=
     parts.append("\n")
     parts.append("Combined-pool arithmetic (see the footer note below for why):\n")
     parts.append(f"  CPU run raw total:              {info['cpu_total_raw']:.6f} sec\n")
-    parts.append(f"  - GPU API / launch overhead:    {info['gpu_api_overhead_sec']:.6f} sec\n")
+    parts.append(f"  - GPU sync-wait time:           {info['gpu_api_overhead_sec']:.6f} sec\n")
     parts.append(f"  = CPU pure-compute total:        {info['cpu_pure_total_sec']:.6f} sec\n")
     parts.append(f"  + GPU kernel total:              {info['gpu_total_sec']:.6f} sec\n")
     parts.append(f"  = combined pool:                 {info['combined_total_sec']:.6f} sec\n")
@@ -196,9 +204,10 @@ def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=
     parts.append("%total here is each entry's share of the combined pool above (double-counting-corrected).\n")
     parts.append(format_table_fused(fused_selected))
     parts.append(
-        "Note: this fused ranking excludes the CPU run's GPU API/launch-overhead bucket "
-        "(e.g. hipStreamSynchronize) to avoid counting GPU execution time twice -- once as "
-        "CPU-side wait time, once as GPU-side kernel time. See table 4 below for that bucket.\n"
+        "Note: this fused ranking excludes CPU-side time spent blocked in "
+        "hipStreamSynchronize/hipDeviceSynchronize, to avoid counting GPU execution time "
+        "twice -- once as CPU-side wait time, once as GPU-side kernel time. See table 4 "
+        "below for that (and every other GPU-API call rocprof-sys saw).\n"
     )
     parts.append("\n")
 
@@ -215,8 +224,12 @@ def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=
     gpu_api_selected, gpu_api_desc = cpu_tool.select_entries(cpu_gpu_api_entries, info["cpu_total_raw"], top, threshold, show_all)
     parts.append(f"=== 4. GPU API / launch overhead (rocprof-sys run) -- showing {gpu_api_desc} ===\n")
     parts.append(
-        "%total here is each entry's share of the CPU run's OWN total. This is exactly the "
-        "bucket subtracted out of table 1's combined pool.\n"
+        "%total here is each entry's share of the CPU run's OWN total. Every ROCm-library "
+        "call rocprof-sys saw is listed here, for digging in -- but only "
+        "hipStreamSynchronize/hipDeviceSynchronize (the two calls that actually mean \"block "
+        "the CPU until the GPU catches up\") are subtracted out of table 1's combined pool; "
+        "the rest (e.g. hsakmt_ioctl, rocr::* runtime-internal busy-wait/event threads) is "
+        "shown here but deliberately left out of that subtraction -- see the header note.\n"
     )
     parts.append(cpu_tool.format_table(gpu_api_selected))
     parts.append("\n")
