@@ -263,3 +263,40 @@ for now.
 python3 postprocess/select_hotspot_kernels.py --output-dir <rocprofv3-output-dir> [-n TOP_N | --threshold PCT | --all] [--all-dispatches]
 python3 postprocess/select_hotspot_kernels.py --report results/run1/hotspots.txt
 ```
+
+### Computing POP metrics — `extract_pop_metrics.py`
+
+Post-processing only, no launcher script: point this at output directories you've already
+produced with the tools above, and it computes POP (Performance Optimization and Productivity
+Centre of Excellence, https://pop-coe.eu/node/69)-inspired parallel efficiency metrics — Load
+Balance, Communication Efficiency, and Parallel Efficiency from one directory; Computation
+Efficiency and Global Efficiency too, given more directories from the same scaling study,
+compared against the first as reference.
+
+```bash
+# single run: Load Balance / Communication Efficiency / Parallel Efficiency only
+python3 postprocess/extract_pop_metrics.py results/run1
+
+# scaling study: also computes Computation Efficiency / Global Efficiency vs. run1
+python3 postprocess/extract_pop_metrics.py results/run1 results/run2 results/run4 --scaling strong
+```
+
+`--scaling {strong,weak}` is required whenever more than one directory is given: **strong**
+scaling (fixed global problem size, more ranks) compares the *total* useful compute time summed
+across ranks; **weak** scaling (fixed problem size per rank, more ranks) compares the *average*
+per-rank useful compute time instead, since weak scaling's total is expected to grow with rank
+count even at perfect efficiency.
+
+Each directory can be either a `profile_hotspots.sh`/`instrument_hotspots.sh`-style combined
+output (auto-detected `rocprof-sys/` + `rocprofv3/` subdirectories) or a plain
+`profile_CPU_hotspots.sh`-style CPU-only directory — GPU kernel time is folded into the "useful
+compute" pool (same double-counting-safe arithmetic as `extract_hotspots.py`) whenever a paired
+`rocprofv3/` directory is found.
+
+Not every POP metric is computed: Serialisation Efficiency and Transfer Efficiency need a
+Dimemas-style ideal-network simulation (not part of this toolchain), and Instruction/IPC Scaling
+need PAPI hardware counters (not present in `rocprof-sys` output unless
+`ROCPROFSYS_PAPI_EVENTS` was explicitly configured for the run). See
+[docs/pop_metrics_reference.md](docs/pop_metrics_reference.md) for the full picture of what's
+computable and why. Communication time is classified by function-name prefix
+(`MPI_`/`PMPI_`/`MPIR_`/`MPID_`) — MPICH/Cray-MPICH only for now.

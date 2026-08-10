@@ -18,6 +18,8 @@
 | 2026-08-03 | Fixed a pre-existing double-count in tool 3's combined-pool GPU-API-overhead arithmetic (branch `calltree`) |
 | 2026-08-03 | Fifth tool: GPU kernel deep-dive via rocprof-compute (`profile_hotspot_kernels.sh`) |
 | 2026-08-04 | Fixed three real-HPC-data bugs found while verifying tool 3 against a real run: rank/sampling-file dedup, GPU-API sync-wait narrowing, call-tree-ancestry thread reclassification |
+| 2026-08-10 | Added `docs/pop_metrics_reference.md`, mapping POP parallel-efficiency metrics to what tools 1-4's output can/can't provide |
+| 2026-08-10 | Sixth tool: `extract_pop_metrics.py`, computing POP-inspired Load Balance / Communication / Parallel / Computation / Global Efficiency from one or more output directories |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -228,3 +230,81 @@ Unlike `rocr::`, `start_thread` is a generic libc/pthread entry symbol — any a
 One thing the plan didn't anticipate until implementation: the same generic label (`start_thread`) can now be classified *differently* across occurrences within one rank (the HIP-spawned one vs. a hypothetical app-spawned one) — `scan_ranks()`'s and `aggregate()`'s per-label merge dictionaries were both keyed by plain `label`, which would have silently recombined exactly what ancestry just told apart. Caught via the negative-case test fixture (`gpu_spawned_thread`, modeling both a HIP-spawned and an app-spawned thread sharing the identical `start_thread` label) before it ever reached real data; fixed by switching both merge keys to `(label, gpu)`. Implemented per the approved plan, [docs/plans/09-calltree-ancestry-thread-classification.md](plans/09-calltree-ancestry-thread-classification.md). Re-verified against the real directory: `start_thread` is gone from tables 1/2 entirely (`main` correctly leads table 1 at 57.9%, not `start_thread` at ~200%) and now appears in table 4 instead, magnitude unchanged (self=7562.5s, 12 occurrences) — just correctly bucketed.
 
 Verified locally (no ROCm/GPU available, same constraint as every prior tool): full suite grew from 154 to 173 tests across the three parts (new fixtures: `multi_metric_rank`, `gpu_sync_wait`, `rocr_runtime_internals`, `gpu_spawned_thread`; new test classes `ScanRanksMultiMetricFileTests`, `RocrClassificationTests`, `AttachAncestryTests`, `ClassifyGpuTests`, `GpuSpawnedThreadFixtureTests`), all passing; `bash -n` on all five scripts (no shell changes this round, sanity-checked anyway). Each of the three parts was re-verified end-to-end against the same real `Heat_Convection_Solver` HPC directory before moving to the next, with each regenerated report written to its own file so all versions (original, and after each fix) remain comparable on disk. Real end-to-end validation against actual ROCm/GPU hardware is left to the user, as with every prior tool.
+
+## 2026-08-10 — POP metrics: reference doc, then the computation tool
+
+The user wants to eventually judge parallel-efficiency quality (à la the POP Centre of
+Excellence methodology, https://pop-coe.eu/node/69) from `rocprof-sys`/`rocprofv3` output.
+Before writing any computation code, the first step was purely analytical: fetch POP's own
+metric hierarchy and formulas (Global Efficiency = Parallel Efficiency × Computation
+Efficiency; Parallel Efficiency = Load Balance × Communication Efficiency; Communication
+Efficiency = Serialisation Efficiency × Transfer Efficiency, the last two needing a
+Dimemas-style ideal-network simulation), then check field-by-field, against real example output
+in `Heat_Convection_Solver`, which of these are actually derivable from tools 1-4's data.
+Findings written up in `docs/pop_metrics_reference.md`: per-rank MPI-call timing is exact from
+tool 4's instrumented `wall_clock-N.json/txt` (`ROCPROFSYS_MPI_GOTCHA_ENABLED`) and only
+statistically approximate from tools 1-3's sampling; no PAPI/hardware-counter output exists in
+any current run (the config flags are set, but no events are configured and no `papi_*` files
+exist), so Instruction Scaling and IPC Scaling are flatly unavailable today; Dimemas isn't part
+of this toolchain, so Serialisation/Transfer Efficiency are unavailable too — but Communication
+Efficiency's own direct formula (`max useful compute time / max total elapsed time`, no Dimemas
+needed) is still computable and worth reporting on its own.
+
+**The tool.** `postprocess/extract_pop_metrics.py` computes Load Balance, Communication
+Efficiency, and Parallel Efficiency from a single output directory, and — given additional
+directories from the same scaling study — Computation Efficiency and Global Efficiency relative
+to the first directory as reference. Built entirely on existing building blocks rather than a
+new parser: `extract_CPU_hotspots.py`'s `aggregate_per_rank()` self-time output sums cleanly
+across every function matching a new `MPI_PREFIXES` prefix set (`MPI_`/`PMPI_`/`MPIR_`/`MPID_` —
+MPICH/Cray-MPICH only, a documented limitation, not yet configurable per the user's decision)
+with no double-counting regardless of call-tree nesting, since self-time by construction
+partitions a rank's total time additively across every tree node. When a paired `rocprofv3/`
+directory is present (auto-detected per run directory, alongside a `rocprof-sys/` subdir — the
+layout `profile_hotspots.sh`/`instrument_hotspots.sh` already produce), the same
+CPU-total-minus-GPU-wait-plus-GPU-kernel-total arithmetic `extract_hotspots.py` already uses is
+applied **per rank** instead of pooled across the whole run.
+
+One real bug caught before it reached the user: the per-rank GPU-sync-wait subtraction
+(`hipStreamSynchronize`/`hipDeviceSynchronize`) initially read from `aggregate_per_rank()`'s own
+output, which silently returned zero for it every time — `aggregate_per_rank()` only returns
+CPU-classified rows, and both those labels start with `"hip"`, one of `extract_CPU_hotspots.py`'s
+own `GPU_API_PREFIXES`, so `scan_ranks()` classifies them as GPU rows and `aggregate_per_rank()`
+drops them before they're ever visible. Fixed with a small dedicated helper,
+`gpu_sync_wait_per_rank()`, that goes one level lower to `scan_ranks()` directly. Caught by the
+new `pop_combined_2rank` fixture's test (expected value off by exactly the sync-wait subtraction
+amount) before any real-data run.
+
+**Divergence from the approved plan:** the plan stated "for the reference run itself, CompE =
+GE = 1 by definition." Only `CompE_ref = 1` is actually trivially true (a self-ratio); `GE_ref =
+PE_ref × 1 = PE_ref`, i.e. the reference run's Global Efficiency correctly equals its own real
+Parallel Efficiency, not a hardcoded 1 — implemented that way, with a header note added to
+[docs/plans/11-pop-metrics-tool.md](plans/11-pop-metrics-tool.md) pointing here.
+
+New fixtures: `pop_ref_2rank`/`pop_scaled_4rank` (hand-computed MPI self-time and load-imbalance
+numbers, cross-checked in tests via `statistics.mean` rather than hand-typed ratios, matching
+this repo's existing test style), `pop_combined_2rank`/`pop_combined_mismatch` (paired
+`rocprof-sys/`+`rocprofv3/` layout, including the rank-count-mismatch fallback-to-CPU-only
+path), `pop_gpu_only` (the clear-error case: GPU kernel data with no CPU-side timing at all).
+20 new tests, full suite green at 193. Also verified end-to-end against real HPC data at the
+user's request: the two real `Heat_Convection_Solver/profile_hotspots-output-2026-08-10-*`
+directories (2 ranks and 4 ranks, same problem — a genuine strong-scaling pair) via
+`--scaling strong`. Results were plausible for a stencil/halo-exchange MPI code: Communication
+Efficiency dropped sharply from 0.808 (2 ranks) to 0.352 (4 ranks) as communication overhead grew
+relative to compute, Computation Efficiency came out to 1.449 (total useful compute time
+*decreased* going from 2 to 4 ranks — a real toolchain, not fixture data, so no independent
+ground truth to compare against, but every value landed in its mathematically valid range and
+the direction of each shift matches what strong scaling on a real halo-exchange code should look
+like). Real end-to-end validation against a proper scaling study and ROCm/GPU hardware is left
+to the user, as with every prior tool.
+
+**Report-layout follow-ups**, requested after seeing the real-data output: the originally
+separate "Per-run metrics" and "Scaling comparison" tables were merged into one, with `CompE`/`GE`
+columns only appearing when 2+ directories are given (so a single-run report shows a plain
+5-column table, no half-empty scaling columns) — the run-label column width is computed from the
+actual longest label rather than a fixed width, since real directory names easily exceed a
+hardcoded guess and threw off alignment once everything shared one table. The metric-formula
+footer was reworked from dense wrapped paragraphs into one bulleted line per metric (`LB`,
+`CommE`, `PE`, and — multi-run only — `CompE`, `GE`), under a "Metric explanation:" title,
+matching the existing "Not computed"/"Caveats" sections' own bullet style. Full suite (193 tests)
+re-verified green after each change, and the real 2-vs-4-rank report was regenerated and
+re-inspected after every layout tweak.
