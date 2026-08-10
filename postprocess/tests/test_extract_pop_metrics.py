@@ -96,6 +96,17 @@ class ComputeRunMetricsTests(unittest.TestCase):
             pop_tool.compute_run_metrics(GPU_ONLY_DIR)
         self.assertIn("CPU-side timing", str(ctx.exception))
 
+    def test_gpu_extension_fields_are_none_without_gpu_pairing(self):
+        metrics = pop_tool.compute_run_metrics(REF_DIR)
+        self.assertIsNone(metrics["gpu_offload_efficiency"])
+        self.assertIsNone(metrics["gpu_utilization"])
+        self.assertIsNone(metrics["gpu_load_balance"])
+        self.assertIsNone(metrics["total_gpu_busy_time"])
+        self.assertIsNone(metrics["avg_gpu_busy_time"])
+        for r in metrics["per_rank"]:
+            self.assertIsNone(r["cpu_only_time"])
+            self.assertIsNone(r["gpu_busy_time"])
+
 
 class CombinedPoolTests(unittest.TestCase):
     def test_gpu_kernel_time_and_sync_wait_subtraction_applied_per_rank(self):
@@ -129,6 +140,30 @@ class CombinedPoolTests(unittest.TestCase):
         by_total = sorted(metrics["per_rank"], key=lambda r: r["total_time"])
         self.assertAlmostEqual(by_total[0]["useful_compute"], max(0.0, 6.5 - 0.5))  # no GPU term added
         self.assertAlmostEqual(by_total[1]["useful_compute"], max(0.0, 7.0 - 0.6))
+        self.assertIsNone(metrics["gpu_offload_efficiency"])
+        self.assertIsNone(metrics["gpu_utilization"])
+        self.assertIsNone(metrics["gpu_load_balance"])
+
+    def test_gpu_offload_efficiency_utilization_and_load_balance(self):
+        # cpu_only_time (cpu_pure): rank2001 = max(0, 6.5-0.5-1.0) = 5.0,
+        # rank2002 = max(0, 7.0-0.6-0.9) = 5.5. max_total = max(6.5, 7.0) = 7.0.
+        # GPU-Off = 1 - max(5.0, 5.5) / 7.0.
+        gpu_per_rank, _ = gpu_tool.aggregate_per_rank(os.path.join(COMBINED_DIR, "rocprofv3"))
+        gpu_busy = sorted(sum(ft.values()) for ft in gpu_per_rank)
+
+        metrics = pop_tool.compute_run_metrics(COMBINED_DIR)
+        expected_offload = 1.0 - max(5.0, 5.5) / 7.0
+        expected_util = max(gpu_busy) / 7.0
+        expected_lb = statistics.mean(gpu_busy) / max(gpu_busy)
+
+        self.assertAlmostEqual(metrics["gpu_offload_efficiency"], expected_offload)
+        self.assertAlmostEqual(metrics["gpu_utilization"], expected_util)
+        self.assertAlmostEqual(metrics["gpu_load_balance"], expected_lb)
+        self.assertAlmostEqual(metrics["total_gpu_busy_time"], sum(gpu_busy))
+        self.assertAlmostEqual(metrics["avg_gpu_busy_time"], statistics.mean(gpu_busy))
+        for r in metrics["per_rank"]:
+            self.assertIsNotNone(r["cpu_only_time"])
+            self.assertIsNotNone(r["gpu_busy_time"])
 
 
 class ComputeScalingMetricsTests(unittest.TestCase):
@@ -167,6 +202,37 @@ class ComputeScalingMetricsTests(unittest.TestCase):
         self.assertAlmostEqual(result["global_efficiency"], self.ref_metrics["parallel_efficiency"])
 
 
+class ComputeGpuEfficiencyTests(unittest.TestCase):
+    # Inline metrics dicts rather than fixtures -- compute_gpu_efficiency() only
+    # ever reads total_gpu_busy_time/avg_gpu_busy_time, so a real GPU-paired
+    # fixture isn't needed to exercise its strong/weak/None branches in isolation.
+    REF = {"total_gpu_busy_time": 10.0, "avg_gpu_busy_time": 5.0}
+    SCALED = {"total_gpu_busy_time": 16.0, "avg_gpu_busy_time": 4.0}
+    NO_GPU = {"total_gpu_busy_time": None, "avg_gpu_busy_time": None}
+
+    def test_strong_uses_total(self):
+        result = pop_tool.compute_gpu_efficiency(self.REF, self.SCALED, "strong")
+        self.assertAlmostEqual(result, 10.0 / 16.0)
+
+    def test_weak_uses_average(self):
+        result = pop_tool.compute_gpu_efficiency(self.REF, self.SCALED, "weak")
+        self.assertAlmostEqual(result, 5.0 / 4.0)
+
+    def test_strong_and_weak_differ(self):
+        strong = pop_tool.compute_gpu_efficiency(self.REF, self.SCALED, "strong")
+        weak = pop_tool.compute_gpu_efficiency(self.REF, self.SCALED, "weak")
+        self.assertNotAlmostEqual(strong, weak)
+
+    def test_reference_compared_to_itself_is_one(self):
+        self.assertAlmostEqual(pop_tool.compute_gpu_efficiency(self.REF, self.REF, "strong"), 1.0)
+
+    def test_none_when_reference_lacks_gpu_data(self):
+        self.assertIsNone(pop_tool.compute_gpu_efficiency(self.NO_GPU, self.SCALED, "strong"))
+
+    def test_none_when_scaled_run_lacks_gpu_data(self):
+        self.assertIsNone(pop_tool.compute_gpu_efficiency(self.REF, self.NO_GPU, "strong"))
+
+
 class WriteReportTests(unittest.TestCase):
     def test_single_run_report_has_no_scaling_columns(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -200,6 +266,46 @@ class WriteReportTests(unittest.TestCase):
             self.assertIn("Serialisation Efficiency", report)
             self.assertIn("PAPI hardware counters", report)
             self.assertIn("MPICH/Cray-MPICH", report)
+
+    def test_gpu_columns_shown_only_when_gpu_data_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with_gpu = pop_tool.write_report([COMBINED_DIR], os.path.join(tmp, "a.txt"))
+            without_gpu = pop_tool.write_report([REF_DIR], os.path.join(tmp, "b.txt"))
+
+        header_with = next(line for line in with_gpu.splitlines() if "ranks" in line and "LB" in line)
+        header_without = next(line for line in without_gpu.splitlines() if "ranks" in line and "LB" in line)
+        self.assertIn("GPU-Off", header_with)
+        self.assertIn("GPU-Util", header_with)
+        self.assertIn("GPU-LB", header_with)
+        self.assertNotIn("GPU-Off", header_without)
+        self.assertNotIn("GPU-Util", header_without)
+        self.assertNotIn("GPU-LB", header_without)
+
+    def test_gpu_eff_shown_only_when_both_runs_have_gpu_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            both_gpu = pop_tool.write_report(
+                [COMBINED_DIR, COMBINED_DIR], os.path.join(tmp, "a.txt"), scaling="strong"
+            )
+            mixed = pop_tool.write_report(
+                [REF_DIR, COMBINED_DIR], os.path.join(tmp, "b.txt"), scaling="strong"
+            )
+
+        header_both = next(line for line in both_gpu.splitlines() if "ranks" in line and "LB" in line)
+        header_mixed = next(line for line in mixed.splitlines() if "ranks" in line and "LB" in line)
+        self.assertIn("GPU-Eff", header_both)
+        self.assertNotIn("GPU-Eff", header_mixed)  # reference (REF_DIR) has no GPU data at all
+
+    def test_column_order_matches_grouping(self):
+        # Non-scaling metrics first (GPU-Util before GPU-Off per the user's
+        # preferred order), all scaling metrics grouped at the end.
+        with tempfile.TemporaryDirectory() as tmp:
+            report = pop_tool.write_report(
+                [COMBINED_DIR, COMBINED_DIR], os.path.join(tmp, "out.txt"), scaling="strong"
+            )
+        header = next(line for line in report.splitlines() if "ranks" in line and "LB" in line)
+        columns = ["LB", "CommE", "PE", "GPU-Util", "GPU-Off", "GPU-LB", "CompE", "GE", "GPU-Eff"]
+        positions = [header.index(c) for c in columns]
+        self.assertEqual(positions, sorted(positions))
 
 
 class MainCliTests(unittest.TestCase):

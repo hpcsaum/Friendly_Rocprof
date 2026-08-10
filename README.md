@@ -300,3 +300,16 @@ need PAPI hardware counters (not present in `rocprof-sys` output unless
 [docs/pop_metrics_reference.md](docs/pop_metrics_reference.md) for the full picture of what's
 computable and why. Communication time is classified by function-name prefix
 (`MPI_`/`PMPI_`/`MPIR_`/`MPID_`) — MPICH/Cray-MPICH only for now.
+
+Four more columns, project-specific extensions rather than official POP metrics (see
+[docs/pop_metrics_reference.md](docs/pop_metrics_reference.md#gpu-specific-extensions-not-part-of-the-official-pop-catalog)),
+appear automatically whenever the data supports them, no extra flags needed. Three appear
+whenever a paired `rocprofv3/` directory is found, even for a single run: **`GPU-Off`** (GPU
+Offload Efficiency — how much of the critical-path rank's time is still CPU-only *compute*,
+excluding communication), **`GPU-Util`** (GPU Utilization — the GPU's raw share of wall-clock
+time, which *does* drop when communication grows and starves the GPU of work, unlike `GPU-Off`),
+and **`GPU-LB`** (GPU Load Balance — imbalance between GPUs specifically, separate from `LB`'s
+whole CPU+GPU pool). The fourth, **`GPU-Eff`** (GPU Efficiency — whether the GPU's own contribution
+scaled, isolated from `CompE`'s whole-pool view; a low value in strong scaling flags the per-rank
+problem size shrinking below what keeps the GPU saturated), appears only in a scaling study where
+both the reference and compared run have paired GPU data.

@@ -84,6 +84,55 @@ written, are exactly what that tool builds on:
   rank, not pooled across the whole run) whenever a paired `rocprofv3/` directory is found,
   instead of raw CPU wall-clock time alone.
 
+## GPU-specific extensions (not part of the official POP catalog)
+
+A separate question came up: POP also defines hybrid (MPI+OpenMP) metrics — see
+[pop-coe.eu's hybrid metrics page](https://pop-coe.eu/further-information/learning-material/pop-standard-hybrid-metrics-for-parallel-performance-analysis)
+— that decompose Parallel Efficiency into a process (MPI) level and a thread (OpenMP) level, the
+OpenMP-level metrics derived as ratios of the hybrid view to the MPI-only view (e.g. `OpenMP
+Parallel Efficiency = Hybrid Parallel Efficiency / MPI Parallel Efficiency`). Could the same
+substitution ("time on GPU" for "time in an OpenMP parallel region") produce a GPU-level metric
+set the same way?
+
+**Mostly no, for the thread-balance-shaped metrics.** POP's OpenMP-level formulas (Thread Load
+Balance, Serial Region Efficiency) rely on per-thread timing across a handful of *persistent,
+comparable workers* — each OpenMP thread does a slice of the same region for that region's whole
+duration, and `rocprof-sys` genuinely captures that per-thread. GPU kernels don't have that
+shape: `rocprofv3` only gives per-dispatch aggregate duration, not per-GPU-thread timing (that's
+a different instrument — `rocprof-compute`'s hardware occupancy/wavefront counters, tool 5).
+Computing "GPU thread balance" the OpenMP way would measure the wrong thing.
+
+**Four questions turned out to be well-posed anyway**, using data the tool already gathers. None
+of these are official POP metrics — they're named and formatted to avoid confusion with POP's own
+catalog (in particular, POP's real *Serialisation Efficiency* is the Dimemas-based metric a few
+sections up, listed there as "not computed").
+
+| Metric | Formula | Level | Rationale |
+|---|---|---|---|
+| **GPU Offload Efficiency** (`GPU-Off`) | `1 - (max non-offloaded CPU compute time / max total elapsed time)` across ranks | Per run | Amdahl's-law-style: how much of the critical-path rank's time is still CPU-only *compute* — genuinely serial code, code not yet ported, or code not worth porting. Deliberately excludes communication time (already `CommE`'s job). |
+| **GPU Utilization** (`GPU-Util`) | `max(GPU busy time) / max(total elapsed time)` across ranks | Per run | The GPU's raw share of wall-clock time — including any idling caused by growing communication overhead. `gpu_busy_time` doesn't nest additively inside `total_time` (async kernels can overlap CPU work), so this is a genuinely different quantity from `GPU-Off`, not its complement. |
+| **GPU Load Balance** (`GPU-LB`) | `avg(GPU busy time) / max(GPU busy time)` across ranks | Per run | The overall `LB` already mixes GPU kernel time into the combined CPU+GPU pool per rank, so imbalance *between GPUs specifically* (as opposed to between whole ranks) is otherwise invisible on its own. |
+| **GPU Efficiency** (`GPU-Eff`) | Strong: `total GPU busy time (reference) / total GPU busy time (scaled)`, summed across ranks. Weak: same ratio using the *average* per-rank GPU busy time. | Scaling (2+ runs) | GPU kernel time that's compute- or memory-bound should scale roughly linearly with the work assigned to that GPU. In **strong scaling**, the classic failure mode is the per-rank problem size shrinking below what the GPU needs to stay saturated — kernel launch overhead stops being amortized, occupancy drops, the GPU becomes latency- rather than throughput-bound. Structurally identical to `Computation Efficiency` but restricted to just the GPU-kernel-time bucket instead of the whole CPU+GPU pool, isolating whether it's specifically the GPU's own contribution that stopped scaling (as opposed to a CPU-side or communication effect `CompE`'s whole-pool view can't tell apart). |
+
+**Why both `GPU-Off` and `GPU-Util` exist, not just one:** the first implementation only had
+`GPU-Off`, normalized against total elapsed time. Validated against a real 2-rank vs. 4-rank
+strong-scaling run, `GPU-Off` went *up* (0.48 → 0.84) between the two — counterintuitive, since
+per-rank GPU busy time stayed roughly flat while communication overhead nearly tripled. The cause:
+normalizing the CPU-only-compute bucket against *total* time (which includes communication)
+means growing communication dilutes the ratio and makes offload look artificially better, even
+though nothing about offload changed — `CommE` dropping (0.81 → 0.35) was doing all the work.
+`GPU-Util`, which measures the GPU's raw share of wall-clock time directly, moved the way intuition
+expects (0.30 → 0.19: the GPU sat idle a larger fraction of the time as communication grew to
+dominate). Keeping both is more informative than picking one: `GPU-Off` isolates the CPU-compute
+offload question cleanly (comm-independent, by construction); `GPU-Util` answers "is the GPU
+actually busy," which legitimately degrades when communication starves it, regardless of root
+cause.
+
+All four are computed in `postprocess/extract_pop_metrics.py` whenever the underlying data
+supports them (a paired `rocprofv3/` directory for `GPU-Off`/`GPU-Util`/`GPU-LB`; a scaling study
+where both the reference and compared run have paired GPU data for `GPU-Eff`) — no new
+instrumentation or CLI flags needed.
+
 ## Future data sources
 
 - **Tool 5** (`profile_hotspot_kernels.sh`, `rocprof-compute`) exposes GPU hardware counters

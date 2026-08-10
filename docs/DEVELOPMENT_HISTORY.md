@@ -20,6 +20,7 @@
 | 2026-08-04 | Fixed three real-HPC-data bugs found while verifying tool 3 against a real run: rank/sampling-file dedup, GPU-API sync-wait narrowing, call-tree-ancestry thread reclassification |
 | 2026-08-10 | Added `docs/pop_metrics_reference.md`, mapping POP parallel-efficiency metrics to what tools 1-4's output can/can't provide |
 | 2026-08-10 | Sixth tool: `extract_pop_metrics.py`, computing POP-inspired Load Balance / Communication / Parallel / Computation / Global Efficiency from one or more output directories |
+| 2026-08-10 | Added four GPU-specific extensions to `extract_pop_metrics.py` (GPU-Util, GPU-Off, GPU-LB, GPU-Eff), inspired by (but not copied from) POP's hybrid MPI+OpenMP metrics |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -308,3 +309,72 @@ footer was reworked from dense wrapped paragraphs into one bulleted line per met
 matching the existing "Not computed"/"Caveats" sections' own bullet style. Full suite (193 tests)
 re-verified green after each change, and the real 2-vs-4-rank report was regenerated and
 re-inspected after every layout tweak.
+
+## 2026-08-10 — GPU-specific extensions to the POP metrics tool
+
+Looking at POP's hybrid MPI+OpenMP metrics page
+(https://pop-coe.eu/further-information/learning-material/pop-standard-hybrid-metrics-for-parallel-performance-analysis)
+prompted a design question: can the OpenMP-level metrics (Thread Load Balance, Serial Region
+Efficiency) be adapted into GPU metrics by substituting "time on GPU" for "time in an OpenMP
+parallel region"? Research conclusion: mostly no — POP's OpenMP formulas rely on per-thread
+timing across a handful of persistent, comparable workers (each thread does a slice of the same
+region for its whole duration), which `rocprof-sys` genuinely captures for CPU threads.
+`rocprofv3` only gives per-dispatch aggregate kernel duration, not per-GPU-thread timing (a
+different instrument, `rocprof-compute`'s occupancy counters), so a literal translation would
+measure the wrong thing.
+
+Three (later four) GPU-specific questions turned out to be well-posed anyway, all built on
+[docs/plans/12-gpu-specific-pop-metrics.md](plans/12-gpu-specific-pop-metrics.md):
+
+1. **GPU Offload Efficiency** (`GPU-Off`) — an Amdahl's-law-style question: how much of a rank's
+   time is still CPU-only compute (serial, not-yet-ported, or not-worth-porting code)? The tool
+   already computed this quantity internally (`cpu_pure` in `compute_run_metrics()`) as a step
+   toward `useful_compute`, just never surfaced it.
+2. **GPU Load Balance** (`GPU-LB`) — the overall `LB` already mixes GPU kernel time into the
+   combined pool per rank, so imbalance *between GPUs specifically* was otherwise invisible.
+3. **GPU Efficiency** (`GPU-Eff`) — the user's own framing: GPU kernel time should scale roughly
+   linearly with the work assigned to it; in strong scaling, the classic failure is the per-rank
+   problem size shrinking below what keeps the GPU saturated ("the GPU lost its power"). Built as
+   `Computation Efficiency`'s ref/scaled ratio, restricted to just the GPU-busy-time bucket
+   instead of the whole CPU+GPU pool — isolating whether it's specifically the GPU's contribution
+   that stopped scaling.
+
+**A real bug caught by validating against real data, not by a test.** All three metrics passed
+their unit tests (194 → 204 total). But regenerating the real 2-rank vs. 4-rank strong-scaling
+report (the same pair used to validate the base tool) showed `GPU-Off` moving the *wrong*
+direction: 0.48 → 0.84 (apparently "improving") between the two runs, even though per-rank GPU
+busy time stayed roughly flat and — per the user's own expectation from the raw numbers — more
+of each rank's time should have looked CPU-bound going into 4 ranks. Diagnosis (dumping per-rank
+`cpu_only`/`comm`/`gpu_busy`/`total` values directly): `cpu_only` compute actually *shrank*
+(62s → 15s, expected under strong scaling) while `comm` nearly tripled (23s → 64s) and `total`
+wall time dropped only modestly. `GPU-Off`'s formula (`1 - cpu_only/total`) normalizes against
+*total* elapsed time, which includes communication — the communication blowup diluted the ratio
+and made offload look artificially better, even though nothing about offload itself changed. Two
+candidate fixes (normalizing against `useful_compute` instead of `total`) were tried and both
+still moved the wrong way, since they were still fundamentally measuring the CPU-compute split,
+not overall GPU business.
+
+The actual fix, once correctly diagnosed: this isn't a bug in `GPU-Off`'s formula, it's a missing
+*fourth* metric answering a different question. Added **GPU Utilization** (`GPU-Util` =
+`max GPU busy time / max total elapsed time`) — the GPU's raw share of wall-clock time,
+including any idling caused by growing communication overhead. Verified against the real data:
+`GPU-Util` moved the way intuition expects (0.295 → 0.191, the GPU sat idle a larger fraction of
+the time as communication grew to dominate), while `GPU-Off` correctly continued to isolate the
+comm-independent CPU-compute-offload question. `gpu_busy_time` doesn't nest additively inside
+`total_time` (async kernels can overlap CPU work), so `GPU-Util` is a genuinely separate
+quantity, not `GPU-Off`'s complement — keeping both is more informative than picking one.
+Documented in `docs/pop_metrics_reference.md`'s "Why both `GPU-Off` and `GPU-Util` exist" note,
+with the real before/after numbers as the worked example.
+
+**Follow-up polish**, both from direct user feedback: column order changed to
+`LB, CommE, PE, GPU-Util, GPU-Off, GPU-LB, CompE, GE, GPU-Eff` (GPU-Util immediately before
+GPU-Off), and every GPU column name gained a hyphen (`GPUOff→GPU-Off`, `GPUUtil→GPU-Util`,
+`GPULB→GPU-LB`, `GPUEff→GPU-Eff`) for readability, widening the column format accordingly.
+
+Verified: full suite grew 193 → 204 tests (no new fixtures needed — the existing
+`pop_combined_2rank`/`pop_ref_2rank`/`pop_combined_mismatch` fixtures and inline metrics dicts for
+`compute_gpu_efficiency()`'s isolated branches were sufficient), all green throughout, including
+after the mid-course `GPU-Util` addition and the column-order/naming follow-ups. The real
+2-vs-4-rank report was regenerated and re-inspected after every change. Real end-to-end validation
+against ROCm/GPU hardware and a proper multi-point scaling study is left to the user, as with
+every prior tool.

@@ -97,7 +97,11 @@ def gpu_sync_wait_per_rank(cpu_dir):
 def compute_run_metrics(run_dir):
     """Load Balance, Communication Efficiency, and Parallel Efficiency for one
     run, plus the per-rank "useful compute time" totals a scaling comparison
-    needs. Returns a dict -- see the bottom of this function for every key.
+    needs, plus four GPU-specific extensions (GPU Offload Efficiency, GPU
+    Utilization, GPU Load Balance, and the totals GPU Efficiency needs) when a
+    paired rocprofv3 dir is present -- see docs/pop_metrics_reference.md's
+    "GPU-specific extensions" section for why these aren't official POP
+    metrics. Returns a dict -- see the bottom of this function for every key.
 
     Per rank: total_time is that rank's root/whole-program inclusive wall time
     (max of its inclusive-time dict, same "largest value is the root" heuristic
@@ -156,8 +160,11 @@ def compute_run_metrics(run_dir):
         if gpu_per_rank is not None:
             gpu_api_overhead = sync_wait_per_rank[i]
             cpu_pure = max(0.0, total_time - comm_time - gpu_api_overhead)
-            useful_compute = cpu_pure + sum(gpu_per_rank[i].values())
+            gpu_busy_time = sum(gpu_per_rank[i].values())
+            useful_compute = cpu_pure + gpu_busy_time
         else:
+            cpu_pure = None
+            gpu_busy_time = None
             useful_compute = max(0.0, total_time - comm_time)
 
         per_rank.append({
@@ -165,6 +172,8 @@ def compute_run_metrics(run_dir):
             "total_time": total_time,
             "comm_time": comm_time,
             "useful_compute": useful_compute,
+            "cpu_only_time": cpu_pure,
+            "gpu_busy_time": gpu_busy_time,
         })
 
     useful_values = [r["useful_compute"] for r in per_rank]
@@ -178,6 +187,27 @@ def compute_run_metrics(run_dir):
         load_balance * comm_efficiency if load_balance is not None and comm_efficiency is not None else None
     )
 
+    # All-or-nothing per run (see resolve_run_dirs()/the mismatched-rank-count fallback above):
+    # either every rank has GPU data or none do, so checking one field is enough.
+    gpu_busy_values = [r["gpu_busy_time"] for r in per_rank]
+    has_gpu_data = all(v is not None for v in gpu_busy_values)
+    max_gpu_busy = max(gpu_busy_values) if has_gpu_data else None
+
+    gpu_offload_efficiency = (
+        1.0 - max(r["cpu_only_time"] for r in per_rank) / max_total
+        if has_gpu_data and max_total > 0 else None
+    )
+    # Distinct from gpu_offload_efficiency above: that one isolates the CPU-only
+    # COMPUTE split (excluding comm/GPU-wait, on purpose -- comm is CommE's job).
+    # This one is the GPU's raw share of wall-clock time, including any idling
+    # caused by growing communication overhead -- gpu_busy_time doesn't nest
+    # inside total_time additively (async kernels can overlap CPU work), so this
+    # is a genuinely separate quantity, not derivable from gpu_offload_efficiency.
+    gpu_utilization = (max_gpu_busy / max_total) if has_gpu_data and max_total > 0 else None
+    gpu_load_balance = (
+        statistics.mean(gpu_busy_values) / max_gpu_busy if has_gpu_data and max_gpu_busy > 0 else None
+    )
+
     return {
         "run_dir": run_dir,
         "cpu_dir": cpu_dir,
@@ -189,6 +219,11 @@ def compute_run_metrics(run_dir):
         "parallel_efficiency": parallel_efficiency,
         "total_useful_compute": sum(useful_values),
         "avg_useful_compute": statistics.mean(useful_values),
+        "gpu_offload_efficiency": gpu_offload_efficiency,
+        "gpu_utilization": gpu_utilization,
+        "gpu_load_balance": gpu_load_balance,
+        "total_gpu_busy_time": sum(gpu_busy_values) if has_gpu_data else None,
+        "avg_gpu_busy_time": statistics.mean(gpu_busy_values) if has_gpu_data else None,
     }
 
 
@@ -213,6 +248,23 @@ def compute_scaling_metrics(ref_metrics, run_metrics, scaling):
     return {"computation_efficiency": computation_efficiency, "global_efficiency": global_efficiency}
 
 
+def compute_gpu_efficiency(ref_metrics, run_metrics, scaling):
+    """GPU Efficiency: same strong/weak ratio shape as compute_scaling_metrics(),
+    but over GPU-only busy time instead of the whole CPU+GPU useful_compute pool
+    -- isolates whether it's specifically the GPU's own contribution that
+    stopped scaling (e.g. per-rank problem size shrinking below what keeps the
+    GPU saturated under strong scaling), as opposed to Computation Efficiency's
+    whole-pool view, which could equally reflect a CPU-side or communication
+    effect. None whenever either run lacks paired GPU data -- not an official
+    POP metric, see docs/pop_metrics_reference.md.
+    """
+    key = "avg_gpu_busy_time" if scaling == "weak" else "total_gpu_busy_time"
+    ref_value, run_value = ref_metrics[key], run_metrics[key]
+    if ref_value is None or run_value is None or run_value <= 0:
+        return None
+    return ref_value / run_value
+
+
 def run_label(run_dir):
     return os.path.basename(os.path.normpath(run_dir))
 
@@ -225,6 +277,12 @@ def write_report(run_dirs, dest_path, scaling=None):
     all_metrics = [compute_run_metrics(d) for d in run_dirs]
     ref_metrics = all_metrics[0]
     multi_run = len(all_metrics) > 1
+    # GPUOff/GPULB share one gate: both come from the same has_gpu_data check per run
+    # (see compute_run_metrics()), so they always appear/disappear together.
+    show_gpu_cols = any(m["gpu_offload_efficiency"] is not None for m in all_metrics)
+    show_gpu_eff = multi_run and any(
+        compute_gpu_efficiency(ref_metrics, m, scaling) is not None for m in all_metrics if m is not ref_metrics
+    )
 
     parts = []
     parts.append("POP-inspired parallel efficiency metrics report\n")
@@ -244,16 +302,29 @@ def write_report(run_dirs, dest_path, scaling=None):
 
     header_title = "=== Metrics" + (f" ({scaling} scaling, relative to {run_label(ref_metrics['run_dir'])}) ===\n" if multi_run else " ===\n")
     parts.append(header_title)
+
+    gpu_col_width = 8  # widest label below ("GPU-Util") is 8 chars
+
+    header = f"  {'run':<{label_width}}  {'ranks':>5}  {'LB':>7}  {'CommE':>7}  {'PE':>7}"
+    if show_gpu_cols:
+        header += f"  {'GPU-Util':>{gpu_col_width}}  {'GPU-Off':>{gpu_col_width}}  {'GPU-LB':>{gpu_col_width}}"
     if multi_run:
-        parts.append(f"  {'run':<{label_width}}  {'ranks':>5}  {'LB':>7}  {'CommE':>7}  {'PE':>7}  {'CompE':>7}  {'GE':>7}\n")
-    else:
-        parts.append(f"  {'run':<{label_width}}  {'ranks':>5}  {'LB':>7}  {'CommE':>7}  {'PE':>7}\n")
+        header += f"  {'CompE':>7}  {'GE':>7}"
+    if show_gpu_eff:
+        header += f"  {'GPU-Eff':>{gpu_col_width}}"
+    parts.append(header + "\n")
+
     for label, m in zip(row_labels, all_metrics):
         row = (
             f"  {label:<{label_width}}  "
             f"{m['num_ranks']:>5}  {fmt(m['load_balance']):>7}  {fmt(m['communication_efficiency']):>7}  "
             f"{fmt(m['parallel_efficiency']):>7}"
         )
+        if show_gpu_cols:
+            row += (
+                f"  {fmt(m['gpu_utilization']):>{gpu_col_width}}  {fmt(m['gpu_offload_efficiency']):>{gpu_col_width}}  "
+                f"{fmt(m['gpu_load_balance']):>{gpu_col_width}}"
+            )
         if multi_run:
             if m is ref_metrics:
                 comp_e, ge = 1.0, ref_metrics["parallel_efficiency"]
@@ -261,6 +332,11 @@ def write_report(run_dirs, dest_path, scaling=None):
                 scaling_metrics = compute_scaling_metrics(ref_metrics, m, scaling)
                 comp_e, ge = scaling_metrics["computation_efficiency"], scaling_metrics["global_efficiency"]
             row += f"  {fmt(comp_e):>7}  {fmt(ge):>7}"
+        if show_gpu_eff:
+            # show_gpu_eff being True guarantees ref_metrics has GPU data (see its
+            # definition above), so the reference row's own ratio is trivially 1.0.
+            gpu_eff = 1.0 if m is ref_metrics else compute_gpu_efficiency(ref_metrics, m, scaling)
+            row += f"  {fmt(gpu_eff):>{gpu_col_width}}"
         parts.append(row + "\n")
 
     parts.append("\n")
@@ -271,6 +347,23 @@ def write_report(run_dirs, dest_path, scaling=None):
         "(direct formula, not Dimemas's Serialisation x Transfer split -- see docs/pop_metrics_reference.md)\n"
     )
     parts.append("  - PE    = LB x CommE\n")
+    if show_gpu_cols:
+        parts.append(
+            "  - GPU-Util = max GPU busy time / max total elapsed time across ranks -- NOT an official POP "
+            "metric; the GPU's raw share of wall-clock time, INCLUDING any idling caused by growing "
+            "communication overhead -- unlike GPU-Off, this drops when CommE drops too, since a "
+            "comm-starved GPU is genuinely less utilized, whatever the root cause\n"
+        )
+        parts.append(
+            "  - GPU-Off = 1 - (max non-offloaded CPU compute time / max total elapsed time) across ranks -- "
+            "NOT an official POP metric; how much of the critical-path rank's time is still CPU-only "
+            "compute (serial, not-yet-ported, or not-worth-porting code) -- deliberately excludes "
+            "communication time, already covered by CommE\n"
+        )
+        parts.append(
+            "  - GPU-LB = avg / max GPU busy time across ranks -- NOT an official POP metric; load balance "
+            "between GPUs specifically, separate from LB's whole CPU+GPU pool\n"
+        )
     if multi_run:
         if scaling == "weak":
             parts.append(
@@ -289,6 +382,19 @@ def write_report(run_dirs, dest_path, scaling=None):
             "  - CompE, GE need a scaling study (2+ directories, compared against the first as reference) "
             "-- pass additional directories to see them\n"
         )
+    if show_gpu_eff:
+        if scaling == "weak":
+            parts.append(
+                "  - GPU-Eff = avg per-rank GPU busy time (reference) / avg per-rank GPU busy time (this run) -- "
+                "NOT an official POP metric; isolates whether it's specifically the GPU's own contribution "
+                "that stopped scaling, as opposed to CompE's whole-pool view\n"
+            )
+        else:
+            parts.append(
+                "  - GPU-Eff = total GPU busy time (reference) / total GPU busy time (this run), summed across "
+                "ranks -- NOT an official POP metric; a low value in strong scaling flags the per-rank "
+                "problem size shrinking below what keeps the GPU saturated\n"
+            )
     parts.append("\n")
 
     parts.append(
