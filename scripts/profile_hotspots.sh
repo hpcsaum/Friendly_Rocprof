@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Run rocprof-sys and rocprofv3 against the same command, one after the other,
 # then merge both into one combined hotspots.txt via
-# postprocess/extract_hotspots.py. Reuses scripts/profile_CPU_hotspots.sh
+# postprocess/extract_hotspots.py, and a calltree.txt via
+# postprocess/extract_calltree.py (GPU kernels nested in at their CPU call
+# site(s), when found). Reuses scripts/profile_CPU_hotspots.sh
 # and scripts/profile_GPU_hotspots.sh directly instead of re-implementing their
 # dependency checks / flag handling here.
 #
@@ -19,6 +21,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXTRACTOR="$SCRIPT_DIR/../postprocess/extract_hotspots.py"
+CALLTREE_EXTRACTOR="$SCRIPT_DIR/../postprocess/extract_calltree.py"
 CPU_LAUNCHER="$SCRIPT_DIR/profile_CPU_hotspots.sh"
 GPU_LAUNCHER="$SCRIPT_DIR/profile_GPU_hotspots.sh"
 
@@ -28,6 +31,7 @@ DRY_RUN=0
 MPI_STR=""
 SELECTION_ARGS=()
 UNFILTERED=0
+CALLTREE_ARGS=()
 
 usage() {
   cat <<'EOF'
@@ -59,15 +63,18 @@ for details.
 Options:
   -o, --output-dir DIR   base output directory (default: profile_hotspots-output-<timestamp>)
                           raw profiling data goes in DIR/rocprof-sys and DIR/rocprofv3;
-                          the combined hotspots.txt itself is written at DIR/hotspots.txt
+                          the combined hotspots.txt and calltree.txt are written at DIR/
   --top N                 hotspots per table to report (default: 20; last of --top/--threshold/--all wins)
   --threshold PCT         only report entries at or above PCT% of their table's total
                           (or, in the load-imbalance tables, at or above PCT% coefficient of variation)
   --all                   report every entry, no truncation
-  --no-summary            skip auto-running the combined extractor afterwards
+  --no-summary            skip auto-running the combined and calltree extractors afterwards
   --unfiltered            rank CPU-side entries by inclusive (total) time instead of self time
                           -- the old behavior, where a function that just calls other functions
                           can still rank high
+  --max-depth N           truncate the auto-generated call tree at this depth (default: unlimited)
+  --show-gpu-api          include GPU-API/runtime calls in the auto-generated call tree
+                          (hidden by default, same as the hotspots report)
   --mpi "<launch cmd>"    MPI launch command, forwarded to both sub-launcher runs
   --dry-run               print what would run, don't execute
   -h, --help              show this help
@@ -88,6 +95,10 @@ while [[ $# -gt 0 ]]; do
       RUN_SUMMARY=0; shift ;;
     --unfiltered)
       UNFILTERED=1; shift ;;
+    --max-depth)
+      CALLTREE_ARGS+=(--max-depth "$2"); shift 2 ;;
+    --show-gpu-api)
+      CALLTREE_ARGS+=(--show-gpu-api); shift ;;
     --mpi)
       MPI_STR="$2"; shift 2 ;;
     --dry-run)
@@ -110,6 +121,7 @@ fi
 CPU_DIR="$OUTPUT_DIR/rocprof-sys"
 GPU_DIR="$OUTPUT_DIR/rocprofv3"
 REPORT_DEST="$OUTPUT_DIR/hotspots.txt"
+CALLTREE_DEST="$OUTPUT_DIR/calltree.txt"
 
 MPI_FORWARD=()
 [[ -n "$MPI_STR" ]] && MPI_FORWARD=(--mpi "$MPI_STR")
@@ -122,6 +134,9 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "would then run:"
   printf '  python3 %q %q %q -o %q ' "$EXTRACTOR" "$CPU_DIR" "$GPU_DIR" "$REPORT_DEST"
   printf '%q ' "${SELECTION_ARGS[@]}" "${UNFILTERED_ARGS[@]}"
+  echo
+  printf '  python3 %q %q -o %q ' "$CALLTREE_EXTRACTOR" "$OUTPUT_DIR" "$CALLTREE_DEST"
+  printf '%q ' "${CALLTREE_ARGS[@]}"
   echo
   exit 0
 fi
@@ -137,8 +152,11 @@ if [[ "$RUN_SUMMARY" -eq 1 ]]; then
   if command -v python3 >/dev/null 2>&1; then
     python3 "$EXTRACTOR" "$CPU_DIR" "$GPU_DIR" -o "$REPORT_DEST" "${SELECTION_ARGS[@]}" "${UNFILTERED_ARGS[@]}" || \
       echo "warning: combined hotspots extractor failed; profiling data is still in $CPU_DIR and $GPU_DIR" >&2
+    python3 "$CALLTREE_EXTRACTOR" "$OUTPUT_DIR" -o "$CALLTREE_DEST" "${CALLTREE_ARGS[@]}" || \
+      echo "warning: calltree extractor failed; profiling data is still in $CPU_DIR and $GPU_DIR" >&2
   else
-    echo "warning: python3 not found, skipping combined summary; run it manually later:" >&2
+    echo "warning: python3 not found, skipping combined/calltree summary; run manually later:" >&2
     echo "  python3 $EXTRACTOR $CPU_DIR $GPU_DIR -o $REPORT_DEST ${SELECTION_ARGS[*]} ${UNFILTERED_ARGS[*]}" >&2
+    echo "  python3 $CALLTREE_EXTRACTOR $OUTPUT_DIR -o $CALLTREE_DEST ${CALLTREE_ARGS[*]}" >&2
   fi
 fi

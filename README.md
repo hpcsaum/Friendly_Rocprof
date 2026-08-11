@@ -157,6 +157,46 @@ check that they came from the same executable or test case — that's on you
 python3 postprocess/extract_hotspots.py <rocprof-sys-output-dir> <rocprofv3-output-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all] [--unfiltered]
 ```
 
+### Call tree — `extract_calltree.py`
+
+Where the hotspots reports above give you a flat ranked list, this one shows the actual
+**call tree** — real function nesting (drawn with `tree`-style `├──`/`└──`/`│` connectors,
+metrics right-aligned into real CALLS/SELF(s)/TOTAL(s) columns), so you can see *what
+called what*, not just which functions took the most time. Generated automatically
+alongside `hotspots.txt` by `profile_CPU_hotspots.sh`, `profile_hotspots.sh`, and
+`instrument_hotspots.sh trace` (all three; pass `--no-summary` to any of them to skip
+it, same flag that already skips their hotspots report) — or run standalone against any
+of their output directories:
+
+```bash
+python3 postprocess/extract_calltree.py <output-dir> [-o calltree.txt] [--max-depth N] [--show-gpu-api]
+```
+
+Filtering matches the hotspots reports' "CPU compute" bucket: GPU-API/runtime noise
+(`hip`/`hsa`/`roctx`/`kfd`/`rocdecode`/`rocjpeg`/`rocr`-prefixed calls, plus
+kernel-descriptor sampling artifacts — labels ending in `.kd`, which rocprof-sys's own
+sampling sometimes attributes to a GPU kernel launch directly in the CPU tree, duplicating
+the same kernel's real device time shown under "GPU kernels" below) is hidden by default,
+so what's left is your own code plus MPI calls — pass `--show-gpu-api` to see the hidden
+chain too. `--max-depth N` truncates the tree for readability (stating how many further
+nodes were hidden, not silently dropping them); omit it to print the whole tree.
+
+When a paired `rocprofv3/` directory is present (tool 3's combined output, or tool 4's
+scan directory — both work identically, same underlying data), real GPU kernel data is
+nested into the tree at the CPU call site(s) that launched kernels. This is a
+**structural estimate**, not a per-dispatch-exact placement: this toolchain's text/JSON
+output has no per-call timestamps to correlate a specific kernel dispatch against a
+specific launch call — only the binary Perfetto trace has that, and there's no
+stdlib-friendly way to parse it (a real gap, tracked as future work, not silently
+dropped — see
+[docs/plans/13-calltree-tool.md](docs/plans/13-calltree-tool.md)). When exactly one
+`hipLaunchKernel`-family call site is found, kernel data attaches there in full; when
+several exist, each is attributed a share of the kernel data proportional to how many
+launch calls it made, clearly labeled as an estimate; when none is found at all
+(possible on tool 4's scan directory specifically — its `ROCPROFSYS_USE_ROCM` HIP-call
+capture isn't enabled during the scan step, only during the final trace run), kernel
+data appears in its own labeled section instead of being attached to a guess.
+
 ### Selective instrumentation — `instrument_hotspots.sh`
 
 Once you already know your hotspots (from `profile_hotspots.sh` above),

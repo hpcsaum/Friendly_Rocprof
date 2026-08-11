@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Launch a lightweight rocprof-sys CPU-sampling profile of a single command, then
-# (by default) generate a short hotspots.txt via postprocess/extract_CPU_hotspots.py.
+# (by default) generate a short hotspots.txt via postprocess/extract_CPU_hotspots.py
+# and a calltree.txt via postprocess/extract_calltree.py.
 #
 # rocprof-sys-sample wraps exactly one process. For MPI runs, this script is still
 # called exactly once -- pass the MPI launch command as data via --mpi "<launch cmd>"
@@ -16,6 +17,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXTRACTOR="$SCRIPT_DIR/../postprocess/extract_CPU_hotspots.py"
+CALLTREE_EXTRACTOR="$SCRIPT_DIR/../postprocess/extract_calltree.py"
 
 OUTPUT_DIR="profile_CPU_hotspots-output-$(date +%F_%H.%M.%S)"
 FREQ_HZ=100
@@ -24,6 +26,7 @@ DRY_RUN=0
 MPI_STR=""
 SELECTION_ARGS=()
 UNFILTERED=0
+CALLTREE_ARGS=()
 
 usage() {
   cat <<'EOF'
@@ -67,10 +70,13 @@ Options:
   --threshold PCT         only report entries at or above PCT% of total runtime
                           (or, in the load-imbalance table, at or above PCT% coefficient of variation)
   --all                   report every entry, no truncation
-  --no-summary            skip auto-running the hotspots extractor afterwards
+  --no-summary            skip auto-running the hotspots and calltree extractors afterwards
   --unfiltered            rank by inclusive (total) time instead of self time -- the old
                           behavior, where a function that just calls other functions can
                           still rank high
+  --max-depth N           truncate the auto-generated call tree at this depth (default: unlimited)
+  --show-gpu-api          include GPU-API/runtime calls in the auto-generated call tree
+                          (hidden by default, same as the hotspots report)
   --mpi "<launch cmd>"    MPI launch command to prefix the profiling run with (e.g. "mpirun -np 4")
   --dry-run               print the command and env vars that would run, don't execute
   -h, --help              show this help
@@ -93,6 +99,10 @@ while [[ $# -gt 0 ]]; do
       RUN_SUMMARY=0; shift ;;
     --unfiltered)
       UNFILTERED=1; shift ;;
+    --max-depth)
+      CALLTREE_ARGS+=(--max-depth "$2"); shift 2 ;;
+    --show-gpu-api)
+      CALLTREE_ARGS+=(--show-gpu-api); shift ;;
     --mpi)
       MPI_STR="$2"; shift 2 ;;
     --dry-run)
@@ -156,9 +166,12 @@ if [[ "$RUN_SUMMARY" -eq 1 ]]; then
   if command -v python3 >/dev/null 2>&1; then
     python3 "$EXTRACTOR" "$OUTPUT_DIR" "${SELECTION_ARGS[@]}" "${UNFILTERED_ARGS[@]}" || \
       echo "warning: hotspots extractor failed; profiling data is still in $OUTPUT_DIR" >&2
+    python3 "$CALLTREE_EXTRACTOR" "$OUTPUT_DIR" "${CALLTREE_ARGS[@]}" || \
+      echo "warning: calltree extractor failed; profiling data is still in $OUTPUT_DIR" >&2
   else
-    echo "warning: python3 not found, skipping hotspots summary; run it manually later:" >&2
+    echo "warning: python3 not found, skipping hotspots/calltree summary; run manually later:" >&2
     echo "  python3 $EXTRACTOR $OUTPUT_DIR ${SELECTION_ARGS[*]} ${UNFILTERED_ARGS[*]}" >&2
+    echo "  python3 $CALLTREE_EXTRACTOR $OUTPUT_DIR ${CALLTREE_ARGS[*]}" >&2
   fi
 fi
 

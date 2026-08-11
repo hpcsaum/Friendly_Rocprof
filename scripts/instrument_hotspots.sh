@@ -76,10 +76,13 @@ Options:
   --top N                  hotspot functions to select (last of --top/--threshold/--all wins)
   --threshold PCT          only select functions at or above PCT% of total runtime (default: 1)
   --all                    select every function found, no truncation
-  --no-summary             skip writing the auto-profiling run's own hotspots.txt
+  --no-summary             skip writing the auto-profiling run's own hotspots.txt and calltree.txt
   --unfiltered             select hotspot functions by inclusive (total) time instead of self
                            time -- the old behavior, which can pick a function that just calls
                            other functions rather than one that does real work
+  --max-depth N            truncate the auto-profiling run's own calltree.txt at this depth
+                           (default: unlimited)
+  --show-gpu-api           include GPU-API/runtime calls in the auto-profiling run's calltree.txt
   --mpi "<launch cmd>"     MPI launch command to prefix the auto-profiling run with (e.g. "mpirun -np 4")
   --out-binary PATH        path for the instrumented binary (default: <executable>.inst)
   --dry-run                print what would run, don't execute
@@ -118,10 +121,13 @@ Options:
   --top N                     hotspot functions to select (last of --top/--threshold/--all wins)
   --threshold PCT             only select functions at or above PCT% of total runtime (default: 1)
   --all                       select every function found, no truncation
-  --no-summary                 skip writing the auto-profiling run's own hotspots.txt
+  --no-summary                 skip writing the auto-profiling run's own hotspots.txt and calltree.txt
   --unfiltered                 select hotspot functions by inclusive (total) time instead of
                                self time -- the old behavior, which can pick a function that
                                just calls other functions rather than one that does real work
+  --max-depth N                truncate the auto-profiling run's own calltree.txt at this depth
+                               (default: unlimited)
+  --show-gpu-api               include GPU-API/runtime calls in the auto-profiling run's calltree.txt
   --mpi "<launch cmd>"        MPI launch command, reused for the profiling run and the trace run
   --out-binary PATH            path for the instrumented binary (default: <executable>.inst)
   --trace-output-dir DIR      directory for the trace output (default: instrument_hotspots-trace-output-<timestamp>)
@@ -165,6 +171,7 @@ UNFILTERED=0
 MPI_STR=""
 OUT_BINARY=""
 DRY_RUN=0
+CALLTREE_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -182,6 +189,10 @@ while [[ $# -gt 0 ]]; do
       NO_SUMMARY=1; shift ;;
     --unfiltered)
       UNFILTERED=1; shift ;;
+    --max-depth)
+      CALLTREE_ARGS+=(--max-depth "$2"); shift 2 ;;
+    --show-gpu-api)
+      CALLTREE_ARGS+=(--show-gpu-api); shift ;;
     --mpi)
       MPI_STR="$2"; shift 2 ;;
     --out-binary)
@@ -257,7 +268,7 @@ fi
 if [[ -z "$REPORT" ]]; then
   NO_SUMMARY_ARGS=()
   [[ "$NO_SUMMARY" -eq 1 ]] && NO_SUMMARY_ARGS=(--no-summary)
-  PROFILE_CMD=("$HOTSPOTS_LAUNCHER" "${MPI_FORWARD[@]}" "${SELECTION_ARGS[@]}" "${UNFILTERED_ARGS[@]}" "${NO_SUMMARY_ARGS[@]}" -o "$OUTPUT_DIR" -- "${APP_ARGS[@]}")
+  PROFILE_CMD=("$HOTSPOTS_LAUNCHER" "${MPI_FORWARD[@]}" "${SELECTION_ARGS[@]}" "${UNFILTERED_ARGS[@]}" "${CALLTREE_ARGS[@]}" "${NO_SUMMARY_ARGS[@]}" -o "$OUTPUT_DIR" -- "${APP_ARGS[@]}")
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "would run:"
     printf '  %q ' "${PROFILE_CMD[@]}"
