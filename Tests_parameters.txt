@@ -1,0 +1,26 @@
+Languages :
+Fortran
+C
+C++
+Python (optional)
+
+Compilers :
+Gnu
+Cray
+amd
+Intel (optional)
+
+Programming model :
+Hip
+OpenMP
+standard parallelism (for C++)
+Kokkos (optional)
+
+MPI Distribution
+OpenMPI
+CrayMPI/MPICH
+
+
+Scope :
+every test should at least do MPI communications, launch kernels and be complex enough to test the calltree features.
+One of the objective is to expand the list of substring that needs to be filtered based on the parameters.
