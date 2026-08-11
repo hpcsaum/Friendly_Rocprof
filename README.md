@@ -161,15 +161,85 @@ python3 postprocess/extract_hotspots.py <rocprof-sys-output-dir> <rocprofv3-outp
 
 Where the hotspots reports above give you a flat ranked list, this one shows the actual
 **call tree** — real function nesting (drawn with `tree`-style `├──`/`└──`/`│` connectors,
-metrics right-aligned into real CALLS/SELF(s)/TOTAL(s) columns), so you can see *what
-called what*, not just which functions took the most time. Generated automatically
-alongside `hotspots.txt` by `profile_CPU_hotspots.sh`, `profile_hotspots.sh`, and
-`instrument_hotspots.sh trace` (all three; pass `--no-summary` to any of them to skip
-it, same flag that already skips their hotspots report) — or run standalone against any
-of their output directories:
+metrics right-aligned into real columns), so you can see *what called what*, not just
+which functions took the most time. **Aggregated across every rank into one global tree**
+(not one call tree per rank): `CALLS` and `TOTAL-AVG(s)` are plain averages, and
+`SELF-AVG(s)`/`SELF-STD(s)`/`SELF-MIN(s)`/`SELF-MAX(s)` give each node's full load-balance
+breakdown — the same avg/std_dev/min/max convention the hotspots reports' own
+load-imbalance tables already use, applied here to call-tree structure instead of a flat
+ranked list. A rank that never reached a given node counts as `0` there, not omitted, so
+real imbalance (e.g. a function only some ranks call) isn't hidden by averaging. Generated
+automatically alongside `hotspots.txt` by `profile_CPU_hotspots.sh`, `profile_hotspots.sh`,
+and `instrument_hotspots.sh trace` (all three; pass `--no-summary` to any of them to skip
+it, same flag that already skips their hotspots report) — or run standalone against any of
+their output directories:
 
 ```bash
-python3 postprocess/extract_calltree.py <output-dir> [-o calltree.txt] [--max-depth N] [--show-gpu-api]
+python3 postprocess/extract_calltree.py <output-dir> [-o calltree.txt] [--max-depth N] \
+  [--show-gpu-api] [--show-rocprofsys-internals] [--show-mpi-internals] \
+  [--show-compiler-runtime] [--show-all-internals]
+```
+
+This is the **sampling-based** variant, and the default: it's built on
+`sampling_wall_clock-<pid>.txt` (a real unwound stack frame at every sample tick), so it
+shows the tree's *true* depth — including real intermediate frames that were never
+explicitly instrumented, which `extract_calltree_traced.py` below can't see at all. The
+cost is that sampling's own timing is only statistically approximate, and the raw sampled
+stack is dominated by four kinds of noise, each hidden by default behind its own flag (or
+all four at once with `--show-all-internals`):
+
+- **GPU-API/offload-runtime noise** (`--show-gpu-api`) — the hotspots reports' usual
+  `hip`/`hsa`/`roctx`/`kfd`/`rocdecode`/`rocjpeg`/`rocr` bucket, broadened to catch
+  namespace-qualified symbols too, plus `.kd`-suffixed kernel-descriptor sampling
+  artifacts (see the traced tool's section below) and known GPU/offload-runtime frames
+  (`cray_acc`, `hipHardwareDevice`, `present_table`). Whole subtree hidden.
+- **rocprof-sys's own instrumentation/GOTCHA/dynamic-linker frames**
+  (`--show-rocprofsys-internals`) — real application code sits *inside* these wrapper
+  frames, not beside them, so they're spliced out (the node is removed, its children
+  reparented to its own parent) rather than pruned — pruning them would delete the whole
+  program along with them.
+- **MPI library internals** (`--show-mpi-internals`) — the first real MPI frame hit while
+  descending is shown; its own further implementation internals underneath are collapsed.
+- **Compiler-runtime allocator/intrinsic helpers** (`--show-compiler-runtime`) — built
+  from Cray's Fortran runtime specifically (string/array intrinsics, the `ALLOCATE`
+  chain, formatted I/O internals); not necessarily complete for other compilers, since
+  none have been observed in this project's data so far. Whole subtree hidden.
+
+`--max-depth N` truncates the tree for readability (stating how many further nodes were
+hidden, not silently dropping them); omit it to print the whole tree.
+
+When a paired `rocprofv3/` directory is present (tool 3's combined output, or tool 4's
+scan directory — both work identically, same underlying data), real GPU kernel data is
+nested into the tree at the CPU subroutine that actually contains it. Cray's
+OpenACC/HIP-offload kernel naming embeds that subroutine's name directly in the kernel
+name itself, so whenever that subroutine shows up as its own node in the merged tree,
+the match is exact — not a guess, and not split proportionally across unrelated call
+sites the way a purely structural approach would. A kernel that can't be matched by name
+(no Cray-style naming, or its owner subroutine wasn't sampled as its own distinct frame
+on any rank) falls back to a structural estimate instead: attached at the nearest
+launch-call ancestor, proportionally split by launch-call count when several candidate
+sites exist. Neither approach is per-dispatch-exact — this toolchain's text/JSON output
+has no per-call timestamps to correlate a specific kernel dispatch against a specific
+launch call — only the binary Perfetto trace has that, and there's no stdlib-friendly way
+to parse it (a real gap, tracked as future work, not silently dropped — see
+[docs/plans/14-sampling-calltree-tool.md](docs/plans/14-sampling-calltree-tool.md)). When
+neither a name match nor a launch-call anchor exists at all (possible on tool 4's scan
+directory specifically — its `ROCPROFSYS_USE_ROCM` HIP-call capture isn't enabled during
+the scan step, only during the final trace run), kernel data appears in its own labeled
+section instead of being attached to a guess.
+
+### Call tree (exact, shallower) — `extract_calltree_traced.py`
+
+The faster, simpler alternative: built on `wall_clock-<pid>.txt` (rocprof-sys's
+GOTCHA-instrumented data) instead of sampling, so every call it does show has **exact**
+timing and there's no noise-filtering judgment calls to make — but the tree is only as
+deep as rocprof-sys's own instrumentation boundaries. A real but never-instrumented
+intermediate frame is invisible, so a child can appear to hang directly off a much higher
+ancestor than it really does. Same aggregated-across-ranks columns, automatic generation,
+and standalone usage as above:
+
+```bash
+python3 postprocess/extract_calltree_traced.py <output-dir> [-o calltree_traced.txt] [--max-depth N] [--show-gpu-api]
 ```
 
 Filtering matches the hotspots reports' "CPU compute" bucket: GPU-API/runtime noise
@@ -178,24 +248,8 @@ kernel-descriptor sampling artifacts — labels ending in `.kd`, which rocprof-s
 sampling sometimes attributes to a GPU kernel launch directly in the CPU tree, duplicating
 the same kernel's real device time shown under "GPU kernels" below) is hidden by default,
 so what's left is your own code plus MPI calls — pass `--show-gpu-api` to see the hidden
-chain too. `--max-depth N` truncates the tree for readability (stating how many further
-nodes were hidden, not silently dropping them); omit it to print the whole tree.
-
-When a paired `rocprofv3/` directory is present (tool 3's combined output, or tool 4's
-scan directory — both work identically, same underlying data), real GPU kernel data is
-nested into the tree at the CPU call site(s) that launched kernels. This is a
-**structural estimate**, not a per-dispatch-exact placement: this toolchain's text/JSON
-output has no per-call timestamps to correlate a specific kernel dispatch against a
-specific launch call — only the binary Perfetto trace has that, and there's no
-stdlib-friendly way to parse it (a real gap, tracked as future work, not silently
-dropped — see
-[docs/plans/13-calltree-tool.md](docs/plans/13-calltree-tool.md)). When exactly one
-`hipLaunchKernel`-family call site is found, kernel data attaches there in full; when
-several exist, each is attributed a share of the kernel data proportional to how many
-launch calls it made, clearly labeled as an estimate; when none is found at all
-(possible on tool 4's scan directory specifically — its `ROCPROFSYS_USE_ROCM` HIP-call
-capture isn't enabled during the scan step, only during the final trace run), kernel
-data appears in its own labeled section instead of being attached to a guess.
+chain too. Same `--max-depth N` and GPU-kernel-attachment behavior as `extract_calltree.py`
+above.
 
 ### Selective instrumentation — `instrument_hotspots.sh`
 

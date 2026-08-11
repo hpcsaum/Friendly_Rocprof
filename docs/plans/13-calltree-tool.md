@@ -1,5 +1,14 @@
 # Calltree tool: `postprocess/extract_calltree.py`
 
+> **Update:** the tool this plan describes was renamed to
+> `postprocess/extract_calltree_traced.py` (its default output is now
+> `calltree_traced.txt`), and its rendering/kernel-attribution internals were
+> refactored to share `postprocess/calltree_common.py` with a new tool. The
+> name `extract_calltree.py` was reassigned to a new sampling-based tool with
+> deeper (but noisier, statistically-approximate) call trees. See
+> [14-sampling-calltree-tool.md](14-sampling-calltree-tool.md) and
+> [DEVELOPMENT_HISTORY.md](../DEVELOPMENT_HISTORY.md) for details.
+
 ## Context
 
 Plan 09 ([docs/plans/09-calltree-ancestry-thread-classification.md](09-calltree-ancestry-thread-classification.md))

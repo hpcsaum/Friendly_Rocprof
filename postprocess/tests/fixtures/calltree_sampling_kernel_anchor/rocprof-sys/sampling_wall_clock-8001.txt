@@ -1,0 +1,6 @@
+|LABEL|COUNT|DEPTH|METRIC|UNITS|SUM|MEAN|MIN|MAX|VAR|STDDEV|% SELF|
+| |0>>> main |1|0|wall_clock|sec|10.000000|10.000000|10.000000|10.000000|0.000000|0.000000|0.0|
+| |0>>> compute_a |1|1|wall_clock|sec|6.000000|6.000000|6.000000|6.000000|0.000000|0.000000|0.0|
+| |0>>> hip::hipModuleLaunchKernel(ihipModuleSymbol_t*, ...) |100|2|wall_clock|sec|6.000000|0.060000|0.055000|0.065000|0.000000|0.000010|100.0|
+| |0>>> compute_b |1|1|wall_clock|sec|4.000000|4.000000|4.000000|4.000000|0.000000|0.000000|0.0|
+| |0>>> __cray_start_acc_kernel |50|2|wall_clock|sec|4.000000|0.080000|0.075000|0.085000|0.000000|0.000010|100.0|

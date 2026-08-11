@@ -73,8 +73,15 @@ Options:
                           -- the old behavior, where a function that just calls other functions
                           can still rank high
   --max-depth N           truncate the auto-generated call tree at this depth (default: unlimited)
-  --show-gpu-api          include GPU-API/runtime calls in the auto-generated call tree
+  --show-gpu-api          include GPU-API/offload-runtime noise in the auto-generated call tree
                           (hidden by default, same as the hotspots report)
+  --show-rocprofsys-internals  include rocprof-sys's own instrumentation/GOTCHA frames instead of
+                          splicing them out of the auto-generated call tree
+  --show-mpi-internals    include MPI library internals below the first MPI frame in the
+                          auto-generated call tree instead of collapsing them
+  --show-compiler-runtime include compiler-runtime allocator/intrinsic helper noise in the
+                          auto-generated call tree
+  --show-all-internals    shorthand for all four --show-* flags above at once
   --mpi "<launch cmd>"    MPI launch command, forwarded to both sub-launcher runs
   --dry-run               print what would run, don't execute
   -h, --help              show this help
@@ -99,6 +106,14 @@ while [[ $# -gt 0 ]]; do
       CALLTREE_ARGS+=(--max-depth "$2"); shift 2 ;;
     --show-gpu-api)
       CALLTREE_ARGS+=(--show-gpu-api); shift ;;
+    --show-rocprofsys-internals)
+      CALLTREE_ARGS+=(--show-rocprofsys-internals); shift ;;
+    --show-mpi-internals)
+      CALLTREE_ARGS+=(--show-mpi-internals); shift ;;
+    --show-compiler-runtime)
+      CALLTREE_ARGS+=(--show-compiler-runtime); shift ;;
+    --show-all-internals)
+      CALLTREE_ARGS+=(--show-all-internals); shift ;;
     --mpi)
       MPI_STR="$2"; shift 2 ;;
     --dry-run)

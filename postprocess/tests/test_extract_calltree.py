@@ -8,10 +8,11 @@ FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..")
 MODULE_PATH = os.path.join(POSTPROCESS_DIR, "extract_calltree.py")
 
-# extract_calltree.py does a plain top-level "import extract_CPU_hotspots"/
-# "import extract_GPU_hotspots", relying on its own directory being on sys.path --
-# true automatically when run directly, but not when loaded here by explicit
-# file path, so replicate that manually (same as test_extract_hotspots.py).
+# extract_calltree.py does a plain top-level "import calltree_common"/
+# "import extract_CPU_hotspots"/"import extract_GPU_hotspots", relying on its
+# own directory being on sys.path -- true automatically when run directly, but
+# not when loaded here by explicit file path, so replicate that manually (same
+# as test_extract_hotspots.py).
 sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
 
 spec = importlib.util.spec_from_file_location("extract_calltree", MODULE_PATH)
@@ -19,176 +20,197 @@ ct_tool = importlib.util.module_from_spec(spec)
 sys.modules["extract_calltree"] = ct_tool
 spec.loader.exec_module(ct_tool)
 
-MPI_2RANK_DIR = os.path.join(FIXTURES, "mpi_2rank")
-GPU_SPAWNED_THREAD_DIR = os.path.join(FIXTURES, "gpu_spawned_thread")
-MULTI_METRIC_RANK_DIR = os.path.join(FIXTURES, "multi_metric_rank")
-GPU_API_NESTED_CHAIN_DIR = os.path.join(FIXTURES, "gpu_api_nested_chain")
-KERNEL_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_kernel_anchor")
-KERNEL_MULTI_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_kernel_multi_anchor")
-KERNEL_NO_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_kernel_no_anchor")
-KD_ARTIFACT_DIR = os.path.join(FIXTURES, "calltree_kd_artifact")
+FILTERS_DIR = os.path.join(FIXTURES, "calltree_sampling_filters")
+FALLBACK_DIR = os.path.join(FIXTURES, "calltree_sampling_fallback")
+KERNEL_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_sampling_kernel_anchor")
+MULTI_RANK_DIR = os.path.join(FIXTURES, "calltree_sampling_multi_rank")
 EMPTY_DIR = os.path.join(FIXTURES, "no_timing_data")
 
 
-class ResolveRunDirsTests(unittest.TestCase):
-    def test_detects_paired_subdirs(self):
-        cpu_dir, gpu_dir = ct_tool.resolve_run_dirs(KERNEL_ANCHOR_DIR)
-        self.assertEqual(cpu_dir, os.path.join(KERNEL_ANCHOR_DIR, "rocprof-sys"))
-        self.assertEqual(gpu_dir, os.path.join(KERNEL_ANCHOR_DIR, "rocprofv3"))
-
-    def test_falls_back_to_run_dir_itself_when_flat(self):
-        cpu_dir, gpu_dir = ct_tool.resolve_run_dirs(MPI_2RANK_DIR)
-        self.assertEqual(cpu_dir, MPI_2RANK_DIR)
-        self.assertIsNone(gpu_dir)
+def render(run_dir, **kwargs):
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "calltree.txt")
+        return ct_tool.write_report(run_dir, dest, **kwargs)
 
 
-class LoadRankTreesTests(unittest.TestCase):
-    def test_basic_two_rank_tree(self):
-        ranks = ct_tool.load_rank_trees(MPI_2RANK_DIR)
-        self.assertEqual(len(ranks), 2)
-        for rank_key, rows, roots in ranks:
-            self.assertEqual(len(roots), 1)
-            self.assertEqual(roots[0]["label"], "main")
-            # compute_stencil and hipMemcpy are main's only two children
-            children = [r for r in rows if r["parent"] is roots[0]]
-            self.assertEqual({c["label"] for c in children}, {"compute_stencil", "hipMemcpy"})
-
-    def test_raises_on_empty_input_is_just_empty_list(self):
-        # load_rank_trees() itself doesn't raise -- write_report() does, once it
-        # sees an empty list. Confirmed here so that distinction stays intentional.
-        self.assertEqual(ct_tool.load_rank_trees(EMPTY_DIR), [])
+def _line_for(report, label):
+    for line in report.splitlines():
+        if label in line:
+            return line
+    raise AssertionError(f"no rendered line for {label!r} found")
 
 
-class MultiRootDetectionTests(unittest.TestCase):
-    def test_is_thread_root_flagged_case(self):
-        # gpu_spawned_thread: start_thread's DEPTH nests one level under its
-        # spawning pthread_create call -- is_thread_root correctly fires, but
-        # root-enumeration here relies only on parent is None, not that flag.
-        ranks = ct_tool.load_rank_trees(GPU_SPAWNED_THREAD_DIR)
+class GpuNoiseTierTests(unittest.TestCase):
+    def test_hidden_by_default(self):
+        report = render(FILTERS_DIR)
+        self.assertNotIn("hipLaunchKernel", report)
+        self.assertNotIn("rocprofiler::hip::something", report)
+
+    def test_shown_with_flag(self):
+        report = render(FILTERS_DIR, show_gpu_api=True)
+        self.assertIn("hipLaunchKernel", report)
+        self.assertIn("rocprofiler::hip::something", report)  # broadened substring match, not just prefix
+
+
+class RocprofsysWrapperSpliceTests(unittest.TestCase):
+    def test_wrapper_frames_hidden_by_default(self):
+        report = render(FILTERS_DIR)
+        self.assertNotIn("__libc_start_main", report)
+        self.assertNotIn("rocprofsys_main", report)
+        self.assertNotIn("gotcha_wrapper_call", report)
+        self.assertNotIn("tim::wrapped_call", report)
+
+    def test_whole_ancestor_chain_wrapper_promotes_new_root(self):
+        # __libc_start_main -> rocprofsys_main -> main: both ancestors are
+        # wrapper frames, so main itself must become a top-level root once
+        # they're spliced out -- not just have its parent link changed.
+        ranks = ct_tool.load_rank_trees(FILTERS_DIR, show_rocprofsys_internals=False)
         self.assertEqual(len(ranks), 1)
         _rank_key, _rows, roots = ranks[0]
-        # main, hipRuntimeGetVersion, compute_stencil are three independent
-        # DEPTH-0 roots in this fixture -- all three must be detected.
-        self.assertEqual({r["label"] for r in roots}, {"main", "hipRuntimeGetVersion", "compute_stencil"})
+        # "start_thread" (thread 3) is also its own independent root (a
+        # separate, unrelated background thread) -- see
+        # UntetheredThreadRootGpuPropagationTests for why it's still hidden
+        # at render time despite being a real root here.
+        self.assertEqual({r["label"] for r in roots}, {"main", "start_thread"})
 
-    def test_depth_resets_to_zero_case(self):
-        # multi_metric_rank: a second OS thread's own root row sits at DEPTH 0,
-        # the same depth as thread 0's other roots -- parent is None still
-        # correctly separates it without relying on is_thread_root.
-        ranks = ct_tool.load_rank_trees(MULTI_METRIC_RANK_DIR)
-        _rank_key, _rows, roots = ranks[0]
-        labels = [r["label"] for r in roots]
-        self.assertEqual(labels.count("worker_loop"), 2)  # two distinct thread roots, not merged
+    def test_mid_tree_wrapper_reparents_its_child_not_drops_it(self):
+        # gotcha_wrapper_call -> tim::wrapped_call -> real_child_under_wrapper:
+        # both wrapper frames removed, but the real leaf underneath must still
+        # appear, reparented up to "main" (spliced, not pruned).
+        report = render(FILTERS_DIR)
+        self.assertIn("real_child_under_wrapper", report)
+
+    def test_wrapper_frames_shown_with_flag(self):
+        report = render(FILTERS_DIR, show_rocprofsys_internals=True)
+        self.assertIn("__libc_start_main", report)
+        self.assertIn("gotcha_wrapper_call", report)
 
 
-class RenderTreeTests(unittest.TestCase):
-    def _render(self, run_dir, max_depth=None, show_gpu_api=False):
+class UntetheredThreadRootGpuPropagationTests(unittest.TestCase):
+    # calltree_sampling_filters also has a thread-3 "start_thread" root with
+    # no parent at all (DEPTH resets to 0, same shape a real background
+    # HIP/ROCr event-loop thread samples as) whose own content -- past
+    # rocprof-sys's pthread_create wrapper hop -- is ROCm-runtime noise
+    # (rocr::os::ThreadTrampoline). Confirmed against real Heat_Convection_Solver
+    # data: without this propagation, the untethered root itself rendered
+    # unfiltered (with a large SELF/TOTAL time) even though its own child was
+    # already correctly GPU-classified.
+    def test_untethered_root_hidden_by_default(self):
+        report = render(FILTERS_DIR)
+        self.assertNotIn("start_thread", report)
+        self.assertNotIn("ThreadTrampoline", report)
+
+    def test_untethered_root_shown_with_gpu_api_flag(self):
+        report = render(FILTERS_DIR, show_gpu_api=True)
+        self.assertIn("start_thread", report)
+        self.assertIn("ThreadTrampoline", report)
+
+    def test_untethered_root_reclassified_regardless_of_wrapper_visibility(self):
+        # --show-rocprofsys-internals alone (not --show-gpu-api) must NOT
+        # reveal this subtree -- it's GPU noise at heart, gated by its own flag.
+        report = render(FILTERS_DIR, show_rocprofsys_internals=True)
+        self.assertNotIn("start_thread", report)
+
+
+class MpiCollapseTierTests(unittest.TestCase):
+    def test_first_mpi_frame_shown_deeper_internals_hidden(self):
+        report = render(FILTERS_DIR)
+        self.assertIn("mpi_allreduce_f08ts_", report)
+        self.assertNotIn("MPIR_Allreduce_cdesc", report)
+        self.assertNotIn("PMPI_Allreduce", report)
+
+    def test_deeper_internals_shown_with_flag(self):
+        report = render(FILTERS_DIR, show_mpi_internals=True)
+        self.assertIn("MPIR_Allreduce_cdesc", report)
+        self.assertIn("PMPI_Allreduce", report)
+
+
+class CompilerRuntimeTierTests(unittest.TestCase):
+    def test_hidden_by_default_whole_subtree(self):
+        report = render(FILTERS_DIR)
+        self.assertNotIn("posix_memalign", report)
+        self.assertNotIn("should_not_appear_child", report)  # PRUNE: child hidden too, not just the node
+
+    def test_shown_with_flag(self):
+        report = render(FILTERS_DIR, show_compiler_runtime=True)
+        self.assertIn("posix_memalign", report)
+        self.assertIn("should_not_appear_child", report)
+
+
+class ShowAllInternalsTests(unittest.TestCase):
+    def test_equivalent_to_all_four_flags(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "calltree.txt")
-            return ct_tool.write_report(run_dir, dest, max_depth=max_depth, show_gpu_api=show_gpu_api)
-
-    def test_gpu_api_hidden_by_default(self):
-        report = self._render(MPI_2RANK_DIR)
-        self.assertNotIn("hipMemcpy", report)
-
-    def test_gpu_api_shown_with_flag(self):
-        report = self._render(MPI_2RANK_DIR, show_gpu_api=True)
-        self.assertIn("hipMemcpy", report)
-
-    def test_gpu_api_chain_pruned_wholesale(self):
-        # gpu_api_nested_chain: hipStreamCreate -> hip::hipStreamCreate(...) ->
-        # hip::ihipStreamCreate(...) -- none should appear by default, all three
-        # should appear when --show-gpu-api is passed.
-        default_report = self._render(GPU_API_NESTED_CHAIN_DIR)
-        for label in ("hipStreamCreate", "hip::hipStreamCreate", "hip::ihipStreamCreate"):
-            self.assertNotIn(label, default_report)
-        shown_report = self._render(GPU_API_NESTED_CHAIN_DIR, show_gpu_api=True)
-        for label in ("hipStreamCreate", "hip::hipStreamCreate", "hip::ihipStreamCreate"):
-            self.assertIn(label, shown_report)
-
-    def test_max_depth_truncates_with_stated_count(self):
-        report = self._render(MPI_2RANK_DIR, max_depth=0)
-        self.assertIn("hidden below this point", report)
-        self.assertIn("1 more node(s)", report)  # compute_stencil only -- hipMemcpy is gpu-hidden regardless
-        self.assertNotIn("compute_stencil", report)
-
-    def test_max_depth_hidden_count_matches_show_gpu_api(self):
-        report = self._render(MPI_2RANK_DIR, max_depth=0, show_gpu_api=True)
-        self.assertIn("2 more node(s)", report)
-
-    def test_no_max_depth_prints_whole_tree(self):
-        report = self._render(MPI_2RANK_DIR)
-        self.assertIn("compute_stencil", report)
-        self.assertNotIn("hidden below this point", report)
-
-    def test_real_columns_not_bracketed_string(self):
-        report = self._render(MPI_2RANK_DIR)
-        self.assertIn("CALLS", report)
-        self.assertIn("SELF(s)", report)
-        self.assertIn("TOTAL(s)", report)
-        self.assertNotIn("[calls=", report)  # old per-line bracketed format, must be gone
-
-    def test_tree_connectors_present(self):
-        # mpi_2rank's main has only one child, so it's rendered "└── " (last
-        # child) -- "├── " needs a node with 2+ children, like gpu_api_nested_chain's
-        # main (compute_stencil + hipStreamCreate).
-        report = self._render(GPU_API_NESTED_CHAIN_DIR, show_gpu_api=True)
-        self.assertIn("├── ", report)
-        self.assertIn("└── ", report)
+            ct_tool.main([FILTERS_DIR, "-o", dest, "--show-all-internals"])
+            with open(dest) as f:
+                report = f.read()
+        for label in ("hipLaunchKernel", "__libc_start_main", "MPIR_Allreduce_cdesc", "posix_memalign"):
+            self.assertIn(label, report)
 
 
-class KdArtifactFilteringTests(unittest.TestCase):
-    def test_is_kernel_descriptor_artifact(self):
-        self.assertTrue(ct_tool.is_kernel_descriptor_artifact("some_kernel_name.kd"))
-        self.assertFalse(ct_tool.is_kernel_descriptor_artifact("some_kernel_name"))
-        self.assertFalse(ct_tool.is_kernel_descriptor_artifact("hipLaunchKernel"))
+class SamplingMissingFallbackTests(unittest.TestCase):
+    def test_rank_without_sampling_file_falls_back_to_wall_clock(self):
+        ranks = ct_tool.load_rank_trees(FALLBACK_DIR, show_rocprofsys_internals=False)
+        self.assertEqual(len(ranks), 2)
+        labels_by_rank = {rk: {r["label"] for r in rows} for rk, rows, _roots in ranks}
+        self.assertIn({"main", "sampled_leaf"}, labels_by_rank.values())
+        self.assertIn({"main_fallback", "instrumented_leaf"}, labels_by_rank.values())
 
-    def test_kd_suffixed_row_hidden_by_default(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            dest = os.path.join(tmp, "calltree.txt")
-            report = ct_tool.write_report(KD_ARTIFACT_DIR, dest)
-        self.assertIn("compute_stencil", report)
-        self.assertNotIn("some_kernel_name.kd", report)
-
-    def test_kd_suffixed_row_shown_with_flag(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            dest = os.path.join(tmp, "calltree.txt")
-            report = ct_tool.write_report(KD_ARTIFACT_DIR, dest, show_gpu_api=True)
-        self.assertIn("some_kernel_name.kd", report)
+    def test_fallback_rank_renders_correctly(self):
+        report = render(FALLBACK_DIR)
+        self.assertIn("main_fallback", report)
+        self.assertIn("instrumented_leaf", report)
 
 
-class KernelIntegrationTests(unittest.TestCase):
-    def test_single_anchor_gets_full_attribution(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            dest = os.path.join(tmp, "calltree.txt")
-            report = ct_tool.write_report(KERNEL_ANCHOR_DIR, dest)
-        self.assertIn("[GPU kernels -- rocprofv3]", report)
-        self.assertIn("JacobiIterationKernel", report)
-        i_parent = report.index("compute_stencil")
-        i_kernel = report.index("[GPU kernels -- rocprofv3]")
-        i_leaf = report.index("JacobiIterationKernel")
-        self.assertTrue(i_parent < i_kernel < i_leaf)  # nested under compute_stencil, not top-level
-        self.assertNotIn("no launch call site found", report)
+class KernelAnchorBroadeningTests(unittest.TestCase):
+    def test_namespace_qualified_and_cray_acc_both_resolve_as_anchors(self):
+        report = render(KERNEL_ANCHOR_DIR)
+        self.assertIn("[GPU kernels -- rocprofv3", report)
+        self.assertNotIn("no owning subroutine or launch call site found", report)
+        # compute_a issued 100/150 launch calls, compute_b issued 50/150.
+        self.assertIn("~67% estimate: this site issued 100/150", report)
+        self.assertIn("~33% estimate: this site issued 50/150", report)
+        i_a = report.index("compute_a")
+        i_b = report.index("compute_b")
+        i_kernel_a = report.index("[GPU kernels -- rocprofv3", i_a)
+        self.assertTrue(i_a < i_kernel_a < i_b)
 
-    def test_multiple_anchors_split_proportionally(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            dest = os.path.join(tmp, "calltree.txt")
-            report = ct_tool.write_report(KERNEL_MULTI_ANCHOR_DIR, dest)
-        # fixture: compute_a issued 300 launch calls, compute_b issued 200 (of 500 total)
-        self.assertIn("~60% estimate: this site issued 300/500", report)
-        self.assertIn("~40% estimate: this site issued 200/500", report)
-        # both anchors get their own nested kernel breakdown, not one shared full total
-        self.assertEqual(report.count("JacobiIterationKernel"), 2)
 
-    def test_no_anchor_falls_back_to_top_level_section(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            dest = os.path.join(tmp, "calltree.txt")
-            report = ct_tool.write_report(KERNEL_NO_ANCHOR_DIR, dest)
-        self.assertIn("=== GPU kernels (rocprofv3) -- no launch call site found in CPU tree ===", report)
-        self.assertIn("JacobiIterationKernel", report)
-        # the fallback section's kernel data must NOT also appear nested inside a rank tree
-        i_fallback = report.index("=== GPU kernels")
-        self.assertNotIn("[GPU kernels -- rocprofv3", report[:i_fallback])
+class AggregationTests(unittest.TestCase):
+    # calltree_sampling_multi_rank: three ranks share the same "main" ->
+    # "compute_stencil" structure with different self-times (1.0/3.0/5.0s),
+    # plus a "rare_error_path" only rank 9203 hits -- exercises both the
+    # avg/std_dev/min/max load-balance math and the "a rank that never
+    # reached this node counts as 0, not omitted" rule.
+    def test_no_per_rank_sections(self):
+        report = render(MULTI_RANK_DIR)
+        self.assertNotIn("=== Rank", report)
+
+    def test_header_states_ranks_aggregated(self):
+        report = render(MULTI_RANK_DIR)
+        self.assertIn("ranks aggregated: 3", report)
+
+    def test_load_balance_columns_for_node_present_on_every_rank(self):
+        report = render(MULTI_RANK_DIR)
+        line = _line_for(report, "compute_stencil")
+        self.assertIn("20.0", line)        # CALLS avg: (10+20+30)/3
+        self.assertIn("3.000000", line)    # SELF-AVG: (1+3+5)/3
+        self.assertIn("1.632993", line)    # SELF-STD: pstdev([1,3,5])
+        self.assertIn("1.000000", line)    # SELF-MIN
+        self.assertIn("5.000000", line)    # SELF-MAX
+        # TOTAL-AVG is also 3.000000 here -- already covered by SELF-AVG's
+        # identical value in this fixture (self% is 100 on every rank), not
+        # asserted separately to avoid a coincidental-match false positive.
+
+    def test_load_balance_columns_for_node_missing_on_some_ranks(self):
+        # rare_error_path only exists on rank 9203 -- ranks 9201/9202 count
+        # as 0 for it, not omitted, so the average is pulled down accordingly.
+        report = render(MULTI_RANK_DIR)
+        line = _line_for(report, "rare_error_path")
+        self.assertIn("0.3", line)         # CALLS avg: (0+0+1)/3
+        self.assertIn("0.200000", line)    # SELF-AVG: (0+0+0.6)/3
+        self.assertIn("0.282843", line)    # SELF-STD: pstdev([0,0,0.6])
+        self.assertIn("0.600000", line)    # SELF-MAX
 
 
 class MainCliTests(unittest.TestCase):
@@ -203,7 +225,7 @@ class MainCliTests(unittest.TestCase):
     def test_end_to_end_writes_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "out.txt")
-            ct_tool.main([MPI_2RANK_DIR, "-o", dest, "--max-depth", "1"])
+            ct_tool.main([FILTERS_DIR, "-o", dest, "--max-depth", "1"])
             self.assertTrue(os.path.isfile(dest))
 
 
