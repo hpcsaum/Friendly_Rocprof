@@ -67,8 +67,15 @@ sim_mod.o: sim_mod.f90 kernel_hip_binding.o kernel_omp.o
 main.o: main.f90 sim_mod.o
 	$(MPIFC) $(FFLAGS) -c $< -o $@
 
+# $(OMP_OFFLOAD_FLAGS) must be repeated at final link, not just at
+# kernel_omp.o's compile step -- Clang/amdflang-family compilers only run the
+# device-code linking step (which pulls in the offload runtime, e.g.
+# libomptarget's __tgt_target_kernel) when -fopenmp/--offload-arch are
+# present on the link command itself. Omitting them here fails with
+# "undefined symbol: __tgt_target_kernel" even though the object file
+# compiled cleanly.
 $(TARGET): $(OBJS)
-	$(MPIFC) $(OBJS) -o $@ $(EXTRA_LDFLAGS)
+	$(MPIFC) $(OBJS) -o $@ $(OMP_OFFLOAD_FLAGS) $(EXTRA_LDFLAGS)
 
 clean:
 	rm -f $(TARGET) $(OBJS) *.mod

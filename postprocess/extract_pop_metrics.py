@@ -19,21 +19,15 @@ from datetime import datetime
 import extract_CPU_hotspots as cpu_tool
 import extract_GPU_hotspots as gpu_tool
 
-# MPICH / Cray-MPICH function-name prefixes -- covers both the user-facing MPI_*
-# calls and PMPI_* (the profiling interface most GOTCHA-based tools actually
-# intercept), plus MPIR_/MPID_ internal helpers that do real work on behalf of
-# an MPI_* call (e.g. MPIR_Typerep_icopy, seen packing/copying data during a
-# Waitall) -- these are communication overhead, not application compute, even
-# though they aren't named "MPI_" themselves. Self-time (see compute_run_metrics)
-# makes summing this prefix set safe regardless of nesting depth: a rank's total
-# self-time across every call-tree node always equals its root's inclusive time,
-# so there is no double-counting to worry about from, say, an MPI_Waitall row and
-# a nested MPIR_Typerep_icopy row both matching this prefix set.
-# Known limitation: MPICH/Cray-MPICH only. An Open MPI run's internal helpers
-# (ompi_/opal_/orte_ prefixes) won't be recognized and will be misclassified as
-# application compute instead of communication -- not yet configurable, may be
-# extended later if a non-MPICH MPI implementation needs to be supported.
-MPI_PREFIXES = ("MPI_", "PMPI_", "MPIR_", "MPID_")
+# MPICH / Cray-MPICH function-name prefixes (plus a "most probable" Open MPI
+# addition), shared with extract_CPU_hotspots.py -- see its own definition
+# for the full rationale. Matched case-insensitively
+# (label.lower().startswith(...)) against an all-lowercase tuple, not the
+# previous case-sensitive uppercase-only comparison this file used to have,
+# which only happened to work because every MPI symbol observed in real data
+# so far is uppercase-prefixed -- a differently-cased symbol would have
+# silently been undercounted as compute instead of communication.
+MPI_PREFIXES = cpu_tool.MPI_PREFIXES
 
 # The two HIP calls that mean "block the CPU until the GPU catches up" -- same
 # definition and same self-time-only rationale as extract_hotspots.py's own
@@ -155,7 +149,7 @@ def compute_run_metrics(run_dir):
         self_totals = self_per_rank[i]
         incl_totals = incl_per_rank[i]
         total_time = max(incl_totals.values()) if incl_totals else 0.0
-        comm_time = sum(v for label, v in self_totals.items() if label.startswith(MPI_PREFIXES))
+        comm_time = sum(v for label, v in self_totals.items() if label.lower().startswith(MPI_PREFIXES))
 
         if gpu_per_rank is not None:
             gpu_api_overhead = sync_wait_per_rank[i]
@@ -407,9 +401,11 @@ def write_report(run_dirs, dest_path, scaling=None):
     parts.append("\n")
     parts.append(
         "Caveats:\n"
-        "  - Communication time is classified by function-name prefix "
-        f"({', '.join(MPI_PREFIXES)}) -- MPICH/Cray-MPICH only; other MPI\n"
-        "    implementations' internal helpers may be misclassified as compute.\n"
+        "  - Communication time is classified by function-name prefix (case-insensitive: "
+        f"{', '.join(MPI_PREFIXES)}) --\n"
+        "    MPICH/Cray-MPICH prefixes are confirmed from real captured data; the Open MPI\n"
+        "    prefixes (ompi_/opal_/orte_) are a probable addition, not yet confirmed against a\n"
+        "    real Open MPI run, and may need refinement.\n"
         "  - CPU<->GPU per-rank pairing (when a rocprofv3 dir is present) assumes matching\n"
         "    sorted-filename order between the two directories -- not cross-checked.\n"
     )

@@ -57,26 +57,49 @@ from calltree_common import (
 # namespace-qualified C++ symbols the prefix check misses (e.g.
 # "rocprofiler::hip::..."), plus GPU/offload-runtime noise observed in real
 # sampled data that classify_gpu() has no prefix for at all.
+# "__tgt_target_kernel", "pluginmanager::", "devicety::", and
+# "llvm::omp::target::plugin::" are confirmed present, unfiltered, in real
+# test_apps HPC data (AMD/LLVM's OpenMP-target-offload launch/plugin-loading
+# internals -- PluginManager::getDevice -> DeviceTy::loadBinary ->
+# llvm::omp::target::plugin::{GenericPluginTy,GenericDeviceTy,AMDGPUDeviceTy,
+# AsyncInfoWrapperTy} -- sitting directly under __tgt_target_kernel).
+# "clang::", "llvm::", "amd_comgr" cover the same GPU-kernel-JIT-compilation
+# noise confirmed via the same rocprof-sys data feeding extract_hotspots.py's
+# "CPU compute hotspots" table (clang/LLVM compiling GPU machine code on first
+# kernel launch, via AMD's comgr) -- included here for consistency even though
+# it hasn't been observed leaking into a rendered calltree.txt yet.
 GPU_NOISE_SUBSTRINGS = cpu_tool.GPU_API_PREFIXES + (
     "rocprofiler::", "cray_acc", "hiphardwaredevice", "present_table",
+    "__tgt_target_kernel", "pluginmanager::", "devicety::",
+    "llvm::omp::target::plugin::", "clang::", "llvm::", "amd_comgr",
 )
 
 # rocprof-sys's own instrumentation/GOTCHA plumbing and dynamic-linker
-# bootstrap frames. Real code (eventually main() and everything in it) sits
-# *inside* these wrapper frames, not beside them -- so these are SPLICED out
-# (node removed, children reparented to its own parent), never pruned:
+# bootstrap frames -- shared with extract_CPU_hotspots.py (see its own
+# definition for why: the two tools used to maintain independent copies,
+# which is how lookup_hashtable/lookup.constprop.0 ended up unfiltered in
+# hotspots.txt's "CPU compute hotspots" table while already hidden here).
+# Real code (eventually main() and everything in it) sits *inside* these
+# wrapper frames here, not beside them -- so THIS tool SPLICES them out
+# (node removed, children reparented to its own parent), never prunes:
 # pruning them would delete the whole program along with them.
-ROCPROFSYS_WRAPPER_SUBSTRINGS = (
-    "tim::", "gotcha", "rocprofsys", "__libc_start", "lookup_hashtable",
-    "lookup.constprop", "lib_bindings", "library_gots",
-)
+# extract_CPU_hotspots.py's own tree shape has no such "real code sits
+# inside" relationship for these frames (see its comment), so it drops them
+# entirely instead -- same substrings, different treatment per tool's own
+# data shape, exactly as calltree_common.py's module docstring describes.
+ROCPROFSYS_WRAPPER_SUBSTRINGS = cpu_tool.ROCPROFSYS_WRAPPER_SUBSTRINGS
 
 # MPI library internals -- COLLAPSED (the first real MPI frame hit while
 # descending is shown, its own further internals are not), not pruned: the
 # MPI call itself is real application-relevant information, only its
-# multi-level implementation internals underneath are noise.
-MPI_PREFIXES = ("mpi_", "pmpi_", "mpir_", "mpid_", "mpidi_")
-MPI_FORTRAN_SHIM_SUFFIXES = ("_f08_", "_f08ts_")
+# multi-level implementation internals underneath are noise. Shared with
+# extract_CPU_hotspots.py (see its own definition for why -- the two tools
+# used to maintain independent, drifted-apart copies of this list, and
+# extract_CPU_hotspots.py also now needs it for a second purpose: recognizing
+# an MPI-runtime-spawned background thread by ancestry, see classify_gpu()'s
+# sibling there).
+MPI_PREFIXES = cpu_tool.MPI_PREFIXES
+MPI_FORTRAN_SHIM_SUFFIXES = cpu_tool.MPI_FORTRAN_SHIM_SUFFIXES
 
 # Compiler-runtime helper noise -- observed on Cray's Fortran runtime
 # specifically (string/array intrinsics, the allocator chain behind

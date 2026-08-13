@@ -30,6 +30,7 @@ MISMATCH_DIR = os.path.join(FIXTURES, "pop_combined_mismatch")
 GPU_ONLY_DIR = os.path.join(FIXTURES, "pop_gpu_only")
 EMPTY_DIR = os.path.join(FIXTURES, "no_timing_data")
 FLAT_LAYOUT_DIR = os.path.join(FIXTURES, "mpi_2rank")  # no rocprof-sys/ subdir, files directly in the dir
+MPI_PREFIX_DIR = os.path.join(FIXTURES, "pop_mpi_prefix_reconciliation")
 
 
 class ResolveRunDirsTests(unittest.TestCase):
@@ -106,6 +107,21 @@ class ComputeRunMetricsTests(unittest.TestCase):
         for r in metrics["per_rank"]:
             self.assertIsNone(r["cpu_only_time"])
             self.assertIsNone(r["gpu_busy_time"])
+
+
+class MpiPrefixReconciliationTests(unittest.TestCase):
+    def test_mpidi_and_differently_cased_labels_count_as_communication(self):
+        # pop_mpi_prefix_reconciliation/wall_clock-4001.txt: main(10.0) with
+        # compute_stencil(6.0, leaf), mpidi_cray_shm_coll(2.0, leaf), and
+        # Mpi_Allreduce(2.0, leaf, mixed-case) -- comm_time = 2.0 + 2.0 = 4.0.
+        # Before reconciliation, extract_pop_metrics.py's case-sensitive,
+        # uppercase-only MPI_PREFIXES would have matched neither label.
+        metrics = pop_tool.compute_run_metrics(MPI_PREFIX_DIR)
+        self.assertEqual(len(metrics["per_rank"]), 1)
+        rank = metrics["per_rank"][0]
+        self.assertAlmostEqual(rank["total_time"], 10.0)
+        self.assertAlmostEqual(rank["comm_time"], 4.0)
+        self.assertAlmostEqual(rank["useful_compute"], 6.0)
 
 
 class CombinedPoolTests(unittest.TestCase):

@@ -51,6 +51,22 @@ class GpuNoiseTierTests(unittest.TestCase):
         self.assertIn("hipLaunchKernel", report)
         self.assertIn("rocprofiler::hip::something", report)  # broadened substring match, not just prefix
 
+    def test_omp_target_offload_internals_hidden_by_default(self):
+        # __tgt_target_kernel (LLVM libomptarget's launch entry point) and the
+        # AMDGPU-offload-plugin chain beneath it, plus AMD's GPU-kernel-JIT-
+        # compilation noise (clang/LLVM/comgr) -- all confirmed unfiltered in
+        # real test_apps HPC data before this fix.
+        report = render(FILTERS_DIR)
+        self.assertNotIn("__tgt_target_kernel", report)
+        self.assertNotIn("llvm::omp::target::plugin::GenericPluginTy::load_binary", report)
+        self.assertNotIn("clang::CodeGen::mergeDefaultFunctionDefinition", report)
+
+    def test_omp_target_offload_internals_shown_with_flag(self):
+        report = render(FILTERS_DIR, show_gpu_api=True)
+        self.assertIn("__tgt_target_kernel", report)
+        self.assertIn("llvm::omp::target::plugin::GenericPluginTy::load_binary", report)
+        self.assertIn("clang::CodeGen::mergeDefaultFunctionDefinition", report)
+
 
 class RocprofsysWrapperSpliceTests(unittest.TestCase):
     def test_wrapper_frames_hidden_by_default(self):
@@ -123,6 +139,19 @@ class MpiCollapseTierTests(unittest.TestCase):
         report = render(FILTERS_DIR, show_mpi_internals=True)
         self.assertIn("MPIR_Allreduce_cdesc", report)
         self.assertIn("PMPI_Allreduce", report)
+
+    def test_open_mpi_prefixes_matched_probably(self):
+        # ompi_/opal_/orte_ -- no real Open MPI test_apps capture exists yet,
+        # added as a "most probable" list per real Open MPI naming
+        # conventions. startswith-based, so this must NOT match a Open-MPI
+        # opaque-handle typename appearing mid-string inside rocprof-sys's own
+        # generic GOTCHA-wrapper template signature.
+        self.assertTrue(ct_tool.is_mpi_territory("ompi_request_complete"))
+        self.assertTrue(ct_tool.is_mpi_territory("opal_progress"))
+        self.assertTrue(ct_tool.is_mpi_territory("orte_grpcomm_base_pack"))
+        self.assertFalse(ct_tool.is_mpi_territory(
+            "tim::component::gotcha<101ul, int, ompi_group_t**>::construct"
+        ))
 
 
 class CompilerRuntimeTierTests(unittest.TestCase):

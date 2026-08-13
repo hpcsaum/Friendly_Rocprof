@@ -22,9 +22,11 @@ import statistics
 # since real symbols carry namespace qualification and demangled parameter
 # signatures (e.g. "hip::hipModuleLaunchKernel(ihipModuleSymbol_t*, ...)").
 # "__cray_start_acc_kernel" is Cray's compiler-generated OpenACC/offload
-# launch entry point, observed in real sampled data -- other compilers'
-# equivalents (e.g. LLVM OpenMP target offload) aren't included yet, only
-# because none have been observed in this project's data so far.
+# launch entry point, observed in real sampled data. "__tgt_target_kernel" is
+# LLVM libomptarget's OpenMP-target-offload launch entry point -- confirmed in
+# real test_apps HPC data under BOTH amdclang++ and Cray CCE (both link the
+# same libomptarget entry point for `omp target` in this environment), sitting
+# directly beneath the real launch_omp_kernel() call site in the sampled tree.
 KERNEL_LAUNCH_LABEL_SUBSTRINGS = (
     "hiplaunchkernel",
     "hipmodulelaunchkernel",
@@ -33,6 +35,7 @@ KERNEL_LAUNCH_LABEL_SUBSTRINGS = (
     "hipextmodulelaunchkernel",
     "hipgraphlaunch",
     "__cray_start_acc_kernel",
+    "__tgt_target_kernel",
 )
 
 # Real right-aligned columns for both tools' rendered trees -- one row per

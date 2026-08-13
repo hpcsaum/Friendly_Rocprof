@@ -25,6 +25,11 @@
 | 2026-08-11 | Split the calltree tool in two: `extract_calltree.py` reassigned to a new sampling-based variant with real call depth, four noise-filter tiers, and a `WALL(s)` cross-reference column; the original wall_clock-based tool renamed to `extract_calltree_traced.py`; shared math moved to new `calltree_common.py` |
 | 2026-08-11 | Reworked GPU kernel attachment to match by the kernel's compiler-embedded owner subroutine; both calltree tools now aggregate every rank into one merged tree with avg/std_dev/min/max load-balance columns instead of one tree per rank; removed the `WALL(s)` column (found mostly empty, not worth it once the other tool already covers exact timing) |
 | 2026-08-11 | New `test_apps/` suite: three small real MPI+GPU-kernel HPC apps (Fortran/C/C++), each buildable under Gnu/Cray/amd and exercising HIP/OpenMP-target/stdpar backends, to broaden filter-substring validation beyond `Heat_Convection_Solver`'s Cray-only coverage |
+| 2026-08-12 | Fixed a real HPC build failure in `test_apps/`: all three apps' final link step was missing `$(OMP_OFFLOAD_FLAGS)`, so amdclang's OpenMP-offload linker-wrapper never ran and `__tgt_target_kernel` stayed undefined |
+| 2026-08-12 | Second real-HPC build fix, `cpp_app` only: `--hipstdpar` at final link (not just compile) breaks OpenMP's device-linking under `COMPILER=amd` -- dropped from the link line after confirming via `rocprofv3` kernel-trace that the stdpar backend still runs correctly on the GPU without it |
+| 2026-08-12 | Phase 2 (partial): expanded filter substrings across `calltree_common.py`, `extract_calltree.py`, `extract_CPU_hotspots.py`, and `extract_pop_metrics.py` from the first 6 real `test_apps/` HPC captures (OpenMP-target-offload launch/plugin internals, GPU-kernel-JIT-compilation noise, reconciled + Open-MPI-extended MPI-prefix lists); re-ran the postprocessing tools against all 6 real directories to confirm the fixes' effect |
+| 2026-08-12 | Follow-up: shared `ROCPROFSYS_WRAPPER_SUBSTRINGS` (rocprof-sys/GOTCHA startup bookkeeping noise) between `extract_calltree.py` and `extract_CPU_hotspots.py` -- it was already spliced out of `calltree.txt` but unfiltered in `hotspots.txt`'s "CPU compute hotspots" table; now dropped there too, moving the list into the shared base module `extract_CPU_hotspots.py` imports from |
+| 2026-08-12 | Fixed a pre-existing (not a regression) `start_thread` distortion in `hotspots.txt`: generalized plan 09's HIP-ancestry thread-reclassification to also recognize MPI-runtime-spawned background threads (e.g. Cray MPICH's `pthread_create` called directly under `MPI_Init`) via a new `is_runtime_thread_noise()`; also moved `MPI_PREFIXES` into the shared base module alongside `ROCPROFSYS_WRAPPER_SUBSTRINGS` |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -741,3 +746,250 @@ hardware, per this project's established constraint against claiming something i
 without real hardware — this round's own verification was `make -n` dry runs (including an
 unknown-`COMPILER` error-path check) across every app × compiler combination, plus the source-level
 correctness review above.
+
+## 2026-08-12 — Real HPC build fix: OpenMP-offload link failure in `test_apps/`
+
+The first real HPC build of `cpp_app` under `COMPILER=amd` failed at link time:
+
+```
+mpicxx main.o kernel_omp.o kernel_hip.o kernel_stdpar.o -o cpp_app -fopenmp --offload-arch=gfx942 -lamdhip64 --hipstdpar
+ld.lld: error: undefined symbol: __tgt_target_kernel
+```
+
+Root cause: `__tgt_target_kernel` is an LLVM OpenMP-offload runtime symbol, defined in
+`libomptarget`. Clang/amdclang only invoke the device-code linking step that pulls that runtime
+in — and registers the embedded offload device image — when `-fopenmp`/`--offload-arch=...` are
+present on the *final link command*, not just on the compile step that produced the object file.
+All three apps' `$(TARGET)` rule linked with only `$(EXTRA_LDFLAGS)` (plus `$(STDPAR_LDFLAGS)` for
+`cpp_app`) — `kernel_omp.o` was compiled with `$(OMP_OFFLOAD_FLAGS)`, but that never made it back
+onto the link line, so the offload linker-wrapper never ran despite the object file compiling
+cleanly. This is exactly the kind of bug `make -n` dry-running can't catch (the command syntax was
+valid, it just omitted a flag) and only real HPC hardware — actually reaching the link step against
+real ROCm libraries — surfaced.
+
+Fixed identically in `test_apps/c_app/Makefile`, `test_apps/fortran_app/Makefile`, and
+`test_apps/cpp_app/Makefile`: `$(OMP_OFFLOAD_FLAGS)` added to each `$(TARGET)` rule's link command,
+with a comment explaining why it has to be repeated there and not just at `kernel_omp.o`'s compile
+step. Re-verified via `make -n` across all three apps × all three `COMPILER` values that the final
+link line now carries the matching offload flags (e.g. `-fopenmp --offload-arch=gfx90a` for `amd`,
+GCC's `-foffload=amdgcn-amdhsa -foffload-options=-march=...` for `gnu`). Still unverified against a
+real link on this dev machine (no ROCm/HPC access) — left to the user's next HPC build.
+
+## 2026-08-12 — Second real-HPC fix: `--hipstdpar` at link breaks OpenMP offload in `cpp_app`
+
+The `$(OMP_OFFLOAD_FLAGS)`-at-link fix above resolved the build for `c_app` and `fortran_app` on
+real HPC hardware, confirmed by the user. `cpp_app` under `COMPILER=amd` still failed with the same
+`undefined symbol: __tgt_target_kernel`, even with the fix applied — its link line additionally
+carries `--hipstdpar --offload-arch=...` (needed for `kernel_stdpar.cpp`'s GPU-offloaded standard-
+parallelism backend), which the other two apps don't have.
+
+Bisection on real hardware isolated it precisely: building `cpp_app` without `kernel_stdpar.o` and
+`--hipstdpar` at all links cleanly (HIP + OpenMP together are fine); reordering `--hipstdpar` before
+vs. after the OpenMP flags on the link line made no difference; but linking *with* `kernel_stdpar.o`
+while dropping only the `--hipstdpar` flag itself from that final link command (keeping it at
+`kernel_stdpar.cpp`'s compile step, where it's what actually generates the GPU-offloaded code)
+linked successfully. This says the conflict is specifically between `--hipstdpar` and
+`-fopenmp`/`--offload-arch` running their device-linking steps together on amdclang++/ROCm 7.14 —
+not a general "too many offload kinds" limitation, and not something the already-compiled
+`kernel_stdpar.o` needs repeated at link time the way `$(OMP_OFFLOAD_FLAGS)` does.
+
+Before trusting the fix, verified the stdpar backend still genuinely runs on the GPU without
+`--hipstdpar` at link (rather than silently falling back to sequential CPU execution, which would
+still produce a correct-looking residual and hide the regression): the user shared real
+`rocprofv3` kernel-trace output showing a `"kernel"` dispatch — the stdpar backend's generic device
+kernel name, distinct from HIP's `stencil_kernel` and OpenMP's name-and-line-embedding
+`__omp_offloading_4f_8fb8861__Z17launch_omp_kernelPdi_l6` — occurring 5 times, matching the app's
+5 iterations, alongside both other backends' own 5 dispatches each in the same trace. All three
+backends confirmed genuinely GPU-offloaded in one binary.
+
+Fixed in `test_apps/cpp_app/Makefile`: `STDPAR_LDFLAGS` for `COMPILER=amd` emptied (was
+`--hipstdpar --offload-arch=$(OFFLOAD_ARCH)`), `STDPAR_CXXFLAGS` (the compile-time flag, unrelated
+to this bug) left unchanged, with a comment citing this real-hardware confirmation so the
+non-obvious "compile-time yes, link-time no" asymmetry isn't re-broken later. Re-verified via
+`make -n COMPILER=amd` that `--hipstdpar` no longer appears on the final link line while
+`-fopenmp --offload-arch=...` still does; `gnu`/`cray` link lines unaffected. Worth remembering for
+Phase 2: the stdpar backend's kernel name (`"kernel"`) carries no owner-subroutine information,
+unlike OpenMP's offloading-name convention which embeds the real function name and source line —
+relevant once kernel-owner-matching logic (`calltree_common.kernel_owner_label()`) needs to handle
+stdpar-generated kernels.
+
+## 2026-08-12 — Phase 2 (partial): filter-substring expansion from real `test_apps/` HPC data
+
+The user captured the suite's first 6 real profiling directories under `test_apps/results/` — every
+language (C/C++/Fortran) × both working compilers (`amd`, `cray`), all on Cray MPICH, all on one
+MI300A node (`gfx942`); GNU/Open MPI testing remains postponed per the earlier toolchain issue.
+Following the two-phase plan in `docs/plans/15-test-apps-suite.md`, this is Phase 2, scoped to what
+these 6 directories actually exercise — full plan at
+`docs/plans/16-phase2-filter-substrings-from-real-data.md`.
+
+Four real, `grep`-confirmed findings drove the changes:
+
+1. **`__tgt_target_kernel`**, LLVM libomptarget's OpenMP-target-offload launch entry point, appeared
+   unfiltered in 5 of 6 real `calltree.txt` files (both `amd` and `cray` builds — both link the same
+   `libomptarget` entry point in this environment), directly beneath the real `launch_omp_kernel`
+   call site. Added to `calltree_common.py`'s `KERNEL_LAUNCH_LABEL_SUBSTRINGS` (alongside the
+   existing OpenACC `__cray_start_acc_kernel`) and to `extract_calltree.py`'s `GPU_NOISE_SUBSTRINGS`.
+2. Beneath it, on `amd` builds only, a chain of unfiltered LLVM AMDGPU-offload-plugin internals
+   showed up (`PluginManager::getDevice`, `DeviceTy::loadBinary`, several
+   `llvm::omp::target::plugin::*` methods) — pure GPU-runtime plumbing, the OpenMP-offload
+   equivalent of the already-filtered `rocprofiler::`/HIP internals. Added to `GPU_NOISE_SUBSTRINGS`.
+3. On `cray` builds, `hotspots.txt`'s "CPU compute hotspots" and "CPU load imbalance" tables were
+   polluted with AMD's GPU-kernel-JIT-compilation internals — the clang/LLVM frontend + comgr
+   pipeline that compiles GPU machine code on first kernel launch (`clang::CodeGen::
+   mergeDefaultFunctionDefinition`, `amd_comgr_iterate_map_metadata`, and a return-type-prefixed
+   `int llvm::array_pod_sort_by_key(...)` that a `startswith`-only check can't catch). Added a new
+   substring-matched `GPU_COMPILE_NOISE_SUBSTRINGS = ("clang::", "llvm::", "amd_comgr")` to
+   `extract_CPU_hotspots.py`'s `is_gpu_entry()`, additive to the existing `startswith(GPU_API_
+   PREFIXES)` check — this also fixes `extract_hotspots.py` and `extract_pop_metrics.py` for free,
+   since both consume `cpu_tool`'s classification rather than reimplementing it.
+4. The two independently-maintained MPI-prefix lists disagreed: `extract_calltree.py`'s
+   `MPI_PREFIXES` lowercases the label before comparing (case-insensitive), while
+   `extract_pop_metrics.py`'s compared a hardcoded uppercase tuple against the raw label — a latent
+   bug that only happened not to misfire because every real MPI symbol observed so far is
+   already uppercase-prefixed. Reconciled both to the same lowercase set, with
+   `extract_pop_metrics.py`'s call site now lowercasing before comparing.
+
+Per the user's feedback mid-review, two adjustments beyond the original 4 findings: Open MPI's
+well-documented internal-symbol prefixes (`ompi_`, `opal_`, `orte_`) were added proactively to both
+reconciled `MPI_PREFIXES` lists as a "most probable" set, even though no real Open MPI capture
+exists yet — deliberately matched via the same `startswith()` mechanism (not substring/`in`) the
+MPICH prefixes already use, since the one real false-positive risk found while exploring
+(`ompi_group_t` appearing mid-string inside rocprof-sys/timemory's own generic GOTCHA-wrapper
+template signature, `tim::component::gotcha<101ul, int, ompi_group_t**>(...)`) only ever occurs
+mid-label, never at the start, so `startswith` naturally avoids it without extra guard logic.
+
+Explicitly deferred, not changed this pass: the generic, collision-prone GPU kernel name `"kernel"`
+from `cpp_app`'s `--hipstdpar` backend (a kernel-identification/anchor-attribution concern, not a
+noise-filter concern — Cray has no stdpar-offload path at all, so `CPP_cray` correctly shows no such
+dispatch); `__internal_tgt_target_teams` (present in Cray's real symbol table but never actually hit
+in any of the 6 rendered outputs, so not added per this project's "observed in exercised data" bar);
+`_cce$noloop$form` and other compiler-specific kernel-name-mangling suffixes.
+
+Added fixture-based unit tests using the exact real symbol strings above (not invented) across
+`test_calltree_common.py`, `test_extract_calltree.py`, `test_extract_CPU_hotspots.py`, and
+`test_extract_pop_metrics.py` (the last via a new small fixture,
+`tests/fixtures/pop_mpi_prefix_reconciliation/`, since reusing the existing `pop_ref_2rank` fixture
+would have broken its own carefully-computed arithmetic assertions). Full suite: 286 tests, all
+passing.
+
+Unlike the `test_apps/` binaries themselves, the postprocessing tools are pure Python with no
+ROCm/HPC dependency, so — per the user's explicit instruction — this round's verification went
+beyond unit tests: `extract_calltree.py`, `extract_calltree_traced.py`, `extract_hotspots.py`, and
+`extract_pop_metrics.py` were re-run against all 6 real captured directories, overwriting
+`calltree.txt`/`hotspots.txt` in place with the newly filtered output for the user to inspect
+directly. Confirmed real effects, not just passing tests: on `profile_hotspots_C_cray`, "CPU compute
+hotspots" dropped from 275 to 165 entries and "GPU API/launch overhead" grew from 88 to 198 (110
+compiler-JIT frames correctly reclassified); `profile_hotspots_fortran_cray` showed the same pattern
+(262→137 / 68→193). All 6 `calltree.txt` files lost the `__tgt_target_kernel`/LLVM-offload-plugin
+noise with zero regressions to kernel-anchor attribution (`grep -c "no owning subroutine"` stayed 0
+across all 6, both before and after) and zero real application labels (`run_simulation`,
+`launch_omp_kernel`/`launch_backend_kernel`, `MPI_Allreduce`/`mpi_allreduce_`, `stencil_kernel`)
+lost. `extract_calltree_traced.py`'s output was also inspected specifically to resolve an open
+question raised during planning — whether its wall_clock/instrumented data source (which lacks
+`extract_calltree.py`'s broadened `GPU_NOISE_SUBSTRINGS`) also leaks the OpenMP-offload-plugin
+frames: it does not, because its instrumented (not sampled) call tree never reaches that depth at
+all in this data — it jumps straight from the CPU parent frame to the `[GPU kernels -- rocprofv3]`
+bucket, without an intermediate `__tgt_target_kernel`/plugin-chain node ever appearing — so no
+further change to that tool was needed this pass.
+
+This is real reprocessing of already-captured data, not a new live HPC capture — per this project's
+convention against overclaiming "verified" status, that distinction matters: the fixes are confirmed
+against real rocprof-sys/rocprofv3 output, but no new `rocprofv3`/`rocprof-sys` run was taken inside
+this change.
+
+## 2026-08-12 — Follow-up: shared rocprof-sys/GOTCHA wrapper-noise filtering across tools
+
+Two follow-up questions from inspecting the newly-filtered real output above led to one more fix.
+First: an unrelated `std::pair<std::_Rb_tree_iterator<int>, bool> std::_Rb_tree<...>` chain
+polluting the `amd` builds' `calltree.txt` turned out not to be a filtering gap at all — checking
+the raw `rocprof-sys/sampling_wall_clock-*.txt` files directly showed the pattern has zero
+occurrences in any `cray` build's raw data and 33-38 occurrences per rank in `amd` builds', so
+nothing in this project's tools ever touched it; it's real rocprof-sys/GOTCHA startup bookkeeping
+(`std::map`/`std::set` registries populated via `get_library`/`create_hashtable`/`prepare_symbol`/
+`lookup_exported_symbol` — real GOTCHA API function names) that amd's rocprof-sys build (ROCm 7.14
+"testing") apparently samples into and Cray's (ROCm 7.0.2 stock) doesn't — left untouched this round
+per the user's explicit "do not touch the std::pair thingy yet," since a safe fix needs to target the
+GOTCHA-specific anchors, not a blanket `std::` filter that would also hide real application
+`std::map`/`std::vector`/etc. usage.
+
+Second, a real gap: `lookup_hashtable`/`lookup.constprop.0`/`gotcha_wrap`/`tim::...` were already
+spliced out of `calltree.txt` by `extract_calltree.py`'s `ROCPROFSYS_WRAPPER_SUBSTRINGS`, but showed
+up unfiltered in `hotspots.txt`'s "CPU compute hotspots" table, because `extract_CPU_hotspots.py`
+(which `extract_hotspots.py`/`extract_pop_metrics.py` both build on) had no concept of this noise
+category at all — only `extract_calltree.py` had ever defined it. Rather than hand-copy the list a
+second time (the same drift that had already happened once this session with `MPI_PREFIXES`),
+`ROCPROFSYS_WRAPPER_SUBSTRINGS` moved to live in `extract_CPU_hotspots.py` (the base module every
+other tool already imports from — `extract_calltree.py`'s own copy would have created a circular
+import), with `extract_calltree.py` now referencing `cpu_tool.ROCPROFSYS_WRAPPER_SUBSTRINGS`
+instead of defining its own, mirroring the existing `GPU_API_PREFIXES` sharing pattern.
+
+The two tools still *treat* a match differently, correctly: `extract_calltree.py` keeps SPLICING
+matching nodes out of its tree (real code sits inside these wrapper frames as descendants, so only
+the wrapper node itself is removed, its children reparented). `extract_CPU_hotspots.py`'s data has
+no such tree-shaped "real code inside" relationship for this particular noise — its `scan_ranks()`
+now DROPS matching rows entirely, before either CPU/GPU classification or merging, so they never
+reach `aggregate()`, `aggregate_per_rank()`, or (since both call `scan_ranks()`/`aggregate_per_rank()`
+directly) `extract_hotspots.py`'s and `extract_pop_metrics.py`'s output either — fixing all three at
+once with one change. Deliberately not folded into the existing GPU/CPU boolean split: labeling
+GOTCHA/dynamic-linker bookkeeping as "GPU API overhead" (table 4) would be actively wrong, not just
+imprecise, so it's dropped outright rather than assigned to either bucket.
+
+Added `IsRocprofsysWrapperNoiseTests` and a new `AggregateTests` case in
+`test_extract_CPU_hotspots.py`, using a new small fixture
+(`tests/fixtures/rocprofsys_wrapper_noise/`) with a real app label plus `gotcha_wrap`/
+`lookup_hashtable` noise rows, confirming both are excluded from `aggregate()`'s output entirely
+while `root_sum`/`total_runtime` stay correct (computed from the full, unfiltered row list before
+the drop). Full suite: 289 tests, all passing. Re-ran the postprocessing tools against all 6 real
+`test_apps/` directories again: `lookup_hashtable`/`lookup.constprop`/`gotcha`/`tim::`/
+`library_gots`/`lib_bindings` no longer appear anywhere in any of the 6 regenerated `hotspots.txt`
+files (previously present only in `cray` builds' "CPU compute hotspots" table); e.g.
+`profile_hotspots_C_cray`'s table 2 entry count dropped from 165 to 145, `profile_hotspots_
+fortran_cray`'s from 137 to 120 — the wrapper-noise rows found and removed, not just a
+coincidental shift.
+
+## 2026-08-12 — Fixed a pre-existing `start_thread` distortion (generalizing plan 09)
+
+After the fix above, the user asked why `start_thread` was still dominating `hotspots.txt`'s
+table 1 (94.2% of the combined pool in `profile_hotspots_C_cray`, per plan 09's docs). Checking the
+*original* captured `hotspots.txt` (saved before any change this session) showed the exact same
+number — proving this predates every fix in this session, not a regression from any of them.
+
+Root cause, traced from the real raw `wall_clock-0.txt`:
+```
+|0>>> |_MPI_Init                    depth=1
+|0>>>   |_pthread_create            depth=2   <- spawned directly under MPI_Init
+|1>>>     |_start_thread            depth=3, 100% self, lives ~the whole run
+|0>>>   |_hipRuntimeGetVersion      depth=2   <- a SIBLING of pthread_create, not its parent
+```
+Plan 09 (`docs/plans/09-calltree-ancestry-thread-classification.md`) fixed exactly this same
+"whole-lifetime dumped under a generic entry symbol" pattern for background threads the HIP runtime
+spawns under `hipRuntimeGetVersion`/`hipStreamCreate` -- reclassifying a thread-root as GPU-API
+overhead if its ancestry leads to a GPU-API call. Here, `pthread_create` is called directly under
+`MPI_Init` instead -- almost certainly Cray MPICH's own async-progress threads -- a real data shape
+plan 09 was never built against, so its HIP-only ancestry check finds nothing and these three
+near-full-runtime `start_thread` rows get counted as real CPU compute.
+
+Fixed by generalizing the same ancestry idea, not by name (per `CLAUDE.md`'s no-target-assumptions
+principle, plan 09's own explicit reasoning too): a new `is_runtime_thread_noise(row)` in
+`extract_CPU_hotspots.py` walks a thread-root's ancestors for an MPI-territory match, the same
+structural pattern `classify_gpu()` already uses for GPU-territory. Unlike the HIP case, an MPI
+progress thread has no GPU relationship at all, so it's dropped entirely in `scan_ranks()` (same
+treatment as `ROCPROFSYS_WRAPPER_SUBSTRINGS`) rather than folded into the "GPU API overhead" bucket
+-- mislabeling it as GPU-related would be wrong, not just imprecise. This needed `MPI_PREFIXES`/
+`MPI_FORTRAN_SHIM_SUFFIXES`/`is_mpi_territory()`, which only existed in `extract_calltree.py` --
+moved into the shared base module alongside `ROCPROFSYS_WRAPPER_SUBSTRINGS` for the same reason,
+with `extract_calltree.py` and `extract_pop_metrics.py` now both referencing
+`cpu_tool.MPI_PREFIXES` instead of their own copies, fully closing the three-independent-lists gap
+Finding 4 (two changes ago) had only partially reconciled.
+
+Added `IsRuntimeThreadNoiseTests` and `IsMpiTerritoryTests` (unit-level, mirroring
+`ClassifyGpuTests`'s exact style) plus a fixture-based `AggregateTests` case
+(`tests/fixtures/mpi_spawned_thread_noise/`, the real `MPI_Init -> pthread_create -> start_thread`
+shape). While adding these, an editing slip briefly relocated a pre-existing test
+(`test_own_label_match_wins_outright`) out of `ClassifyGpuTests` into the new `IsMpiTerritoryTests`
+class -- caught via `git diff` before running the suite and moved back to its original class. Full
+suite: 295 tests, all passing. Re-ran the postprocessing tools against all 6 real `test_apps/`
+directories again: `start_thread` no longer appears near the top of any `hotspots.txt` table 1;
+`MPI_Init`/`PMPI_Init` (a real, legitimate cost) is now correctly the top entry in all 6. The
+`std::pair<..._Rb_tree...>` GOTCHA-registry chain (a separate, still-open question, see two entries
+above) remains untouched, per the user's explicit request.

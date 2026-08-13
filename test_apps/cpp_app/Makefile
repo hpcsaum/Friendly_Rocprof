@@ -18,7 +18,16 @@ else ifeq ($(COMPILER),amd)
   CXX_amd ?= amdclang++
   OMP_OFFLOAD_FLAGS ?= -fopenmp --offload-arch=$(OFFLOAD_ARCH)
   STDPAR_CXXFLAGS ?= --hipstdpar --offload-arch=$(OFFLOAD_ARCH)
-  STDPAR_LDFLAGS ?= --hipstdpar --offload-arch=$(OFFLOAD_ARCH)
+  # --hipstdpar is needed to COMPILE kernel_stdpar.cpp (above), but must NOT
+  # also be passed at final link alongside -fopenmp/--offload-arch: on
+  # amdclang++/ROCm, combining both offload kinds on one link line breaks
+  # OpenMP's own device-code linking step (undefined symbol:
+  # __tgt_target_kernel), even though the already-compiled kernel_stdpar.o
+  # links in and runs correctly on the GPU without it -- confirmed via a
+  # real HPC build+run, kernel launch visible in rocprofv3's kernel-trace
+  # output (a "kernel" dispatch alongside HIP's "stencil_kernel" and OMP's
+  # "__omp_offloading_..." dispatch, one per iteration).
+  STDPAR_LDFLAGS ?=
 else ifeq ($(COMPILER),gnu)
   MPICXX ?= mpicxx
   # GCC's AMDGPU OpenMP-offload support depends on the toolchain being built
@@ -72,8 +81,14 @@ kernel_stdpar.o: kernel_stdpar.cpp
 	$(MPICXX) $(CXXFLAGS) $(STDPAR_CXXFLAGS) -c $< -o $@
 endif
 
+# $(OMP_OFFLOAD_FLAGS) must be repeated at final link, not just at
+# kernel_omp.o's compile step -- Clang/amdclang++ only run the device-code
+# linking step (which pulls in the offload runtime, e.g. libomptarget's
+# __tgt_target_kernel) when -fopenmp/--offload-arch are present on the link
+# command itself. Omitting them here fails with "undefined symbol:
+# __tgt_target_kernel" even though the object file compiled cleanly.
 $(TARGET): $(OBJS)
-	$(MPICXX) $(OBJS) -o $@ $(EXTRA_LDFLAGS) $(STDPAR_LDFLAGS)
+	$(MPICXX) $(OBJS) -o $@ $(OMP_OFFLOAD_FLAGS) $(EXTRA_LDFLAGS) $(STDPAR_LDFLAGS)
 
 clean:
 	rm -f $(TARGET) $(OBJS)

@@ -63,8 +63,14 @@ kernel_omp.o: kernel_omp.c
 kernel_hip.o: kernel_hip.cpp
 	$(HIPCC) $(CFLAGS) -c $< -o $@
 
+# $(OMP_OFFLOAD_FLAGS) must be repeated at final link, not just at
+# kernel_omp.o's compile step -- Clang/amdclang only run the device-code
+# linking step (which pulls in the offload runtime, e.g. libomptarget's
+# __tgt_target_kernel) when -fopenmp/--offload-arch are present on the link
+# command itself. Omitting them here fails with "undefined symbol:
+# __tgt_target_kernel" even though the object file compiled cleanly.
 $(TARGET): $(OBJS)
-	$(MPICXX) $(OBJS) -o $@ $(EXTRA_LDFLAGS)
+	$(MPICXX) $(OBJS) -o $@ $(OMP_OFFLOAD_FLAGS) $(EXTRA_LDFLAGS)
 
 clean:
 	rm -f $(TARGET) $(OBJS)

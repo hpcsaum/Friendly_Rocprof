@@ -71,6 +71,36 @@ class IsGpuEntryTests(unittest.TestCase):
         ))
         self.assertTrue(hotspots.is_gpu_entry("rocr::os::ThreadTrampoline(void*)", "wall_clock-1.txt"))
 
+    def test_gpu_kernel_jit_compilation_noise_is_gpu(self):
+        # clang/LLVM frontend + comgr compiling GPU machine code on first
+        # kernel launch -- confirmed misclassified as CPU compute in real
+        # test_apps HPC data's hotspots.txt before this fix.
+        self.assertTrue(hotspots.is_gpu_entry(
+            "clang::CodeGen::mergeDefaultFunctionDefinition(...)", "wall_clock-1.txt"
+        ))
+        self.assertTrue(hotspots.is_gpu_entry("amd_comgr_iterate_map_metadata", "wall_clock-1.txt"))
+        # Return-type-prefixed form -- exercises substring, not startswith,
+        # matching (real observed label from test_apps HPC data).
+        self.assertTrue(hotspots.is_gpu_entry("int llvm::array_pod_sort_by_key(...)", "wall_clock-1.txt"))
+
+    def test_plain_cpu_application_label_unaffected(self):
+        self.assertFalse(hotspots.is_gpu_entry("run_simulation", "wall_clock-1.txt"))
+
+
+class IsRocprofsysWrapperNoiseTests(unittest.TestCase):
+    # Shared with extract_calltree.py's own wrapper-splice tier (see
+    # ROCPROFSYS_WRAPPER_SUBSTRINGS's comment) -- this is the same
+    # classification, now usable here too so it isn't left unfiltered in
+    # aggregate()'s output the way it used to be.
+    def test_matches_gotcha_and_dynamic_linker_frames(self):
+        self.assertTrue(hotspots.is_rocprofsys_wrapper_noise("gotcha_wrap"))
+        self.assertTrue(hotspots.is_rocprofsys_wrapper_noise("lookup_hashtable"))
+        self.assertTrue(hotspots.is_rocprofsys_wrapper_noise("lookup.constprop.0"))
+        self.assertTrue(hotspots.is_rocprofsys_wrapper_noise("tim::component::gotcha<101ul>::wrap"))
+
+    def test_rejects_real_application_label(self):
+        self.assertFalse(hotspots.is_rocprofsys_wrapper_noise("compute_stencil"))
+
 
 class AggregateTests(unittest.TestCase):
     def test_single_rank_bucketing_and_total_runtime(self):
@@ -86,6 +116,37 @@ class AggregateTests(unittest.TestCase):
         # self_sum = sum * (% SELF / 100); pct_total (aggregate()'s own default) is self-based
         self.assertAlmostEqual(by_label["compute_stencil"]["self_sum"], 9.812345 * 0.95)
         self.assertAlmostEqual(by_label["compute_stencil"]["pct_total"], 9.812345 * 0.95 / 13.360265 * 100)
+
+    def test_rocprofsys_wrapper_noise_excluded_from_both_buckets(self):
+        # rocprofsys_wrapper_noise/wall_clock-9001.txt: main(10.0), real
+        # compute_stencil(8.0), plus gotcha_wrap(1.0)/lookup_hashtable(1.0)
+        # wrapper-noise rows -- neither should appear in cpu_entries OR
+        # gpu_entries; root_sum/total_runtime (from main, 10.0) is unaffected.
+        cpu, gpu, scanned, total_runtime = hotspots.aggregate(
+            os.path.join(FIXTURES, "rocprofsys_wrapper_noise")
+        )
+        cpu_labels = {e["label"] for e in cpu}
+        gpu_labels = {e["label"] for e in gpu}
+        self.assertEqual(cpu_labels, {"main", "compute_stencil"})
+        self.assertEqual(gpu_labels, set())
+        self.assertAlmostEqual(total_runtime, 10.0)
+
+    def test_mpi_spawned_thread_noise_excluded_from_both_buckets(self):
+        # mpi_spawned_thread_noise/wall_clock-5001.txt: main -> MPI_Init ->
+        # pthread_create -> start_thread(thread 1, 9.0s, 100% self) -- real
+        # Cray MPICH shape (background thread spawned directly under
+        # MPI_Init, not a GPU-API call). start_thread must be dropped
+        # entirely; main/MPI_Init/pthread_create (real, or at least not
+        # thread-root-under-MPI) stay; root_sum (10.0, from main) unaffected.
+        cpu, gpu, scanned, total_runtime = hotspots.aggregate(
+            os.path.join(FIXTURES, "mpi_spawned_thread_noise")
+        )
+        cpu_labels = {e["label"] for e in cpu}
+        gpu_labels = {e["label"] for e in gpu}
+        self.assertNotIn("start_thread", cpu_labels)
+        self.assertNotIn("start_thread", gpu_labels)
+        self.assertEqual(cpu_labels, {"main", "MPI_Init", "pthread_create"})
+        self.assertAlmostEqual(total_runtime, 10.0)
 
     def test_mpi_ranks_aggregate_by_function_name_and_total_runtime(self):
         cpu, gpu, scanned, total_runtime = hotspots.aggregate(os.path.join(FIXTURES, "mpi_2rank"))
@@ -272,6 +333,51 @@ class ClassifyGpuTests(unittest.TestCase):
         rows = [{"label": "hipLaunchKernel", "depth": 0, "thread_id": "0"}]
         hotspots.attach_ancestry(rows)
         self.assertTrue(hotspots.classify_gpu(rows[0], "wall_clock-0.txt"))
+
+
+class IsRuntimeThreadNoiseTests(unittest.TestCase):
+    # Same ancestry idea as ClassifyGpuTests, generalized to a second real
+    # shape found in test_apps HPC data: Cray MPICH spawning pthread_create
+    # directly under MPI_Init (not under a GPU-API call), each resulting
+    # start_thread living the whole run at 100% self -- confirmed via real
+    # wall_clock-0.txt: MPI_Init -> pthread_create -> start_thread (x3).
+    def test_thread_root_with_mpi_ancestor_is_dropped(self):
+        rows = [
+            {"label": "MPI_Init", "depth": 0, "thread_id": "0"},
+            {"label": "pthread_create", "depth": 1, "thread_id": "0"},
+            {"label": "start_thread", "depth": 2, "thread_id": "1"},
+        ]
+        hotspots.attach_ancestry(rows)
+        self.assertTrue(hotspots.is_runtime_thread_noise(rows[2]))
+
+    def test_thread_root_with_no_mpi_ancestor_stays_untouched(self):
+        rows = [
+            {"label": "compute_stencil", "depth": 0, "thread_id": "0"},
+            {"label": "pthread_create", "depth": 1, "thread_id": "0"},
+            {"label": "start_thread", "depth": 2, "thread_id": "1"},
+        ]
+        hotspots.attach_ancestry(rows)
+        self.assertFalse(hotspots.is_runtime_thread_noise(rows[2]))
+
+    def test_non_thread_root_row_ignores_mpi_ancestor(self):
+        rows = [
+            {"label": "MPI_Init", "depth": 0, "thread_id": "0"},
+            {"label": "some_cpu_helper", "depth": 1, "thread_id": "0"},
+        ]
+        hotspots.attach_ancestry(rows)
+        self.assertFalse(rows[1]["is_thread_root"])
+        self.assertFalse(hotspots.is_runtime_thread_noise(rows[1]))
+
+
+class IsMpiTerritoryTests(unittest.TestCase):
+    def test_matches_mpich_and_open_mpi_prefixes(self):
+        self.assertTrue(hotspots.is_mpi_territory("MPI_Init"))
+        self.assertTrue(hotspots.is_mpi_territory("PMPI_Allreduce"))
+        self.assertTrue(hotspots.is_mpi_territory("MPIDI_CRAY_Setup_Shared_Mem_Coll"))
+        self.assertTrue(hotspots.is_mpi_territory("ompi_request_complete"))
+
+    def test_rejects_real_application_label(self):
+        self.assertFalse(hotspots.is_mpi_territory("compute_stencil"))
 
 
 class GpuSpawnedThreadFixtureTests(unittest.TestCase):

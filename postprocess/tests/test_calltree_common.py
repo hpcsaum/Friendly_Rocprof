@@ -66,6 +66,11 @@ class IsKernelLaunchTests(unittest.TestCase):
     def test_matches_cray_acc_entry_point(self):
         self.assertTrue(ctc.is_kernel_launch("__cray_start_acc_kernel"))
 
+    def test_matches_omp_target_offload_entry_point(self):
+        # LLVM libomptarget's launch entry point -- confirmed in real
+        # test_apps HPC data under both amdclang++ and Cray CCE.
+        self.assertTrue(ctc.is_kernel_launch("__tgt_target_kernel"))
+
     def test_rejects_unrelated_label(self):
         self.assertFalse(ctc.is_kernel_launch("compute_stencil"))
 
