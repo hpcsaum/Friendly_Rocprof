@@ -33,6 +33,7 @@
 | 2026-08-13 | Structural (not substring) fix for the `std::pair<..._Rb_tree...>`/GOTCHA-registry noise left open two entries above: `mark_wrapper_contaminated_branches()`/`prune_wrapper_contaminated_branches()` drop a whole sibling branch when it contains a wrapper match but has a genuinely clean sibling to compare against -- confirmed via real data this reduces the noise's dominance in `hotspots.txt` table 1 from ~40% to ~4-5%, with the residue confirmed to be real MPI-internal ancestry sharing the same generic label, not a filtering gap |
 | 2026-08-13 | Full `postprocess/` dependency audit and consolidation plan written (`docs/plans/2.1-postprocess-consolidation-refactor.md`); plan numbering versioned (`1.1`-`1.16` = original tool suite, `2.x` = this refactor); `CLAUDE.md` gains a Code Comments convention (describe current behavior, not history; every module gets a top-of-file scope/functions/philosophy docstring) |
 | 2026-08-13 | Plan 2.2: relocated `parse_table_file()`/`clean_label()`/`thread_id_from_raw_label()`/`PID_SUFFIX_RE` (new `stage1_rocprofsys.py`), `parse_kernel_stats_csv()` (new `stage1_rocprofv3.py`), and `attach_ancestry()` (new `stage2_rocprofsys.py`) out of `extract_CPU_hotspots.py`/`extract_GPU_hotspots.py` -- pure relocation, zero behavior change, roadmap step 1 of the consolidation plan |
+| 2026-08-13 | Plan 2.3: extracted the shared avg/std_dev/min/max-across-ranks math into new `rank_merge_math.py` (`stats_across_ranks()`), used by `calltree_common.aggregate_node_stats()` and both `compute_load_imbalance()` copies -- roadmap step 2; incidentally found and flagged (not fixed, out of scope) a pre-existing nondeterministic tie-order bug in `compute_load_imbalance()`'s sort for labels with byte-identical stats |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -1124,3 +1125,33 @@ needed no change, since `from stage2_rocprofsys import attach_ancestry` re-binds
 pre-refactor baseline except each report's own `generated:` timestamp line. `extract_CPU_hotspots.py`,
 `extract_GPU_hotspots.py`, and `extract_calltree_traced.py` (no standalone output previously saved
 in these directories to diff against) were smoke-tested against the same real data and ran clean.
+
+## 2026-08-13 — Plan 2.3: extract rank_merge_math.py (roadmap step 2)
+
+Second implementation step of the consolidation plan: `calltree_common.aggregate_node_stats()` and
+the two `compute_load_imbalance()` copies (`extract_CPU_hotspots.py`, `extract_GPU_hotspots.py` --
+confirmed byte-for-byte identical except their docstrings) all independently computed the same
+avg/std_dev/min/max-across-ranks math, with a missing rank counted as 0 rather than omitted. That
+core moved into a new `rank_merge_math.py` (`stats_across_ranks(values)`); all three callers now
+call it instead of inlining `statistics.mean()`/`pstdev()`/`min()`/`max()`. Only the stats math
+moved -- the surrounding label-discovery/sort/selection logic in `compute_load_imbalance()` stays a
+standalone copy in each file until roadmap step 6 relocates the whole function to its stage-5 table
+module. The GPU copy's docstring, which claimed the duplication was fully intentional
+("stand-alone-by-design"), was updated to state the new partial reality accurately.
+
+Added `test_rank_merge_math.py` testing the new primitive directly (empty list, a normal multi-value
+list, a single-value list, and the "missing rank as an explicit 0.0" convention every caller
+relies on); left `AggregateNodeStatsTests` and both `ComputeLoadImbalanceTests` unchanged, since the
+public behavior of the functions they test didn't change. Full suite: 307 tests, all passing.
+
+Re-ran `extract_calltree.py`/`extract_hotspots.py`/`extract_pop_metrics.py` against all 6 real
+`test_apps/results/` directories: byte-identical to the pre-change backup except timestamps.
+Incidentally discovered, while re-running verification multiple times, that
+`profile_hotspots_C_cray`'s load-imbalance table has two labels (`malloc` and
+`operator new(unsigned long, std::...)`) with byte-identical avg/std_dev/min/max -- their relative
+row order changes randomly between separate process runs, because `compute_load_imbalance()`'s
+label set inherits Python's per-process string-hash randomization and its sort has no tie-breaker
+beyond std_dev. Confirmed via direct testing that this reproduces identically against the
+pre-Plan-2.3 committed code (git commit `e49d148`) -- a real, pre-existing bug, not a regression
+from this step, and out of this step's scope to fix. Flagged as a follow-up task rather than fixed
+here.

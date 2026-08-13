@@ -10,12 +10,13 @@ the other would silently diverge between the two tools. Neither tool's own
 filtering rules (which categories of node get pruned/spliced/collapsed) are
 hardcoded here -- each tool injects its own `is_pruned(node)`/
 `collapses_children(node)` callables, so this module has no opinion on any
-one tool's visibility rules. See docs/plans/14-sampling-calltree-tool.md and
+one tool's visibility rules. See docs/plans/1.14-sampling-calltree-tool.md and
 docs/DEVELOPMENT_HISTORY.md for the cross-rank aggregation round.
 """
 
 import os
-import statistics
+
+from rank_merge_math import stats_across_ranks
 
 # Best-effort list of known GPU-kernel-launch entry points -- not exhaustive.
 # Matched via substring/`in` (case-insensitive), not startswith/equality,
@@ -191,21 +192,19 @@ def aggregate_node_stats(per_rank, rank_keys):
     rank in rank_keys -- NOT just the ranks present in per_rank: a rank
     missing from per_rank genuinely spent 0 time/0 calls here, and counts as
     0 in every statistic (see merge_rank_trees()'s docstring) rather than
-    being omitted, which would understate real load imbalance. std_dev uses
-    statistics.pstdev() (population, not sample) -- same choice
-    extract_CPU_hotspots.compute_load_imbalance() already made, kept
-    consistent here rather than reinvented.
+    being omitted, which would understate real load imbalance.
     """
     counts = [per_rank.get(rk, {}).get("count", 0) for rk in rank_keys]
     selfs = [per_rank.get(rk, {}).get("self_sum", 0.0) for rk in rank_keys]
     totals = [per_rank.get(rk, {}).get("sum", 0.0) for rk in rank_keys]
+    self_stats = stats_across_ranks(selfs)
     return {
-        "calls_avg": statistics.mean(counts) if counts else 0.0,
-        "self_avg": statistics.mean(selfs) if selfs else 0.0,
-        "self_std": statistics.pstdev(selfs) if selfs else 0.0,
-        "self_min": min(selfs) if selfs else 0.0,
-        "self_max": max(selfs) if selfs else 0.0,
-        "total_avg": statistics.mean(totals) if totals else 0.0,
+        "calls_avg": stats_across_ranks(counts)["avg"],
+        "self_avg": self_stats["avg"],
+        "self_std": self_stats["std_dev"],
+        "self_min": self_stats["min"],
+        "self_max": self_stats["max"],
+        "total_avg": stats_across_ranks(totals)["avg"],
     }
 
 

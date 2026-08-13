@@ -12,11 +12,11 @@ import glob
 import json
 import os
 import re
-import statistics
 import sys
 from datetime import datetime
 
 from stage1_rocprofv3 import parse_kernel_stats_csv
+from rank_merge_math import stats_across_ranks
 
 # rocprofv3's --output-config (-> <pid>_config.json) is a post-ROCm-7.0.2 feature;
 # absent that file (the common case for our 7.0.2 compatibility target), header
@@ -120,27 +120,26 @@ def aggregate_per_rank(output_dir):
 
 
 def compute_load_imbalance(per_file_totals, top=None, threshold=None, show_all=False):
-    """Same shape and semantics as extract_CPU_hotspots.py's function of the
-    same name (duplicated rather than imported, matching this module's
-    existing stand-alone-by-design relationship to that one) -- per-kernel
-    avg/std_dev/min/max of each rank's own total time in that kernel,
-    across all ranks in per_file_totals. A rank missing a kernel counts as
-    0.0 for that rank, not omitted. --threshold here means coefficient of
-    variation (std_dev / avg, as a %), not % of total GPU time.
+    """Per-kernel avg/std_dev/min/max of each rank's own total time in that kernel, across all
+    ranks in per_file_totals -- the stats themselves come from the shared
+    rank_merge_math.stats_across_ranks(); the surrounding per-label loop and the
+    show_all/threshold/top selection below are still a standalone copy of
+    extract_CPU_hotspots.py's function of the same name. A rank missing a kernel counts as
+    0.0 for that rank, not omitted. --threshold here means coefficient of variation
+    (std_dev / avg, as a %), not % of total GPU time.
     """
     labels = {label for ft in per_file_totals for label in ft}
     entries = []
     for label in labels:
         values = [ft.get(label, 0.0) for ft in per_file_totals]
-        avg = statistics.mean(values)
-        std_dev = statistics.pstdev(values)
+        stats = stats_across_ranks(values)
         entries.append({
             "label": label,
-            "avg": avg,
-            "std_dev": std_dev,
-            "min": min(values),
-            "max": max(values),
-            "cv_pct": (std_dev / avg * 100.0) if avg > 0 else None,
+            "avg": stats["avg"],
+            "std_dev": stats["std_dev"],
+            "min": stats["min"],
+            "max": stats["max"],
+            "cv_pct": (stats["std_dev"] / stats["avg"] * 100.0) if stats["avg"] > 0 else None,
         })
 
     entries_sorted = sorted(entries, key=lambda e: e["std_dev"], reverse=True)

@@ -12,12 +12,12 @@ import glob
 import json
 import os
 import re
-import statistics
 import sys
 from datetime import datetime
 
 from stage1_rocprofsys import PID_SUFFIX_RE, parse_table_file
 from stage2_rocprofsys import attach_ancestry
+from rank_merge_math import stats_across_ranks
 
 NON_TIMING_FILES = {"available.txt", "instrumented.txt", "excluded.txt", "overlapping.txt"}
 # rocprof-sys's default config (ROCPROFSYS_FLAT_PROFILE=0, sampling on) writes THREE
@@ -518,15 +518,14 @@ def compute_load_imbalance(per_file_totals, top=None, threshold=None, show_all=F
     entries = []
     for label in labels:
         values = [ft.get(label, 0.0) for ft in per_file_totals]
-        avg = statistics.mean(values)
-        std_dev = statistics.pstdev(values)
+        stats = stats_across_ranks(values)
         entries.append({
             "label": label,
-            "avg": avg,
-            "std_dev": std_dev,
-            "min": min(values),
-            "max": max(values),
-            "cv_pct": (std_dev / avg * 100.0) if avg > 0 else None,
+            "avg": stats["avg"],
+            "std_dev": stats["std_dev"],
+            "min": stats["min"],
+            "max": stats["max"],
+            "cv_pct": (stats["std_dev"] / stats["avg"] * 100.0) if stats["avg"] > 0 else None,
         })
 
     entries_sorted = sorted(entries, key=lambda e: e["std_dev"], reverse=True)
