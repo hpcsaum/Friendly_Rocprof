@@ -31,6 +31,7 @@
 | 2026-08-12 | Follow-up: shared `ROCPROFSYS_WRAPPER_SUBSTRINGS` (rocprof-sys/GOTCHA startup bookkeeping noise) between `extract_calltree.py` and `extract_CPU_hotspots.py` -- it was already spliced out of `calltree.txt` but unfiltered in `hotspots.txt`'s "CPU compute hotspots" table; now dropped there too, moving the list into the shared base module `extract_CPU_hotspots.py` imports from |
 | 2026-08-12 | Fixed a pre-existing (not a regression) `start_thread` distortion in `hotspots.txt`: generalized plan 09's HIP-ancestry thread-reclassification to also recognize MPI-runtime-spawned background threads (e.g. Cray MPICH's `pthread_create` called directly under `MPI_Init`) via a new `is_runtime_thread_noise()`; also moved `MPI_PREFIXES` into the shared base module alongside `ROCPROFSYS_WRAPPER_SUBSTRINGS` |
 | 2026-08-13 | Structural (not substring) fix for the `std::pair<..._Rb_tree...>`/GOTCHA-registry noise left open two entries above: `mark_wrapper_contaminated_branches()`/`prune_wrapper_contaminated_branches()` drop a whole sibling branch when it contains a wrapper match but has a genuinely clean sibling to compare against -- confirmed via real data this reduces the noise's dominance in `hotspots.txt` table 1 from ~40% to ~4-5%, with the residue confirmed to be real MPI-internal ancestry sharing the same generic label, not a filtering gap |
+| 2026-08-13 | Full `postprocess/` dependency audit and consolidation plan written (`docs/plans/2.1-postprocess-consolidation-refactor.md`); plan numbering versioned (`1.1`-`1.16` = original tool suite, `2.x` = this refactor); `CLAUDE.md` gains a Code Comments convention (describe current behavior, not history; every module gets a top-of-file scope/functions/philosophy docstring) |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -1051,3 +1052,35 @@ combined pool in `C_amd`/`CPP_amd`/`fortran_amd`) dropped to ~4-5%; `calltree.tx
 noise branch (previously a large block of repeated templated STL frames directly under `main`) is
 gone in all 3 `amd` apps. Real branches (`run_simulation`, `MPI_Allreduce`, `stencil_kernel`, the
 real MPI-internal ancestor chain found above) confirmed present and untouched in all 6.
+
+## 2026-08-13 — `postprocess/` dependency audit, consolidation plan, and plan-numbering versioning
+
+A full read-through of every file under `postprocess/` produced a dependency map (module graph,
+cross-module function calls, a functional-pipeline view across all four hotspot/calltree tools,
+duplication findings, and a move-list) and a target architecture organized by pipeline stage
+(read profile / ancestry tree / filter noise / merge ranks+LB / create tables / report) instead of
+by tool. On top of that: a tag-then-act redesign for stage 3's noise filtering (replacing today's
+~15 bespoke, tool-specific predicate functions with one shared classification engine plus a small
+per-tool action map), a report-formatting style guide (casing, section markers, blank-line/caveat
+structure, long-name wrapping, a reproducibility-oriented `command:` header line), a test-suite
+audit mapping all ~180 existing test methods against the new architecture, and a 10-step
+implementation roadmap sequenced by actual dependency (not by section number). Written to
+`docs/plans/2.1-postprocess-consolidation-refactor.md`; a new branch, `postprocess-consolidation`,
+was created for this work.
+
+Plan files were renumbered to a `<major>.<minor>` scheme: `docs/plans/01`-`16` (the original tool
+suite, one plan per tool/feature) became `1.1`-`1.16`; this new consolidation plan is `2.1`, with
+future plans in this phase continuing as `2.2`, `2.3`, etc. `CLAUDE.md`'s plan-documentation section
+was updated to describe the new scheme. Per this project's existing precedent for file renames
+(the tool-renaming entry above left prior `DEVELOPMENT_HISTORY.md` entries referencing old names
+untouched, as a historical record), this file's own prior plan-number references were left as-is;
+only the one live user-facing pointer in `README.md` and `CLAUDE.md`'s own convention text were
+updated to the new filenames.
+
+`CLAUDE.md` also gained a Code Comments section: comments should describe current behavior, not
+the investigation history behind them (that belongs here, in `DEVELOPMENT_HISTORY.md`); write for a
+new developer joining the project, not a project historian; and every module gets a top-of-file
+docstring covering its scope, the functions it exposes, and its design philosophy. This applies
+going forward as each piece of code is actually touched during the refactor, with a final sweep
+(roadmap step 11) planned to catch anything left untouched by the time the rest of the refactor
+lands.

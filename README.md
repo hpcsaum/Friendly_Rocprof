@@ -222,7 +222,7 @@ sites exist. Neither approach is per-dispatch-exact — this toolchain's text/JS
 has no per-call timestamps to correlate a specific kernel dispatch against a specific
 launch call — only the binary Perfetto trace has that, and there's no stdlib-friendly way
 to parse it (a real gap, tracked as future work, not silently dropped — see
-[docs/plans/14-sampling-calltree-tool.md](docs/plans/14-sampling-calltree-tool.md)). When
+[docs/plans/1.14-sampling-calltree-tool.md](docs/plans/1.14-sampling-calltree-tool.md)). When
 neither a name match nor a launch-call anchor exists at all (possible on tool 4's scan
 directory specifically — its `ROCPROFSYS_USE_ROCM` HIP-call capture isn't enabled during
 the scan step, only during the final trace run), kernel data appears in its own labeled

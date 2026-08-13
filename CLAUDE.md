@@ -34,6 +34,31 @@ Since real rocprof tooling isn't available here, prefer:
 
 ## Plan documentation
 
-After a plan is approved in plan mode, write its full verbatim text to a new numbered file in `docs/plans/` (e.g. `docs/plans/01-<slug>.md`), continuing the existing sequence. If the as-built code later diverges from the approved plan (e.g. a bug found during implementation changes the design), don't edit the plan file itself — add a short header note pointing to what changed and where, and record the divergence in [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md).
+Plans are numbered `<major>.<minor>-<slug>.md` under `docs/plans/`. The major version marks a
+distinct phase of work — `1.x` is the original tool suite (one plan per tool/feature); `2.x` is the
+`postprocess/` consolidation refactor. After a plan is approved in plan mode, write its full
+verbatim text to a new file continuing the *current* major version's minor sequence (e.g. the plan
+after `2.1-postprocess-consolidation-refactor.md` is `2.2-<slug>.md`). Only bump the major version
+when starting a genuinely distinct phase of work, not for every plan. If the as-built code later
+diverges from the approved plan (e.g. a bug found during implementation changes the design), don't
+edit the plan file itself — add a short header note pointing to what changed and where, and record
+the divergence in [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md).
+
+## Code comments
+
+- **Comments describe current behavior, not history.** Say what a function does and why *the code
+  needs it to work correctly* (a non-obvious invariant, a subtle constraint) — not the story of how
+  it got that way, which real-data investigation motivated it, which plan introduced it, or what an
+  earlier version did instead. That narrative belongs in
+  [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md), not the source file; a comment that
+  reads like a changelog entry has drifted from its job.
+- **Write for a new developer joining the project, not a project historian.** Avoid comments that
+  only make sense with full context of past sessions or plans ("see docs/plans/...", "confirmed via
+  real test_apps HPC data", "this fixes the bug where..."). If a comment name-drops a specific
+  investigation or a prior bug instead of just stating the current, standing rule, rewrite it.
+- **Every module gets a top-of-file docstring** covering: its scope (what it owns, what it
+  explicitly does not), the functions it exposes, and its general design philosophy (e.g.
+  "classification only, no tree surgery" for a noise-filtering module) — enough for a new developer
+  to navigate the file without reading every function first.
 
 Before running any `git commit`, update [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md) (new timeline row(s) + a narrative subsection) to cover the work being committed, regenerate `docs/DEVELOPMENT_HISTORY.docx` from it (`pandoc docs/DEVELOPMENT_HISTORY.md -o docs/DEVELOPMENT_HISTORY.docx -M title="Development History" --standalone`), and include both files in the commit alongside the code changes.
