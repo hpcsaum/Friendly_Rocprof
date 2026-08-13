@@ -16,6 +16,8 @@
 | |0>>> gotcha_wrapper_call |1|3|wall_clock|sec|4.000000|4.000000|4.000000|4.000000|0.000000|0.000000|0.0|
 | |0>>> tim::wrapped_call |1|4|wall_clock|sec|4.000000|4.000000|4.000000|4.000000|0.000000|0.000000|0.0|
 | |0>>> real_child_under_wrapper |200|5|wall_clock|sec|4.000000|0.020000|0.018000|0.022000|0.000000|0.000010|100.0|
+| |0>>> std::pair<std::_Rb_tree_iterator<int>, bool> noise_top |1|3|wall_clock|sec|3.000000|3.000000|3.000000|3.000000|0.000000|0.000000|0.0|
+| |0>>> get_library |1|4|wall_clock|sec|3.000000|3.000000|3.000000|3.000000|0.000000|0.000000|100.0|
 | |3>>> start_thread |1|0|wall_clock|sec|88.000000|88.000000|88.000000|88.000000|0.000000|0.000000|0.0|
 | |3>>> rocprofsys::component::pthread_create_gotcha::wrapper::wrap(void*) |1|1|wall_clock|sec|88.000000|88.000000|88.000000|88.000000|0.000000|0.000000|0.0|
 | |3>>> rocr::os::ThreadTrampoline(void*) |1|2|wall_clock|sec|88.000000|88.000000|88.000000|88.000000|0.000000|0.000000|100.0|

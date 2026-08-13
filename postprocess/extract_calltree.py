@@ -183,6 +183,93 @@ def is_compiler_runtime_noise(label):
     return any(s in lname for s in COMPILER_RUNTIME_SUBSTRINGS)
 
 
+def prune_wrapper_contaminated_branches(rows):
+    """Structural counterpart to is_rocprofsys_wrapper() -- see
+    extract_CPU_hotspots.py's identical-in-spirit function for the full
+    rationale (shared root cause: rocprof-sys/GOTCHA's startup bookkeeping is
+    mostly generic std::set<std::string>/std::map<unsigned long,
+    std::set<unsigned long>> container internals that don't match
+    ROCPROFSYS_WRAPPER_SUBSTRINGS on their own at all, confirmed via real amd
+    test_apps HPC data's functions-<rank>.json -- naming every generic STL
+    frame individually risks hiding a real application's own std::map/
+    std::set usage, which this project deliberately avoids).
+
+    PER RANK, on the raw rows -- and, critically, called BEFORE
+    splice_out_wrapper_nodes() (see load_rank_trees()), not after: splicing
+    already removes any row whose OWN label matches is_rocprofsys_wrapper()
+    (e.g. get_library), which is exactly the anchor this needs to find
+    contamination in the first place. Drops (not splices/reparents -- there
+    is nothing real to preserve underneath, see docstring) a whole sibling's
+    subtree at any branching point (2+ rows sharing the same parent,
+    including top-level roots) where (a) is_rocprofsys_wrapper() matches
+    somewhere within that sibling's own subtree, AND (b) at least one OTHER
+    sibling's subtree does not -- i.e. only when there's a genuinely clean
+    sibling to tell it apart from. This is deliberately conservative: a
+    linear ancestor-wrapper chain that legitimately wraps real code (e.g.
+    rocprofsys_main -> main with no siblings at any step -- splice_out_
+    wrapper_nodes() already handles that shape) never satisfies "has an
+    uncontaminated sibling", so it's left alone here -- confirmed via real
+    test_apps HPC data that the contaminated-branch shape this function
+    targets only ever occurs as a genuinely separate, self-contained sibling
+    next to real application branches (e.g. under main, beside
+    run_simulation), never mixed into one.
+
+    Returns a new rows list with contaminated branches removed entirely.
+    """
+    children_by_parent_id = {}
+    top_level = []
+    for row in rows:
+        parent = row["parent"]
+        (top_level if parent is None else children_by_parent_id.setdefault(id(parent), [])).append(row)
+
+    memo = {}
+
+    def subtree_has_match(row):
+        key = id(row)
+        if key in memo:
+            return memo[key]
+        memo[key] = True  # cycles should never happen; break them defensively rather than recurse forever
+        result = is_rocprofsys_wrapper(row["label"]) or any(
+            subtree_has_match(child) for child in children_by_parent_id.get(id(row), [])
+        )
+        memo[key] = result
+        return result
+
+    dropped = set()
+
+    def mark_dropped(row):
+        dropped.add(id(row))
+        for child in children_by_parent_id.get(id(row), []):
+            mark_dropped(child)
+
+    def process_siblings(siblings):
+        if len(siblings) < 2:
+            return
+        matches = [subtree_has_match(s) for s in siblings]
+        if not any(matches) or all(matches):
+            return
+        for sibling, matched in zip(siblings, matches):
+            # A sibling whose OWN label already matches (e.g.
+            # gotcha_wrapper_call) is splice_out_wrapper_nodes()'s job, not
+            # this one's -- it wraps real code beneath it (e.g.
+            # real_child_under_wrapper), which splicing correctly reparents
+            # up rather than deletes. Only a sibling that DOESN'T match on
+            # its own, but has a matching descendant somewhere inside (e.g.
+            # the generic std::pair<..._Rb_tree...> top of a contaminated
+            # branch), is this function's target.
+            if matched and not is_rocprofsys_wrapper(sibling["label"]):
+                mark_dropped(sibling)
+
+    def visit(nodes):
+        process_siblings(nodes)
+        for node in nodes:
+            if id(node) not in dropped:
+                visit(children_by_parent_id.get(id(node), []))
+
+    visit(top_level)
+    return [r for r in rows if id(r) not in dropped]
+
+
 def classify_gpu_broad(row):
     """Same ancestry-propagation idea as extract_CPU_hotspots.classify_gpu()
     (a thread-root row with no GPU label of its own still inherits GPU
@@ -286,9 +373,12 @@ def load_rank_trees(cpu_dir, show_rocprofsys_internals):
     roots are computed: propagate_gpu_to_untethered_thread_roots() catches a
     background/event-loop thread that samples as its own untethered root (no
     parent link at all -- see its own docstring); then, unless
-    show_rocprofsys_internals, the wrapper-splice pass runs, so a rank whose
-    whole top of stack was wrapper frames correctly surfaces "main" (or
-    whatever real code sits under them) as its own root.
+    show_rocprofsys_internals, prune_wrapper_contaminated_branches() drops
+    any whole sibling branch that's rocprof-sys/GOTCHA startup-bookkeeping
+    noise (see its own docstring for why this must run BEFORE the next
+    step), then the wrapper-splice pass runs, so a rank whose whole top of
+    stack was wrapper frames correctly surfaces "main" (or whatever real
+    code sits under them) as its own root.
     """
     paths_by_rank = {}
     order = []
@@ -317,6 +407,11 @@ def load_rank_trees(cpu_dir, show_rocprofsys_internals):
             row["mpi_territory"] = is_mpi_territory(row["label"])
         propagate_gpu_to_untethered_thread_roots(rows)
         if not show_rocprofsys_internals:
+            # Order matters: prune_wrapper_contaminated_branches() needs
+            # is_rocprofsys_wrapper()-matching descendants (e.g. get_library)
+            # still present to find contamination in the first place --
+            # splice_out_wrapper_nodes() would have already removed them.
+            rows = prune_wrapper_contaminated_branches(rows)
             rows = splice_out_wrapper_nodes(rows)
         roots = [r for r in rows if r["parent"] is None]
         result.append((rank_key, rows, roots))

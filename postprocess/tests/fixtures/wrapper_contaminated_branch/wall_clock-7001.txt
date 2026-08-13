@@ -1,0 +1,7 @@
+|LABEL|COUNT|DEPTH|METRIC|UNITS|SUM|MEAN|MIN|MAX|VAR|STDDEV|% SELF|
+|0>>>main|1|0|wall_clock|sec|10.000000|10.000000|10.000000|10.000000|0.000000|0.000000|0.0|
+|0>>>  |_std::pair<std::_Rb_tree_iterator<int>, bool> noise_top|1|1|wall_clock|sec|3.000000|3.000000|3.000000|3.000000|0.000000|0.000000|0.0|
+|0>>>    |_std::_Rb_tree<unsigned long, std::pair<unsigned long const, std::set<unsigned long>>>::_M_erase|1|2|wall_clock|sec|3.000000|3.000000|3.000000|3.000000|0.000000|0.000000|0.0|
+|0>>>      |_get_library|1|3|wall_clock|sec|3.000000|3.000000|3.000000|3.000000|0.000000|0.000000|100.0|
+|0>>>  |_MPI_Init|1|1|wall_clock|sec|2.000000|2.000000|2.000000|2.000000|0.000000|0.000000|100.0|
+|0>>>  |_run_simulation|1|1|wall_clock|sec|5.000000|5.000000|5.000000|5.000000|0.000000|0.000000|100.0|

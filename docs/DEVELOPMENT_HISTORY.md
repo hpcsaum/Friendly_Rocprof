@@ -30,6 +30,7 @@
 | 2026-08-12 | Phase 2 (partial): expanded filter substrings across `calltree_common.py`, `extract_calltree.py`, `extract_CPU_hotspots.py`, and `extract_pop_metrics.py` from the first 6 real `test_apps/` HPC captures (OpenMP-target-offload launch/plugin internals, GPU-kernel-JIT-compilation noise, reconciled + Open-MPI-extended MPI-prefix lists); re-ran the postprocessing tools against all 6 real directories to confirm the fixes' effect |
 | 2026-08-12 | Follow-up: shared `ROCPROFSYS_WRAPPER_SUBSTRINGS` (rocprof-sys/GOTCHA startup bookkeeping noise) between `extract_calltree.py` and `extract_CPU_hotspots.py` -- it was already spliced out of `calltree.txt` but unfiltered in `hotspots.txt`'s "CPU compute hotspots" table; now dropped there too, moving the list into the shared base module `extract_CPU_hotspots.py` imports from |
 | 2026-08-12 | Fixed a pre-existing (not a regression) `start_thread` distortion in `hotspots.txt`: generalized plan 09's HIP-ancestry thread-reclassification to also recognize MPI-runtime-spawned background threads (e.g. Cray MPICH's `pthread_create` called directly under `MPI_Init`) via a new `is_runtime_thread_noise()`; also moved `MPI_PREFIXES` into the shared base module alongside `ROCPROFSYS_WRAPPER_SUBSTRINGS` |
+| 2026-08-13 | Structural (not substring) fix for the `std::pair<..._Rb_tree...>`/GOTCHA-registry noise left open two entries above: `mark_wrapper_contaminated_branches()`/`prune_wrapper_contaminated_branches()` drop a whole sibling branch when it contains a wrapper match but has a genuinely clean sibling to compare against -- confirmed via real data this reduces the noise's dominance in `hotspots.txt` table 1 from ~40% to ~4-5%, with the residue confirmed to be real MPI-internal ancestry sharing the same generic label, not a filtering gap |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -993,3 +994,60 @@ directories again: `start_thread` no longer appears near the top of any `hotspot
 `MPI_Init`/`PMPI_Init` (a real, legitimate cost) is now correctly the top entry in all 6. The
 `std::pair<..._Rb_tree...>` GOTCHA-registry chain (a separate, still-open question, see two entries
 above) remains untouched, per the user's explicit request.
+
+## 2026-08-13 — Structural (not substring) fix for the `std::pair<..._Rb_tree...>` noise
+
+Full untruncated symbols from `functions-<rank>.json` (the rendered `.txt`/`calltree.txt` column
+width truncates long C++ template signatures) confirmed the `std::pair<..._Rb_tree...>` chain from
+two entries above is rocprof-sys/GOTCHA's own startup library/symbol-registration bookkeeping --
+`std::set<std::string>::emplace()` of a 15-character string literal baked into rocprof-sys's own
+source, `std::map<unsigned long, std::set<unsigned long>>::_M_erase()` -- byte-for-byte identical
+across all 3 `amd` apps (C/C++/Fortran), proving it's independent of the profiled program's
+language. Only a few frames genuinely deep inside actually match anything (`get_library`,
+`create_hashtable`, `add_binding_to_tool`, `get_tool`, `lookup_exported_symbol`, `prepare_symbol` --
+real GOTCHA API function names, added to `ROCPROFSYS_WRAPPER_SUBSTRINGS`); most of the chain is
+generic STL container internals that don't match anything on their own, so per-label substring
+filtering (this session's approach for every other noise category) can't clean it without risking a
+real application's own `std::map`/`std::set` usage -- exactly what the user had already flagged as
+unacceptable.
+
+Per the user's proposal, fixed structurally instead: at any branching point (2+ rows/nodes sharing
+the same parent, including top-level roots), a sibling has its *whole subtree* dropped if a wrapper
+match exists anywhere within it AND at least one other sibling's subtree has none -- i.e. only when
+there's a genuinely clean sibling to tell it apart from. Implemented in both tools:
+`extract_CPU_hotspots.py`'s `mark_wrapper_contaminated_branches()` (flags rows, checked in
+`scan_ranks()`'s existing per-row exclusion) and `extract_calltree.py`'s
+`prune_wrapper_contaminated_branches()` (drops rows outright, called PER RANK before
+`splice_out_wrapper_nodes()` -- order matters: splicing already removes any row whose own label
+matches, which would erase the very anchor this needs to detect contamination in the first place).
+
+Two safety bugs were caught before this was correct, both via the project's own real data and
+tests, not by inspection alone:
+1. **First unit-test run** caught an over-aggressive version: a sibling whose *own* label already
+   matches directly (e.g. `gotcha_wrapper_call`) was being swept away wholesale, deleting real
+   content legitimately nested underneath it (`real_child_under_wrapper`) that
+   `splice_out_wrapper_nodes()` already correctly preserves (reparented, not deleted). Fixed by
+   excluding directly-matching siblings from this function's own targeting -- it only targets a
+   sibling whose own label is generic/non-matching but has a match buried inside it, the opposite
+   shape from an ancestor-wrapper.
+2. **Re-running against the 6 real directories** surfaced a second, more fundamental finding: one
+   surviving `std::pair<..._Rb_tree_iterator<std::string>...>` node under `run_simulation` traced,
+   in the raw `sampling_wall_clock-0.txt`, to a REAL ancestor of `PMPI_Allreduce -> MPIR_CRAY_
+   Allreduce -> MPIDI_CRAY_Setup_Shared_Mem_Coll -> ...` -- i.e. the exact same generic label shape
+   genuinely occurs in legitimate Cray MPICH internal call chains too, not only in GOTCHA's startup
+   noise. The "needs a clean sibling" guard correctly left it untouched (nothing inside its subtree
+   matches `ROCPROFSYS_WRAPPER_SUBSTRINGS`), which is exactly why some residual `std::pair<int,
+   int>...` entries still appear in `hotspots.txt` -- not a filtering gap, but live confirmation
+   that a broader, less conservative rule would have deleted real MPI-internal timing data.
+
+Added `MarkWrapperContaminatedBranchesTests`/`WrapperContaminatedBranchFixtureTests` (a new fixture,
+`tests/fixtures/wrapper_contaminated_branch/`, with a two-layer generic-noise chain to prove
+cascading deletion, not just the top row) to `test_extract_CPU_hotspots.py`, and
+`WrapperContaminatedBranchTests` to `test_extract_calltree.py` (extending the existing
+`calltree_sampling_filters` fixture) -- both explicitly include the "directly-matching sibling with
+real content must survive" case. Full suite: 303 tests, all passing. Re-ran against all 6 real
+`test_apps/` directories: the dominant occurrence (previously ~39-41% of `hotspots.txt` table 1's
+combined pool in `C_amd`/`CPP_amd`/`fortran_amd`) dropped to ~4-5%; `calltree.txt`'s top-level
+noise branch (previously a large block of repeated templated STL frames directly under `main`) is
+gone in all 3 `amd` apps. Real branches (`run_simulation`, `MPI_Allreduce`, `stencil_kernel`, the
+real MPI-internal ancestor chain found above) confirmed present and untouched in all 6.

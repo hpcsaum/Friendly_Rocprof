@@ -102,6 +102,30 @@ class RocprofsysWrapperSpliceTests(unittest.TestCase):
         self.assertIn("gotcha_wrapper_call", report)
 
 
+class WrapperContaminatedBranchTests(unittest.TestCase):
+    # "std::pair<std::_Rb_tree_iterator<int>, bool> noise_top" is a sibling
+    # of main's other real children (foo_normal_call etc.) with get_library
+    # nested one level inside it -- real shape confirmed via amd test_apps
+    # HPC data: rocprof-sys/GOTCHA's own startup bookkeeping is mostly
+    # generic std::set/std::map container internals that don't match
+    # ROCPROFSYS_WRAPPER_SUBSTRINGS on their own, only a frame like
+    # get_library genuinely deep inside does -- see mark_wrapper_
+    # contaminated_branches()'s own docstring.
+    def test_contaminated_branch_hidden_by_default(self):
+        report = render(FILTERS_DIR)
+        self.assertNotIn("noise_top", report)
+        self.assertNotIn("get_library", report)
+
+    def test_contaminated_branch_shown_with_flag(self):
+        report = render(FILTERS_DIR, show_rocprofsys_internals=True)
+        self.assertIn("noise_top", report)
+        self.assertIn("get_library", report)
+
+    def test_real_sibling_branches_unaffected(self):
+        report = render(FILTERS_DIR)
+        self.assertIn("foo_normal_call", report)
+
+
 class UntetheredThreadRootGpuPropagationTests(unittest.TestCase):
     # calltree_sampling_filters also has a thread-3 "start_thread" root with
     # no parent at all (DEPTH resets to 0, same shape a real background

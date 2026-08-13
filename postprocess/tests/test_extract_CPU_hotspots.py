@@ -380,6 +380,100 @@ class IsMpiTerritoryTests(unittest.TestCase):
         self.assertFalse(hotspots.is_mpi_territory("compute_stencil"))
 
 
+class MarkWrapperContaminatedBranchesTests(unittest.TestCase):
+    # Real shape confirmed via test_apps HPC data: main branches into a
+    # dedicated, self-contained rocprof-sys/GOTCHA startup-bookkeeping
+    # branch (mostly generic std::set<string>/std::map<ulong,set<ulong>>
+    # container internals that don't match anything on their own -- only
+    # get_library/create_hashtable/etc. do, deep inside) alongside real
+    # branches like run_simulation.
+    def test_contaminated_sibling_marked_clean_sibling_untouched(self):
+        rows = [
+            {"label": "main", "depth": 0, "thread_id": "0"},
+            {"label": "std::pair<std::_Rb_tree_iterator<int>, bool> ...", "depth": 1, "thread_id": "0"},
+            {"label": "get_library", "depth": 2, "thread_id": "0"},
+            {"label": "run_simulation", "depth": 1, "thread_id": "0"},
+        ]
+        hotspots.attach_ancestry(rows)
+        hotspots.mark_wrapper_contaminated_branches(rows)
+        self.assertTrue(rows[1].get("wrapper_branch_noise"))
+        self.assertFalse(rows[3].get("wrapper_branch_noise"))
+
+    def test_linear_ancestor_wrapper_chain_is_not_nuked(self):
+        # __libc_start_main -> rocprofsys_main -> main: a linear chain with
+        # NO siblings at any step. Even though it "contains" a wrapper match
+        # (rocprofsys_main itself), main must survive -- this shape is
+        # splice_out_wrapper_nodes()'s job in extract_calltree.py (real code
+        # sits inside the wrapper), not this function's, and this function
+        # must never wholesale-delete it.
+        rows = [
+            {"label": "__libc_start_main", "depth": 0, "thread_id": "0"},
+            {"label": "rocprofsys_main", "depth": 1, "thread_id": "0"},
+            {"label": "main", "depth": 2, "thread_id": "0"},
+        ]
+        hotspots.attach_ancestry(rows)
+        hotspots.mark_wrapper_contaminated_branches(rows)
+        for row in rows:
+            self.assertFalse(row.get("wrapper_branch_noise"), row["label"])
+
+    def test_multiple_roots_noise_root_marked_real_root_untouched(self):
+        rows = [
+            {"label": "std::pair<std::_Rb_tree_iterator<int>, bool> noise_root", "depth": 0, "thread_id": "0"},
+            {"label": "get_library", "depth": 1, "thread_id": "0"},
+            {"label": "main", "depth": 0, "thread_id": "1"},
+        ]
+        hotspots.attach_ancestry(rows)
+        hotspots.mark_wrapper_contaminated_branches(rows)
+        self.assertTrue(rows[0].get("wrapper_branch_noise"))
+        self.assertTrue(rows[1].get("wrapper_branch_noise"))
+        self.assertFalse(rows[2].get("wrapper_branch_noise"))
+
+    def test_directly_matching_sibling_with_real_content_is_not_touched(self):
+        # gotcha_wrapper_call itself matches directly -- that's a plain
+        # is_rocprofsys_wrapper_noise() exclusion (own row only), NOT this
+        # function's job. Its real child underneath must be untouched: this
+        # function only targets a sibling whose OWN label does NOT match but
+        # has a match buried inside it (the opposite shape).
+        rows = [
+            {"label": "main", "depth": 0, "thread_id": "0"},
+            {"label": "gotcha_wrapper_call", "depth": 1, "thread_id": "0"},
+            {"label": "real_child_under_wrapper", "depth": 2, "thread_id": "0"},
+            {"label": "run_simulation", "depth": 1, "thread_id": "0"},
+        ]
+        hotspots.attach_ancestry(rows)
+        hotspots.mark_wrapper_contaminated_branches(rows)
+        for row in rows:
+            self.assertFalse(row.get("wrapper_branch_noise"), row["label"])
+
+
+class WrapperContaminatedBranchFixtureTests(unittest.TestCase):
+    DIR = os.path.join(FIXTURES, "wrapper_contaminated_branch")
+
+    def test_contaminated_branch_excluded_end_to_end(self):
+        # wrapper_contaminated_branch/wall_clock-7001.txt: main -> [noise
+        # branch topped by a generic std::pair<..._Rb_tree...>-style label,
+        # with ANOTHER generic std::_Rb_tree<...>::_M_erase layer in between
+        # it and get_library (two non-matching layers, matching the real
+        # multi-layer chain confirmed via test_apps HPC data), MPI_Init
+        # (clean), run_simulation (clean)]. The WHOLE noise branch --
+        # including the intermediate generic layer, which doesn't match
+        # anything on its own either -- must vanish, not just its top label.
+        cpu, gpu, _scanned, _total = hotspots.aggregate(self.DIR)
+        cpu_labels = {e["label"] for e in cpu}
+        gpu_labels = {e["label"] for e in gpu}
+        noise_labels = {
+            "std::pair<std::_Rb_tree_iterator<int>, bool> noise_top",
+            "std::_Rb_tree<unsigned long, std::pair<unsigned long const, std::set<unsigned long>>>::_M_erase",
+            "get_library",
+        }
+        for label in noise_labels:
+            self.assertNotIn(label, cpu_labels)
+            self.assertNotIn(label, gpu_labels)
+        self.assertIn("main", cpu_labels)
+        self.assertIn("MPI_Init", cpu_labels)
+        self.assertIn("run_simulation", cpu_labels)
+
+
 class GpuSpawnedThreadFixtureTests(unittest.TestCase):
     DIR = os.path.join(FIXTURES, "gpu_spawned_thread")
 

@@ -47,23 +47,32 @@ GPU_FILE_HINTS = ("roctracer", "hsa")
 GPU_COMPILE_NOISE_SUBSTRINGS = ("clang::", "llvm::", "amd_comgr")
 
 # rocprof-sys's own instrumentation/GOTCHA plumbing and dynamic-linker
-# bootstrap frames (library/symbol-interception bookkeeping done once at
-# process start, e.g. get_library, create_hashtable, lookup_exported_symbol --
-# real GOTCHA API function names). Defined here (not in extract_calltree.py,
-# which used to own this list) so both tools apply the same classification --
-# extract_calltree.py had it and SPLICED matching nodes out of the tree
-# (real code sits inside these wrapper frames), but this base module's
-# is_gpu_entry()/aggregate() had no matching concept at all, so the same
-# frames -- confirmed via real test_apps HPC data's hotspots.txt, e.g.
-# lookup_hashtable/lookup.constprop.0 -- were showing up unfiltered in
-# "CPU compute hotspots" here. Neither GPU-related nor real CPU compute, so
-# unlike GPU_API_PREFIXES/GPU_COMPILE_NOISE_SUBSTRINGS these rows are dropped
-# entirely (see scan_ranks()) rather than classified into either bucket --
-# labeling GOTCHA/dynamic-linker bookkeeping as "GPU API overhead" would be
-# actively wrong, not just imprecise.
+# bootstrap frames. Defined here (not in extract_calltree.py, which used to
+# own this list) so both tools apply the same classification -- extract_
+# calltree.py had it and SPLICED matching nodes out of the tree (real code
+# sits inside these wrapper frames), but this base module's is_gpu_entry()/
+# aggregate() had no matching concept at all, so the same frames -- confirmed
+# via real test_apps HPC data's hotspots.txt, e.g. lookup_hashtable/
+# lookup.constprop.0 -- were showing up unfiltered in "CPU compute hotspots"
+# here. Neither GPU-related nor real CPU compute, so unlike GPU_API_PREFIXES/
+# GPU_COMPILE_NOISE_SUBSTRINGS these rows are dropped entirely (see
+# scan_ranks()) rather than classified into either bucket -- labeling
+# GOTCHA/dynamic-linker bookkeeping as "GPU API overhead" would be actively
+# wrong, not just imprecise.
+# get_library/get_tool/add_binding_to_tool/create_hashtable/
+# lookup_exported_symbol/prepare_symbol are real GOTCHA API function names,
+# confirmed (via functions-<rank>.json) sitting deep inside rocprof-sys/
+# GOTCHA's own startup library/symbol-registration machinery on real amd
+# test_apps HPC data -- the anchor matches mark_wrapper_contaminated_
+# branches() uses to find and drop that WHOLE branch (see its own docstring
+# for why: most of that branch's own frames are generic std::set<std::string
+# >/std::map<unsigned long, std::set<unsigned long>> container internals
+# that don't match any substring here on their own at all).
 ROCPROFSYS_WRAPPER_SUBSTRINGS = (
     "tim::", "gotcha", "rocprofsys", "__libc_start", "lookup_hashtable",
     "lookup.constprop", "lib_bindings", "library_gots",
+    "get_library", "get_tool", "add_binding_to_tool", "create_hashtable",
+    "lookup_exported_symbol", "prepare_symbol",
 )
 
 # MPICH / Cray-MPICH function-name prefixes -- covers both the user-facing
@@ -298,6 +307,99 @@ def is_runtime_thread_noise(row):
     return False
 
 
+def mark_wrapper_contaminated_branches(rows):
+    """Structural counterpart to is_rocprofsys_wrapper_noise(): confirmed via
+    real amd test_apps HPC data (functions-<rank>.json), rocprof-sys/GOTCHA's
+    startup library/symbol-registration bookkeeping is mostly built out of
+    generic STL container internals -- std::set<std::string>::emplace(),
+    std::map<unsigned long, std::set<unsigned long>>::_M_erase(), etc. -- that
+    don't match ROCPROFSYS_WRAPPER_SUBSTRINGS (or any other tier) on their
+    own at all, only a few frames genuinely deep inside do (get_library,
+    create_hashtable, ...). Naming every generic STL frame individually was
+    rejected: a real application could plausibly use std::map/std::set for
+    its own bookkeeping too, and this project deliberately avoids filtering
+    "every std:: call" for exactly that reason.
+
+    Instead this finds the noise STRUCTURALLY: at any branching point (2+
+    rows sharing the same parent), a sibling has its WHOLE subtree marked
+    "wrapper_branch_noise" if (a) it does NOT itself match is_rocprofsys_
+    wrapper_noise() (a sibling that DOES match directly is already excluded
+    on its own via that check -- and, unlike this one, any REAL content
+    nested underneath it is legitimately kept, not noise; see below), (b)
+    is_rocprofsys_wrapper_noise() matches somewhere further down in its own
+    subtree, AND (c) at least one OTHER sibling's subtree does not match at
+    all -- i.e. only when there's a genuinely clean sibling to tell it apart
+    from. Point (a) matters: without it, a sibling like "gotcha_wrapper_call"
+    (which directly matches, but has real content nested underneath it, e.g.
+    a real "real_child_under_wrapper" row) would have that whole real
+    subtree wrongly swept away too -- that shape (wrapper wraps real code)
+    is exactly what a plain per-row is_rocprofsys_wrapper_noise() check
+    already handles correctly on its own (only the matching row itself is
+    excluded, its real children evaluated independently). This function's
+    OWN job is the opposite shape: a generic, non-matching top label (e.g.
+    the std::pair<..._Rb_tree...> chain) with NOTHING real anywhere
+    underneath it, just more noise all the way down including a few
+    directly-matching frames (get_library, ...) buried inside.
+
+    This is deliberately conservative: an ancestor-wrapper chain that
+    legitimately wraps real code (e.g. a linear rocprofsys_main -> main
+    chain with no siblings at any step) never satisfies "has an
+    uncontaminated sibling", so it's left alone -- confirmed via real
+    test_apps HPC data that this contaminated-branch shape only ever occurs
+    as a genuinely separate, self-contained sibling next to real
+    application branches (e.g. under main, beside run_simulation), never
+    mixed into one.
+
+    Mutates rows in place, marking the ENTIRE subtree of a contaminated
+    sibling (not just its top row) -- most of that subtree's own frames
+    don't match anything on their own at all (see above), so leaving them
+    unmarked would still show most of the noise. Must run on the FULL,
+    unfiltered rows (before dropping anything else in scan_ranks()) so
+    descendant frames are still present to check.
+    """
+    children_by_parent_id = {}
+    top_level = []
+    for row in rows:
+        parent = row["parent"]
+        (top_level if parent is None else children_by_parent_id.setdefault(id(parent), [])).append(row)
+
+    memo = {}
+
+    def subtree_has_match(row):
+        key = id(row)
+        if key in memo:
+            return memo[key]
+        memo[key] = True  # cycles should never happen; break them defensively rather than recurse forever
+        result = is_rocprofsys_wrapper_noise(row["label"]) or any(
+            subtree_has_match(child) for child in children_by_parent_id.get(id(row), [])
+        )
+        memo[key] = result
+        return result
+
+    def mark_contaminated(row):
+        row["wrapper_branch_noise"] = True
+        for child in children_by_parent_id.get(id(row), []):
+            mark_contaminated(child)
+
+    def process_siblings(siblings):
+        if len(siblings) < 2:
+            return
+        matches = [subtree_has_match(s) for s in siblings]
+        if not any(matches) or all(matches):
+            return
+        for sibling, matched in zip(siblings, matches):
+            if matched and not is_rocprofsys_wrapper_noise(sibling["label"]):
+                mark_contaminated(sibling)
+
+    def visit(nodes):
+        process_siblings(nodes)
+        for node in nodes:
+            if not node.get("wrapper_branch_noise"):
+                visit(children_by_parent_id.get(id(node), []))
+
+    visit(top_level)
+
+
 def scan_ranks(output_dir):
     """Scan output_dir for timemory text tables and group them by RANK, not by
     file -- rocprof-sys's default config (sampling on) writes multiple per-rank
@@ -330,15 +432,16 @@ def scan_ranks(output_dir):
     unfiltered row list (see below), so it still reflects the whole run's
     true wall-clock regardless of what gets dropped next.
 
-    Rows matching is_rocprofsys_wrapper_noise() or is_runtime_thread_noise()
-    are dropped entirely here, before either cpu/gpu classification or
-    merging -- every consumer of this function (aggregate(),
-    aggregate_per_rank(), and extract_pop_metrics.py's own direct use of
-    scan_ranks()) inherits the exclusion for free. attach_ancestry() still
-    runs on the full, unfiltered rows first, so a dropped row's parent-chain
-    links stay intact for anything walking through it (e.g. classify_gpu()'s
-    or is_runtime_thread_noise()'s own ancestry checks) -- it's just never
-    itself added to the merged output.
+    Rows matching is_rocprofsys_wrapper_noise(), is_runtime_thread_noise(),
+    or mark_wrapper_contaminated_branches()'s structural check are dropped
+    entirely here, before either cpu/gpu classification or merging -- every
+    consumer of this function (aggregate(), aggregate_per_rank(), and
+    extract_pop_metrics.py's own direct use of scan_ranks()) inherits the
+    exclusion for free. attach_ancestry() still runs on the full, unfiltered
+    rows first, so a dropped row's parent-chain links stay intact for
+    anything walking through it (e.g. classify_gpu()'s, is_runtime_thread_
+    noise()'s, or mark_wrapper_contaminated_branches()'s own ancestry/
+    descendant checks) -- it's just never itself added to the merged output.
     """
     candidates = sorted(glob.glob(os.path.join(output_dir, "**", "*.txt"), recursive=True))
     per_rank = {}
@@ -352,6 +455,7 @@ def scan_ranks(output_dir):
         if rows is None:
             continue
         attach_ancestry(rows)
+        mark_wrapper_contaminated_branches(rows)
 
         m = PID_SUFFIX_RE.search(base)
         rank_key = m.group(1) if m else path
@@ -369,7 +473,8 @@ def scan_ranks(output_dir):
         # ancestry just split apart.
         target = bucket["wall_clock"] if base.startswith("wall_clock-") else bucket["sampling"]
         for row in rows:
-            if is_rocprofsys_wrapper_noise(row["label"]) or is_runtime_thread_noise(row):
+            if (is_rocprofsys_wrapper_noise(row["label"]) or is_runtime_thread_noise(row)
+                    or row.get("wrapper_branch_noise")):
                 continue
             gpu = classify_gpu(row, path)
             row = {
