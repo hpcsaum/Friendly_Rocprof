@@ -15,43 +15,6 @@ sys.modules["extract_CPU_hotspots"] = hotspots
 spec.loader.exec_module(hotspots)
 
 
-class CleanLabelTests(unittest.TestCase):
-    def test_single_rank_no_indent(self):
-        self.assertEqual(hotspots.clean_label("00>>>main"), "main")
-
-    def test_single_rank_with_indent(self):
-        self.assertEqual(hotspots.clean_label("00>>>|_compute_stencil"), "compute_stencil")
-
-    def test_mpi_rank_prefix_no_indent(self):
-        self.assertEqual(hotspots.clean_label("00|00>>>main"), "main")
-
-    def test_mpi_rank_prefix_with_indent(self):
-        self.assertEqual(hotspots.clean_label("00|00>>>|_compute_stencil"), "compute_stencil")
-
-
-class ParseTableFileTests(unittest.TestCase):
-    def test_flat_single_rank_file(self):
-        path = os.path.join(FIXTURES, "single_rank", "wall_clock-1234.txt")
-        rows = hotspots.parse_table_file(path)
-        self.assertIsNotNone(rows)
-        labels = {r["label"] for r in rows}
-        self.assertEqual(labels, {"main", "compute_stencil", "apply_boundary", "hipLaunchKernel", "hipMemcpy"})
-        by_label = {r["label"]: r for r in rows}
-        self.assertEqual(by_label["compute_stencil"]["count"], 1000)
-        self.assertAlmostEqual(by_label["compute_stencil"]["sum"], 9.812345)
-
-    def test_hierarchical_mpi_rank_file(self):
-        path = os.path.join(FIXTURES, "mpi_2rank", "wall_clock-2001.txt")
-        rows = hotspots.parse_table_file(path)
-        self.assertIsNotNone(rows)
-        labels = {r["label"] for r in rows}
-        self.assertEqual(labels, {"main", "compute_stencil", "hipMemcpy"})
-
-    def test_non_timing_file_returns_none(self):
-        path = os.path.join(FIXTURES, "no_timing_data", "available.txt")
-        self.assertIsNone(hotspots.parse_table_file(path))
-
-
 class IsGpuEntryTests(unittest.TestCase):
     def test_hip_prefix_is_gpu(self):
         self.assertTrue(hotspots.is_gpu_entry("hipLaunchKernel", "wall_clock-1.txt"))
@@ -252,50 +215,6 @@ class RocrClassificationTests(unittest.TestCase):
         gpu_labels = {e["label"] for e in gpu}
         self.assertEqual(cpu_labels, {"main", "compute_stencil"})
         self.assertIn("rocr::core::BusyWaitSignal::WaitAcquire(hsa_signal_condition_t, long)", gpu_labels)
-
-
-class AttachAncestryTests(unittest.TestCase):
-    def test_chain_within_one_thread(self):
-        rows = [
-            {"label": "a", "depth": 0, "thread_id": "0"},
-            {"label": "b", "depth": 1, "thread_id": "0"},
-            {"label": "c", "depth": 2, "thread_id": "0"},
-        ]
-        hotspots.attach_ancestry(rows)
-        self.assertIsNone(rows[0]["parent"])
-        self.assertFalse(rows[0]["is_thread_root"])
-        self.assertIs(rows[1]["parent"], rows[0])
-        self.assertFalse(rows[1]["is_thread_root"])
-        self.assertIs(rows[2]["parent"], rows[1])
-        self.assertFalse(rows[2]["is_thread_root"])
-
-    def test_sibling_depth_zero_rows_have_no_parent(self):
-        rows = [
-            {"label": "a", "depth": 0, "thread_id": "0"},
-            {"label": "b", "depth": 0, "thread_id": "0"},
-        ]
-        hotspots.attach_ancestry(rows)
-        self.assertIsNone(rows[1]["parent"])
-        self.assertFalse(rows[1]["is_thread_root"])
-
-    def test_thread_change_relative_to_parent_flags_thread_root(self):
-        rows = [
-            {"label": "a", "depth": 0, "thread_id": "0"},
-            {"label": "b", "depth": 1, "thread_id": "0"},
-            {"label": "c", "depth": 2, "thread_id": "1"},
-        ]
-        hotspots.attach_ancestry(rows)
-        self.assertIs(rows[2]["parent"], rows[1])
-        self.assertTrue(rows[2]["is_thread_root"])
-
-    def test_same_thread_as_parent_is_not_a_thread_root(self):
-        rows = [
-            {"label": "a", "depth": 0, "thread_id": "0"},
-            {"label": "b", "depth": 1, "thread_id": "0"},
-            {"label": "c", "depth": 2, "thread_id": "0"},
-        ]
-        hotspots.attach_ancestry(rows)
-        self.assertFalse(rows[2]["is_thread_root"])
 
 
 class ClassifyGpuTests(unittest.TestCase):

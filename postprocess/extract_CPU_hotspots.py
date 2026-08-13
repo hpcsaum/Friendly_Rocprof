@@ -16,6 +16,9 @@ import statistics
 import sys
 from datetime import datetime
 
+from stage1_rocprofsys import PID_SUFFIX_RE, parse_table_file
+from stage2_rocprofsys import attach_ancestry
+
 NON_TIMING_FILES = {"available.txt", "instrumented.txt", "excluded.txt", "overlapping.txt"}
 # rocprof-sys's default config (ROCPROFSYS_FLAT_PROFILE=0, sampling on) writes THREE
 # per-rank text tables, not one: wall_clock-<N>.txt (exact instrumented call-tree),
@@ -98,12 +101,6 @@ MPI_PREFIXES = (
 )
 MPI_FORTRAN_SHIM_SUFFIXES = ("_f08_", "_f08ts_")
 
-EXPECTED_HEADER_FIELDS = ["LABEL", "COUNT", "DEPTH", "METRIC", "UNITS", "SUM", "MEAN", "MIN", "MAX", "VAR", "STDDEV", "% SELF"]
-# COUNT..% SELF -- everything after LABEL. Kept as a count, not the literal names,
-# because under MPI the docs describe the row prefix as "|MM|NN>>>label" -- an
-# embedded pipe that would otherwise misalign a naive fixed-column split.
-FIXED_FIELDS_AFTER_LABEL = len(EXPECTED_HEADER_FIELDS) - 1
-
 METADATA_FILENAME = "metadata.json"
 # Field names are not documented anywhere -- these are best-effort guesses tried
 # in order; if none match (or metadata.json is absent), the corresponding header
@@ -117,9 +114,6 @@ NUM_RANKS_KEYS = ["num_ranks", "world_size", "mpi_size", "ranks", "num_procs"]
 # strftime pattern "%F_%H.%M", e.g. "2025-01-21_07.40") -- used as a fallback run
 # date/time source when metadata.json doesn't have (or isn't) available.
 TIME_OUTPUT_DIR_RE = re.compile(r"\d{4}-\d{2}-\d{2}_\d{2}\.\d{2}")
-# rocprof-sys's default per-process file naming is "<component>-<pid>.txt" -- used as
-# a fallback rank count (one file per process/rank) when metadata.json lacks a count.
-PID_SUFFIX_RE = re.compile(r"-(\d+)\.txt$")
 
 HELP_BLURB = """\
 Reads the output of a profile_CPU_hotspots.sh run (or any rocprof-sys output
@@ -140,76 +134,6 @@ https://rocm.docs.amd.com/projects/rocprofiler-systems/en/latest/ for details.
 """
 
 
-def parse_table_file(path):
-    """Parse one timemory pipe-delimited text table. Returns a list of dict rows, or None if this
-    file doesn't look like a timemory table at all."""
-    with open(path, "r", errors="replace") as f:
-        lines = [line.rstrip("\n") for line in f]
-
-    header_idx = None
-    for i, line in enumerate(lines):
-        fields = [c.strip() for c in line.strip("|").split("|")]
-        if fields == EXPECTED_HEADER_FIELDS:
-            header_idx = i
-            break
-    if header_idx is None:
-        return None
-
-    rows = []
-    for line in lines[header_idx + 1:]:
-        stripped = line.strip()
-        if not stripped or not stripped.startswith("|"):
-            continue
-        fields = [c.strip() for c in stripped.strip("|").split("|")]
-        if len(fields) < FIXED_FIELDS_AFTER_LABEL + 1:
-            continue
-        # Everything before the last FIXED_FIELDS_AFTER_LABEL fields is the label --
-        # rejoined with "|" in case a rank prefix split it into more than one piece.
-        raw_label = "|".join(fields[:-FIXED_FIELDS_AFTER_LABEL])
-        count, depth, metric, units, total, mean, vmin, vmax, var, stddev, pct_self = fields[-FIXED_FIELDS_AFTER_LABEL:]
-        label = clean_label(raw_label)
-        try:
-            total_f = float(total)
-            rows.append({
-                "label": label,
-                "count": int(count),
-                "sum": total_f,
-                # This node's own (self) time, in seconds -- % SELF is only ever
-                # meaningful per call-tree node, not once merged by label, so it's
-                # converted here and accumulated as a plain sum from then on (see
-                # aggregate()/aggregate_per_rank()); the raw % SELF isn't kept.
-                "self_sum": total_f * float(pct_self) / 100.0,
-                # depth/thread_id -- kept (not just parsed-and-discarded like before)
-                # so scan_ranks() can reconstruct each row's place in the call tree;
-                # see attach_ancestry().
-                "depth": int(depth),
-                "thread_id": thread_id_from_raw_label(raw_label),
-            })
-        except ValueError:
-            continue
-    return rows
-
-
-def thread_id_from_raw_label(raw_label):
-    """The OS-thread index a raw LABEL field's prefix identifies -- the last
-    "|"-delimited segment before ">>>" (e.g. "|1>>>foo" -> "1"; the MPI form
-    "00|00>>>foo" -> "00", the rank/thread pair's thread half)."""
-    prefix = raw_label.split(">>>", 1)[0]
-    segments = [s for s in prefix.split("|") if s != ""]
-    return segments[-1] if segments else ""
-
-
-def clean_label(raw_label):
-    """Strip rocprof-sys's thread/rank prefix (|NN>>> or |MM|NN>>>) and hierarchy
-    indentation (|_ repeated per call-stack depth) from a raw LABEL field."""
-    label = raw_label
-    if ">>>" in label:
-        label = label.split(">>>", 1)[1]
-    while label.startswith("|_"):
-        label = label[2:]
-    return label.strip()
-
-
 def is_gpu_entry(label, filename):
     lname = label.lower()
     if lname.startswith(GPU_API_PREFIXES):
@@ -223,31 +147,6 @@ def is_gpu_entry(label, filename):
 def is_rocprofsys_wrapper_noise(label):
     lname = label.lower()
     return any(sub in lname for sub in ROCPROFSYS_WRAPPER_SUBSTRINGS)
-
-
-def attach_ancestry(rows):
-    """Reconstruct each row's parent in the call tree from DEPTH + file order
-    (rows already arrive in call-tree pre-order) via a depth-stack walk: a
-    row's parent is the most recent prior row at depth-1. Mutates rows in
-    place, adding "parent" (a reference to the parent row dict, or None at a
-    true root) and "is_thread_root" (True when this row's thread_id differs
-    from its parent's -- i.e. this row is where a NEW OS thread's own subtree
-    begins in this file's listing, right after whatever call spawned it).
-
-    General-purpose: this is the reusable first step for a future real
-    call-tree view (walk "parent" links to render nesting/indentation), not
-    specific to any one classification decision -- classify_gpu() below is
-    just its first consumer.
-    """
-    stack = []
-    for row in rows:
-        while stack and stack[-1]["depth"] >= row["depth"]:
-            stack.pop()
-        parent = stack[-1] if stack else None
-        row["parent"] = parent
-        row["is_thread_root"] = parent is not None and parent["thread_id"] != row["thread_id"]
-        stack.append(row)
-    return rows
 
 
 def classify_gpu(row, path):

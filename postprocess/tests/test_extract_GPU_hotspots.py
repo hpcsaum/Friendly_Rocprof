@@ -14,30 +14,6 @@ sys.modules["extract_GPU_hotspots"] = hotspots
 spec.loader.exec_module(hotspots)
 
 
-class ParseKernelStatsCsvTests(unittest.TestCase):
-    def test_single_rank_file(self):
-        path = os.path.join(FIXTURES, "rocprofv3_single_rank", "myhost", "1234_kernel_stats.csv")
-        rows = hotspots.parse_kernel_stats_csv(path)
-        self.assertIsNotNone(rows)
-        labels = {r["label"] for r in rows}
-        self.assertEqual(labels, {"JacobiIterationKernel", "BoundaryKernel", "__hipRegisterFatBinary"})
-        by_label = {r["label"]: r for r in rows}
-        self.assertEqual(by_label["JacobiIterationKernel"]["count"], 1000)
-        self.assertAlmostEqual(by_label["JacobiIterationKernel"]["total_ns"], 537449866)
-
-    def test_scientific_notation_value_parses(self):
-        path = os.path.join(FIXTURES, "rocprofv3_single_rank", "myhost", "1234_kernel_stats.csv")
-        rows = hotspots.parse_kernel_stats_csv(path)
-        by_label = {r["label"]: r for r in rows}
-        # TotalDurationNs=9000 here is plain, but this row's Percentage/StdDev are in
-        # scientific notation in the fixture -- confirms DictReader/our code don't choke on it.
-        self.assertAlmostEqual(by_label["__hipRegisterFatBinary"]["total_ns"], 9000)
-
-    def test_non_matching_csv_returns_none(self):
-        path = os.path.join(FIXTURES, "rocprofv3_no_data", "myhost", "1_agent_info.csv")
-        self.assertIsNone(hotspots.parse_kernel_stats_csv(path))
-
-
 class AggregateTests(unittest.TestCase):
     def test_single_rank(self):
         entries, scanned, total_ns = hotspots.aggregate(os.path.join(FIXTURES, "rocprofv3_single_rank"))

@@ -32,6 +32,7 @@
 | 2026-08-12 | Fixed a pre-existing (not a regression) `start_thread` distortion in `hotspots.txt`: generalized plan 09's HIP-ancestry thread-reclassification to also recognize MPI-runtime-spawned background threads (e.g. Cray MPICH's `pthread_create` called directly under `MPI_Init`) via a new `is_runtime_thread_noise()`; also moved `MPI_PREFIXES` into the shared base module alongside `ROCPROFSYS_WRAPPER_SUBSTRINGS` |
 | 2026-08-13 | Structural (not substring) fix for the `std::pair<..._Rb_tree...>`/GOTCHA-registry noise left open two entries above: `mark_wrapper_contaminated_branches()`/`prune_wrapper_contaminated_branches()` drop a whole sibling branch when it contains a wrapper match but has a genuinely clean sibling to compare against -- confirmed via real data this reduces the noise's dominance in `hotspots.txt` table 1 from ~40% to ~4-5%, with the residue confirmed to be real MPI-internal ancestry sharing the same generic label, not a filtering gap |
 | 2026-08-13 | Full `postprocess/` dependency audit and consolidation plan written (`docs/plans/2.1-postprocess-consolidation-refactor.md`); plan numbering versioned (`1.1`-`1.16` = original tool suite, `2.x` = this refactor); `CLAUDE.md` gains a Code Comments convention (describe current behavior, not history; every module gets a top-of-file scope/functions/philosophy docstring) |
+| 2026-08-13 | Plan 2.2: relocated `parse_table_file()`/`clean_label()`/`thread_id_from_raw_label()`/`PID_SUFFIX_RE` (new `stage1_rocprofsys.py`), `parse_kernel_stats_csv()` (new `stage1_rocprofv3.py`), and `attach_ancestry()` (new `stage2_rocprofsys.py`) out of `extract_CPU_hotspots.py`/`extract_GPU_hotspots.py` -- pure relocation, zero behavior change, roadmap step 1 of the consolidation plan |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -1084,3 +1085,42 @@ docstring covering its scope, the functions it exposes, and its design philosoph
 going forward as each piece of code is actually touched during the refactor, with a final sweep
 (roadmap step 11) planned to catch anything left untouched by the time the rest of the refactor
 lands.
+
+## 2026-08-13 — Plan 2.2: relocate stage 1+2 parsing/ancestry functions (roadmap step 1)
+
+First implementation step of the consolidation plan above: a pure, zero-behavior-change relocation.
+`parse_table_file()`, `clean_label()`, `thread_id_from_raw_label()`, and `PID_SUFFIX_RE` (plus the
+private `EXPECTED_HEADER_FIELDS`/`FIXED_FIELDS_AFTER_LABEL` constants `parse_table_file()` alone
+depended on) moved out of `extract_CPU_hotspots.py` into a new `stage1_rocprofsys.py`.
+`attach_ancestry()` moved into a new `stage2_rocprofsys.py`. `parse_kernel_stats_csv()` (plus
+`REQUIRED_COLUMNS`) moved out of `extract_GPU_hotspots.py` into a new `stage1_rocprofv3.py`. Every
+caller (`extract_CPU_hotspots.py`/`extract_GPU_hotspots.py` themselves, plus `extract_calltree.py`
+and `extract_calltree_traced.py`, which previously reached these through `cpu_tool.*`/`gpu_tool.*`)
+was updated to import the moved names directly via `from <module> import name` -- the same style
+`calltree_common.py` already used -- rather than an aliased whole-module import, so every call site
+needed no change beyond the import line itself.
+
+Per the new Code Comments convention, every moved constant's comment and one stale function
+docstring were rewritten rather than carried over verbatim: `PID_SUFFIX_RE`'s and
+`EXPECTED_HEADER_FIELDS`'s comments were tightened to state their current purpose plainly;
+`REQUIRED_COLUMNS`'s comment dropped its "confirmed directly from rocprofiler-sdk's own source"
+investigation-journey framing, keeping only the standing format fact; and `attach_ancestry()`'s
+docstring lost a second paragraph that described it as "the reusable first step for a future real
+call-tree view... classify_gpu() below is just its first consumer" -- both a stale forward
+reference (`classify_gpu()` no longer sits "below" it, in a different file now) and prose about the
+function's role in the codebase rather than what it does. All three new modules got a fresh
+top-of-file docstring (scope / functions / philosophy) per the same convention.
+
+An Explore pass verified every call site and constant dependency before writing the plan, so the
+move was scoped exactly to what was actually used where -- no guessing. Full test suite (303 tests)
+passes; the four relocated/renamed test classes (`CleanLabelTests`, `ParseTableFileTests` ->
+`test_stage1_rocprofsys.py`; `AttachAncestryTests` -> `test_stage2_rocprofsys.py`;
+`ParseKernelStatsCsvTests` -> `test_stage1_rocprofv3.py`) now load their new module directly, while
+every other test that uses `hotspots.attach_ancestry(...)`/etc. as setup for an unrelated test
+needed no change, since `from stage2_rocprofsys import attach_ancestry` re-binds the name into
+`extract_CPU_hotspots`'s own namespace too. Re-ran `extract_calltree.py`, `extract_hotspots.py`, and
+`extract_pop_metrics.py` against all 6 real `test_apps/results/` directories (not tracked in git --
+`results/` is gitignored, so backup copies were diffed manually): output is byte-identical to the
+pre-refactor baseline except each report's own `generated:` timestamp line. `extract_CPU_hotspots.py`,
+`extract_GPU_hotspots.py`, and `extract_calltree_traced.py` (no standalone output previously saved
+in these directories to diff against) were smoke-tested against the same real data and ran clean.

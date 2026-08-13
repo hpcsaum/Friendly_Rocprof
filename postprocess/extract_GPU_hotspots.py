@@ -8,7 +8,6 @@ For CPU-side hotspots, see scripts/profile_CPU_hotspots.sh instead.
 """
 
 import argparse
-import csv
 import glob
 import json
 import os
@@ -17,10 +16,7 @@ import statistics
 import sys
 from datetime import datetime
 
-# Schema confirmed directly from rocprofiler-sdk's own source (generateCSV.cpp):
-# only "Name" is quoted; numeric columns may be plain-decimal or scientific
-# notation depending on magnitude -- Python's float()/int(float()) handles both.
-REQUIRED_COLUMNS = {"Name", "Calls", "TotalDurationNs"}
+from stage1_rocprofv3 import parse_kernel_stats_csv
 
 # rocprofv3's --output-config (-> <pid>_config.json) is a post-ROCm-7.0.2 feature;
 # absent that file (the common case for our 7.0.2 compatibility target), header
@@ -52,26 +48,6 @@ Under the hood, this parses output written by AMD's rocprofv3 -- see
 https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-rocprofv3.html
 for details.
 """
-
-
-def parse_kernel_stats_csv(path):
-    """Parse one kernel_stats.csv. Returns a list of dict rows, or None if this
-    file doesn't have the expected columns at all."""
-    with open(path, "r", newline="", errors="replace") as f:
-        reader = csv.DictReader(f)
-        if reader.fieldnames is None or not REQUIRED_COLUMNS.issubset(reader.fieldnames):
-            return None
-        rows = []
-        for row in reader:
-            try:
-                rows.append({
-                    "label": row["Name"],
-                    "count": int(float(row["Calls"])),
-                    "total_ns": float(row["TotalDurationNs"]),
-                })
-            except (ValueError, TypeError, KeyError):
-                continue
-        return rows
 
 
 def aggregate(output_dir):

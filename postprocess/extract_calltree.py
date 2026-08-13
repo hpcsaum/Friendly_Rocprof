@@ -38,6 +38,9 @@ from datetime import datetime
 
 import extract_CPU_hotspots as cpu_tool
 import extract_GPU_hotspots as gpu_tool
+from stage1_rocprofsys import PID_SUFFIX_RE, parse_table_file
+from stage1_rocprofv3 import parse_kernel_stats_csv
+from stage2_rocprofsys import attach_ancestry
 from calltree_common import (
     REPORT_HEADERS,
     attach_kernel_summaries,
@@ -383,12 +386,12 @@ def load_rank_trees(cpu_dir, show_rocprofsys_internals):
     paths_by_rank = {}
     order = []
     for path in sorted(glob.glob(os.path.join(cpu_dir, "**", "sampling_wall_clock-*.txt"), recursive=True)):
-        m = cpu_tool.PID_SUFFIX_RE.search(os.path.basename(path))
+        m = PID_SUFFIX_RE.search(os.path.basename(path))
         rank_key = m.group(1) if m else path
         paths_by_rank[rank_key] = path
         order.append(rank_key)
     for path in sorted(glob.glob(os.path.join(cpu_dir, "**", "wall_clock-*.txt"), recursive=True)):
-        m = cpu_tool.PID_SUFFIX_RE.search(os.path.basename(path))
+        m = PID_SUFFIX_RE.search(os.path.basename(path))
         rank_key = m.group(1) if m else path
         if rank_key not in paths_by_rank:
             paths_by_rank[rank_key] = path
@@ -397,10 +400,10 @@ def load_rank_trees(cpu_dir, show_rocprofsys_internals):
     result = []
     for rank_key in order:
         path = paths_by_rank[rank_key]
-        rows = cpu_tool.parse_table_file(path)
+        rows = parse_table_file(path)
         if not rows:
             continue
-        cpu_tool.attach_ancestry(rows)
+        attach_ancestry(rows)
         for row in rows:
             row["gpu"] = classify_gpu_broad(row)
             row["compiler_runtime"] = is_compiler_runtime_noise(row["label"])
@@ -544,7 +547,7 @@ def _kernel_totals_with_counts(gpu_dir, rank_index):
     gpu_tool.aggregate_per_rank() only returns total seconds."""
     candidates = sorted(glob.glob(os.path.join(gpu_dir, "**", "*_kernel_stats.csv"), recursive=True))
     path = candidates[rank_index]
-    rows = gpu_tool.parse_kernel_stats_csv(path)
+    rows = parse_kernel_stats_csv(path)
     totals = {}
     for row in rows:
         entry = totals.setdefault(row["label"], [0, 0.0])
