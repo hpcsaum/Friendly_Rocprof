@@ -8,11 +8,11 @@ FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..")
 MODULE_PATH = os.path.join(POSTPROCESS_DIR, "extract_calltree_traced.py")
 
-# extract_calltree_traced.py does a plain top-level "import calltree_common"/
-# "import extract_CPU_hotspots"/"import extract_GPU_hotspots", relying on its
-# own directory being on sys.path -- true automatically when run directly, but
-# not when loaded here by explicit file path, so replicate that manually (same
-# as test_extract_hotspots.py).
+# extract_calltree_traced.py does a plain top-level "import extract_CPU_hotspots"/
+# "import extract_GPU_hotspots", relying on its own directory being on
+# sys.path -- true automatically when run directly, but not when loaded here
+# by explicit file path, so replicate that manually (same as
+# test_extract_hotspots.py).
 sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
 
 spec = importlib.util.spec_from_file_location("extract_calltree_traced", MODULE_PATH)
@@ -195,8 +195,8 @@ class KernelIntegrationTests(unittest.TestCase):
 class AggregationTests(unittest.TestCase):
     # mpi_2rank: two ranks (2001, 2002), each with its own real timing for
     # "main"/"compute_stencil" -- exercises the cross-rank merge + load
-    # balance columns end to end (calltree_common's own math is tested
-    # directly and more exhaustively in test_calltree_common.py).
+    # balance columns end to end (stage4_rocprofsys_tree's own math is tested
+    # directly and more exhaustively in test_stage4_rocprofsys_tree.py).
     def _render(self, run_dir, **kwargs):
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "calltree_traced.txt")

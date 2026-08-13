@@ -18,6 +18,7 @@ from datetime import datetime
 
 import extract_CPU_hotspots as cpu_tool
 import extract_GPU_hotspots as gpu_tool
+from stage1_run_dirs import resolve_run_dirs
 
 # MPICH / Cray-MPICH function-name prefixes (plus a "most probable" Open MPI
 # addition), shared with extract_CPU_hotspots.py -- see its own definition
@@ -53,23 +54,6 @@ Under the hood, this parses output written by AMD's rocprof-sys (and,
 optionally, rocprofv3) -- see
 https://rocm.docs.amd.com/projects/rocprofiler-systems/en/latest/ for details.
 """
-
-
-def resolve_run_dirs(run_dir):
-    """A "run" is one directory that may contain a rocprof-sys/ subdir (CPU
-    timing) and/or a rocprofv3/ subdir (GPU kernel timing) -- the layout
-    profile_hotspots.sh and instrument_hotspots.sh's scan mode already produce.
-    Falls back to treating run_dir itself as the CPU dir when there's no
-    rocprof-sys/ subdir (profile_CPU_hotspots.sh's un-nested layout).
-
-    Returns (cpu_dir, gpu_dir_or_None). Does not check either actually
-    contains data -- see compute_run_metrics()'s own empty-input handling.
-    """
-    cpu_subdir = os.path.join(run_dir, "rocprof-sys")
-    gpu_subdir = os.path.join(run_dir, "rocprofv3")
-    cpu_dir = cpu_subdir if os.path.isdir(cpu_subdir) else run_dir
-    gpu_dir = gpu_subdir if os.path.isdir(gpu_subdir) else None
-    return cpu_dir, gpu_dir
 
 
 def gpu_sync_wait_per_rank(cpu_dir):

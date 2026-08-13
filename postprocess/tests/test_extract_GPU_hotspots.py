@@ -6,7 +6,14 @@ import tempfile
 import unittest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
-MODULE_PATH = os.path.join(os.path.dirname(__file__), "..", "extract_GPU_hotspots.py")
+POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..")
+MODULE_PATH = os.path.join(POSTPROCESS_DIR, "extract_GPU_hotspots.py")
+
+# extract_GPU_hotspots.py does a plain top-level "from stage1_rocprofv3 import ...",
+# relying on its own directory being on sys.path -- true automatically when run
+# directly, but not when loaded here by explicit file path, so replicate that
+# manually (same as test_extract_hotspots.py).
+sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
 
 spec = importlib.util.spec_from_file_location("extract_GPU_hotspots", MODULE_PATH)
 hotspots = importlib.util.module_from_spec(spec)

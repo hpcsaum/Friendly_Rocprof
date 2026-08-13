@@ -1,20 +1,19 @@
-"""Shared building blocks for both calltree tools (`extract_calltree.py`, the
-sampling-based one, and `extract_calltree_traced.py`, the wall_clock-based one).
+"""Stage 4 (merge ranks / load-balance) for the tree-shaped calltree tools, plus GPU
+kernel attachment.
 
-Kept here rather than duplicated (unlike this codebase's usual "small
-constants are duplicated across standalone tools" convention -- see
-`extract_GPU_hotspots.py`'s `compute_load_imbalance` docstring) because this
-is real, load-bearing tree-rendering, cross-rank merging, and kernel-
-attribution math, not a handful of constants; a bug fixed in one copy but not
-the other would silently diverge between the two tools. Neither tool's own
-filtering rules (which categories of node get pruned/spliced/collapsed) are
-hardcoded here -- each tool injects its own `is_pruned(node)`/
-`collapses_children(node)` callables, so this module has no opinion on any
-one tool's visibility rules. See docs/plans/1.14-sampling-calltree-tool.md and
-docs/DEVELOPMENT_HISTORY.md for the cross-rank aggregation round.
+Scope: merging N per-rank call trees into one by tree position (not by label -- see
+rank_merge_math.py, used here and by the flat, by-label merge the hotspots tools use
+instead), computing avg/std_dev/min/max/calls statistics per node across ranks, and
+attaching real GPU kernel data (from rocprofv3) onto the CPU subroutine that actually
+launched it. Has no opinion on which nodes get rendered or how, or on any one tool's
+own pruning/collapsing rules -- each tool injects its own is_pruned()/
+collapses_children() callables; see tree_render.py for the rendering side.
+
+Functions: merge_rank_trees(), flatten_tree(), aggregate_node_stats(),
+make_node_values(), attach_kernel_summaries(), kernel_owner_label(),
+find_kernel_anchors(), unattached_kernel_per_rank(), make_kernel_node(),
+nearest_visible_ancestor(), is_kernel_launch().
 """
-
-import os
 
 from rank_merge_math import stats_across_ranks
 
@@ -39,38 +38,6 @@ KERNEL_LAUNCH_LABEL_SUBSTRINGS = (
     "__tgt_target_kernel",
 )
 
-# Real right-aligned columns for both tools' rendered trees -- one row per
-# merge_rank_trees() node, averaged/load-balance-summarized across every rank
-# (see aggregate_node_stats()), not per-rank. CALLS is a plain average (a
-# function called a wildly different number of times per rank is unusual and
-# would show up in SELF-AVG/SELF-MAX anyway); SELF gets the full
-# avg/std_dev/min/max load-balance treatment, matching this codebase's
-# established convention (extract_CPU_hotspots.compute_load_imbalance() does
-# the same for self-time, not inclusive time); TOTAL is a plain average --
-# inclusive time is dominated by children's own load imbalance, which their
-# own rows already show individually, so a second full breakdown here would
-# mostly restate deeper rows rather than add information.
-REPORT_HEADERS = [
-    ("CALLS", 8, ".1f"),
-    ("SELF-AVG(s)", 12, ".6f"),
-    ("SELF-STD(s)", 12, ".6f"),
-    ("SELF-MIN(s)", 12, ".6f"),
-    ("SELF-MAX(s)", 12, ".6f"),
-    ("TOTAL-AVG(s)", 13, ".6f"),
-]
-
-
-def resolve_run_dirs(run_dir):
-    """A "run" is one directory that may contain a rocprof-sys/ subdir (CPU
-    timing) and/or a rocprofv3/ subdir (GPU kernel timing). Falls back to
-    treating run_dir itself as the CPU dir when there's no rocprof-sys/
-    subdir (profile_CPU_hotspots.sh's un-nested layout)."""
-    cpu_subdir = os.path.join(run_dir, "rocprof-sys")
-    gpu_subdir = os.path.join(run_dir, "rocprofv3")
-    cpu_dir = cpu_subdir if os.path.isdir(cpu_subdir) else run_dir
-    gpu_dir = gpu_subdir if os.path.isdir(gpu_subdir) else None
-    return cpu_dir, gpu_dir
-
 
 def is_kernel_launch(label):
     lname = label.lower()
@@ -80,17 +47,11 @@ def is_kernel_launch(label):
 def make_kernel_node(label, per_rank):
     """A synthetic (not from parse_table_file()/merge_rank_trees()) tree
     node -- same "per_rank"-keyed shape as a merged real node (see
-    merge_rank_trees()) so render_node()/aggregate_node_stats() can treat it
-    identically, plus "static_children" for its own kernel-name breakdown
+    merge_rank_trees()) so tree_render.render_node()/aggregate_node_stats() can treat
+    it identically, plus "static_children" for its own kernel-name breakdown
     (a merged real node never has populated static_children until
     attach_kernel_summaries() adds one)."""
     return {"label": label, "per_rank": per_rank, "gpu": False, "static_children": []}
-
-
-def get_children(node, children_map):
-    kids = list(children_map.get(id(node), []))
-    kids.extend(node.get("static_children", []))
-    return kids
 
 
 def nearest_visible_ancestor(row, is_pruned):
@@ -170,9 +131,9 @@ def merge_rank_trees(ranks):
 
 def flatten_tree(roots):
     """Every merged node reachable via "children", pre-order -- the flat,
-    parent-linked list build_children_map()/find_kernel_anchors() expect,
-    the same shape parse_table_file() + attach_ancestry() give a single
-    rank's own rows (merge_rank_trees()'s nodes carry "parent" too, for
+    parent-linked list tree_render.build_children_map()/find_kernel_anchors() expect,
+    the same shape stage1_rocprofsys.parse_table_file() + stage2_rocprofsys.attach_ancestry()
+    give a single rank's own rows (merge_rank_trees()'s nodes carry "parent" too, for
     exactly this reason)."""
     flat = []
 
@@ -209,7 +170,7 @@ def aggregate_node_stats(per_rank, rank_keys):
 
 
 def make_node_values(rank_keys):
-    """Returns a node_values(node) callable (see render_node()) bound to a
+    """Returns a node_values(node) callable (see tree_render.render_node()) bound to a
     fixed list of rank keys -- the same function works for a real merged
     node or a synthetic kernel node (make_kernel_node()), since both carry
     the same "per_rank" shape."""
@@ -408,92 +369,3 @@ def unattached_kernel_per_rank(kernel_names, gpu_kernel_by_rank):
             per_rank[rank_key] = {"count": count, "self_sum": total_sec, "sum": total_sec}
         result[kernel_name] = per_rank
     return result
-
-
-def count_all_descendants(nodes, children_map, is_pruned):
-    total = 0
-    for node in nodes:
-        total += 1
-        kids = [k for k in get_children(node, children_map) if not is_pruned(k)]
-        total += count_all_descendants(kids, children_map, is_pruned)
-    return total
-
-
-def render_node(node, prefix, is_last, show_connector, children_map, level, max_depth, is_pruned, node_values, out):
-    """Appends (label_text, values_or_None) tuples to out -- one per rendered
-    line. values_or_None is None for the "N more node(s) hidden" marker line
-    (no metrics of its own). `node_values(node)` returns the CALLING tool's
-    own tuple of numeric column values for a real node (e.g.
-    (calls_avg, self_avg, self_std, self_min, self_max, total_avg) -- see
-    format_aligned_rows()). Uses tree-drawing connectors (├── / └── / │)
-    like the `tree` command; roots (show_connector=False) print flush, since
-    a rank's multiple independent roots (e.g. separate OS threads) aren't
-    true siblings under one shared parent -- connectors start from each
-    root's own children downward.
-    """
-    label_text = f"{prefix}{'└── ' if is_last else '├── '}{node['label']}" if show_connector else node["label"]
-    out.append((label_text, node_values(node)))
-
-    kids = [k for k in get_children(node, children_map) if not is_pruned(k)]
-    if not kids:
-        return
-    child_prefix = prefix + ("    " if is_last else "│   ") if show_connector else ""
-    if max_depth is not None and level >= max_depth:
-        hidden = count_all_descendants(kids, children_map, is_pruned)
-        marker = f"{child_prefix}└── ... ({hidden} more node(s) hidden below this point, raise --max-depth to see them)"
-        out.append((marker, None))
-        return
-    for i, kid in enumerate(kids):
-        render_node(kid, child_prefix, i == len(kids) - 1, True, children_map, level + 1, max_depth, is_pruned, node_values, out)
-
-
-def render_forest(roots, children_map, max_depth, is_pruned, node_values):
-    """The whole forest (every root tree) as a list of (label_text,
-    values_or_None) tuples, ready for format_aligned_rows()."""
-    out = []
-    for root in roots:
-        if not is_pruned(root):
-            render_node(root, "", False, False, children_map, 0, max_depth, is_pruned, node_values, out)
-    return out
-
-
-def build_children_map(rows, collapses_children=lambda row: False):
-    """{id(parent): [child rows]}. A parent for which collapses_children()
-    returns True (e.g. a rank's first MPI-library frame, when MPI internals
-    are being collapsed) contributes no children of its own -- its real
-    subtree still exists in `rows`, just never reachable via this map."""
-    children = {}
-    for row in rows:
-        parent = row["parent"]
-        if parent is not None and not collapses_children(parent):
-            children.setdefault(id(parent), []).append(row)
-    return children
-
-
-def format_aligned_rows(rows, headers):
-    """Real right-aligned numeric columns under one header, sized to this
-    block's longest label -- not a "[calls=.../self=...]" string repeated on
-    every line. `headers` is a list of (name, width, format_spec) tuples,
-    e.g. [("CALLS", 8, ".1f")]. Each row is (label_text, values) where
-    values is a tuple with one entry per header (a number, or None to render
-    that single cell as "-"), or values is `None` entirely for a marker row
-    with no metrics at all (printed as plain text, e.g. the "N more node(s)
-    hidden" line). Returns "" for an empty block (no header printed with
-    nothing under it)."""
-    data_rows = [r for r in rows if r[1] is not None]
-    if not data_rows:
-        return ""
-
-    label_width = max(len(text) for text, _values in data_rows)
-    header_line = f"{'':<{label_width}}" + "".join(f"  {name:>{width}}" for name, width, _fmt in headers)
-    lines = [header_line]
-    for text, values in rows:
-        if values is None:
-            lines.append(text)
-            continue
-        cells = []
-        for value, (_name, width, fmt) in zip(values, headers):
-            cell = f"{value:{fmt}}" if value is not None else "-"
-            cells.append(f"{cell:>{width}}")
-        lines.append(f"{text:<{label_width}}  " + "  ".join(cells))
-    return "\n".join(lines) + "\n"

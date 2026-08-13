@@ -4,14 +4,14 @@ import sys
 import unittest
 
 POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..")
-MODULE_PATH = os.path.join(POSTPROCESS_DIR, "calltree_common.py")
+MODULE_PATH = os.path.join(POSTPROCESS_DIR, "stage4_rocprofsys_tree.py")
 
 sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
 
-spec = importlib.util.spec_from_file_location("calltree_common", MODULE_PATH)
-ctc = importlib.util.module_from_spec(spec)
-sys.modules["calltree_common"] = ctc
-spec.loader.exec_module(ctc)
+spec = importlib.util.spec_from_file_location("stage4_rocprofsys_tree", MODULE_PATH)
+s4t = importlib.util.module_from_spec(spec)
+sys.modules["stage4_rocprofsys_tree"] = s4t
+spec.loader.exec_module(s4t)
 
 RANK = "r0"  # every hand-built test tree in this file simulates one rank
 
@@ -42,37 +42,28 @@ def rank_values(node, rank=RANK):
 
 
 NEVER_PRUNED = lambda node: False  # noqa: E731
-DEFAULT_NODE_VALUES = ctc.make_node_values([RANK])
-DEFAULT_HEADERS = [("CALLS", 8, "d"), ("SELF(s)", 12, ".6f"), ("TOTAL(s)", 12, ".6f")]
-
-
-class ResolveRunDirsTests(unittest.TestCase):
-    def test_falls_back_to_run_dir_itself_when_flat(self):
-        cpu_dir, gpu_dir = ctc.resolve_run_dirs(os.path.dirname(__file__))
-        self.assertEqual(cpu_dir, os.path.dirname(__file__))
-        self.assertIsNone(gpu_dir)
 
 
 class IsKernelLaunchTests(unittest.TestCase):
     def test_matches_known_prefixes(self):
-        self.assertTrue(ctc.is_kernel_launch("hipLaunchKernel"))
-        self.assertTrue(ctc.is_kernel_launch("hipModuleLaunchKernel"))
+        self.assertTrue(s4t.is_kernel_launch("hipLaunchKernel"))
+        self.assertTrue(s4t.is_kernel_launch("hipModuleLaunchKernel"))
 
     def test_matches_namespace_qualified_symbol(self):
         # substring match, not startswith -- catches a demangled C++ symbol
         # where the launch call isn't the first thing in the label.
-        self.assertTrue(ctc.is_kernel_launch("hip::hipModuleLaunchKernel(ihipModuleSymbol_t*, ...)"))
+        self.assertTrue(s4t.is_kernel_launch("hip::hipModuleLaunchKernel(ihipModuleSymbol_t*, ...)"))
 
     def test_matches_cray_acc_entry_point(self):
-        self.assertTrue(ctc.is_kernel_launch("__cray_start_acc_kernel"))
+        self.assertTrue(s4t.is_kernel_launch("__cray_start_acc_kernel"))
 
     def test_matches_omp_target_offload_entry_point(self):
         # LLVM libomptarget's launch entry point -- confirmed in real
         # test_apps HPC data under both amdclang++ and Cray CCE.
-        self.assertTrue(ctc.is_kernel_launch("__tgt_target_kernel"))
+        self.assertTrue(s4t.is_kernel_launch("__tgt_target_kernel"))
 
     def test_rejects_unrelated_label(self):
-        self.assertFalse(ctc.is_kernel_launch("compute_stencil"))
+        self.assertFalse(s4t.is_kernel_launch("compute_stencil"))
 
 
 class KernelAnchorAttributionTests(unittest.TestCase):
@@ -82,7 +73,7 @@ class KernelAnchorAttributionTests(unittest.TestCase):
         launch = make_row("hipLaunchKernel", parent=compute, count=100)
         rows = [main, compute, launch]
 
-        unattached = ctc.attach_kernel_summaries(rows, {RANK: {"MyKernel": (100, 5.0)}}, NEVER_PRUNED)
+        unattached = s4t.attach_kernel_summaries(rows, {RANK: {"MyKernel": (100, 5.0)}}, NEVER_PRUNED)
         self.assertEqual(unattached, set())
         self.assertEqual(len(compute["static_children"]), 1)
         kernel_node = compute["static_children"][0]
@@ -100,7 +91,7 @@ class KernelAnchorAttributionTests(unittest.TestCase):
         launch_b = make_row("hipLaunchKernel", parent=compute_b, count=200)
         rows = [main, compute_a, compute_b, launch_a, launch_b]
 
-        ctc.attach_kernel_summaries(rows, {RANK: {"K": (500, 10.0)}}, NEVER_PRUNED)
+        s4t.attach_kernel_summaries(rows, {RANK: {"K": (500, 10.0)}}, NEVER_PRUNED)
         node_a = compute_a["static_children"][0]
         node_b = compute_b["static_children"][0]
         self.assertAlmostEqual(rank_values(node_a)[2], 6.0)   # 300/500 of 10.0s
@@ -111,18 +102,18 @@ class KernelAnchorAttributionTests(unittest.TestCase):
     def test_no_launch_call_anywhere_returns_remainder_unattached(self):
         main = make_row("main")
         rows = [main]
-        unattached = ctc.attach_kernel_summaries(rows, {RANK: {"K": (1, 1.0)}}, NEVER_PRUNED)
+        unattached = s4t.attach_kernel_summaries(rows, {RANK: {"K": (1, 1.0)}}, NEVER_PRUNED)
         self.assertEqual(unattached, {"K"})
         self.assertEqual(main["static_children"], [])
 
     def test_kernel_owner_label_strips_ck_suffix(self):
         self.assertEqual(
-            ctc.kernel_owner_label("jacobi_sweep$pressure_solver_mod_$ck_L36_1_cce$noloop$form"),
+            s4t.kernel_owner_label("jacobi_sweep$pressure_solver_mod_$ck_L36_1_cce$noloop$form"),
             "jacobi_sweep$pressure_solver_mod_",
         )
 
     def test_kernel_owner_label_unchanged_without_ck_marker(self):
-        self.assertEqual(ctc.kernel_owner_label("JacobiIterationKernel"), "JacobiIterationKernel")
+        self.assertEqual(s4t.kernel_owner_label("JacobiIterationKernel"), "JacobiIterationKernel")
 
     def test_kernel_attaches_to_exact_owner_subroutine_not_launch_anchor(self):
         # A CPU tree node named exactly after the kernel's compiler-embedded
@@ -136,7 +127,7 @@ class KernelAnchorAttributionTests(unittest.TestCase):
         rows = [main, unrelated_caller, launch, jacobi_sweep]
 
         kernels = {RANK: {"jacobi_sweep$pressure_solver_mod_$ck_L36_1_cce$noloop$form": (716, 7.25)}}
-        unattached = ctc.attach_kernel_summaries(rows, kernels, NEVER_PRUNED)
+        unattached = s4t.attach_kernel_summaries(rows, kernels, NEVER_PRUNED)
         self.assertEqual(unattached, set())
         self.assertNotEqual(jacobi_sweep["static_children"], [])
         self.assertEqual(unrelated_caller["static_children"], [])
@@ -147,7 +138,7 @@ class KernelAnchorAttributionTests(unittest.TestCase):
         launch = make_row("hipLaunchKernel", parent=compute, count=5)
         rows = [main, compute, launch]
 
-        unattached = ctc.attach_kernel_summaries(rows, {RANK: {"UnnamedKernel": (5, 1.0)}}, NEVER_PRUNED)
+        unattached = s4t.attach_kernel_summaries(rows, {RANK: {"UnnamedKernel": (5, 1.0)}}, NEVER_PRUNED)
         self.assertEqual(unattached, set())
         self.assertNotEqual(compute["static_children"], [])
 
@@ -162,7 +153,7 @@ class KernelAnchorAttributionTests(unittest.TestCase):
             "jacobi_sweep$pressure_solver_mod_$ck_L36_1_cce$noloop$form": (1, 5.0),
             "SomeOtherKernel": (1, 2.0),
         }}
-        unattached = ctc.attach_kernel_summaries(rows, kernels, NEVER_PRUNED)
+        unattached = s4t.attach_kernel_summaries(rows, kernels, NEVER_PRUNED)
         self.assertEqual(unattached, set())
         jacobi_node = jacobi_sweep["static_children"][0]
         launch_node = unrelated_caller["static_children"][0]
@@ -179,7 +170,7 @@ class KernelAnchorAttributionTests(unittest.TestCase):
         rows = [main, compute, launch]
 
         gpu_kernel_by_rank = {"r0": {"K": (10, 1.0)}, "r1": {"K": (30, 3.0)}}
-        ctc.attach_kernel_summaries(rows, gpu_kernel_by_rank, NEVER_PRUNED)
+        s4t.attach_kernel_summaries(rows, gpu_kernel_by_rank, NEVER_PRUNED)
         kernel_node = compute["static_children"][0]["static_children"][0]
         self.assertAlmostEqual(kernel_node["per_rank"]["r0"]["sum"], 1.0)
         self.assertAlmostEqual(kernel_node["per_rank"]["r1"]["sum"], 3.0)
@@ -193,7 +184,7 @@ class KernelAnchorAttributionTests(unittest.TestCase):
         rows = [main, noisy_wrapper, launch]
 
         is_pruned = lambda node: node.get("gpu", False)  # noqa: E731
-        ctc.attach_kernel_summaries(rows, {RANK: {"K": (10, 1.0)}}, is_pruned)
+        s4t.attach_kernel_summaries(rows, {RANK: {"K": (10, 1.0)}}, is_pruned)
         self.assertNotEqual(main["static_children"], [])
         self.assertEqual(noisy_wrapper["static_children"], [])
 
@@ -213,7 +204,7 @@ class MergeRankTreesTests(unittest.TestCase):
             ("rankA", [main_a, compute_a], [main_a]),
             ("rankB", [main_b, compute_b], [main_b]),
         ]
-        merged_roots = ctc.merge_rank_trees(ranks)
+        merged_roots = s4t.merge_rank_trees(ranks)
         self.assertEqual(len(merged_roots), 1)
         merged_main = merged_roots[0]
         self.assertEqual(merged_main["label"], "main")
@@ -228,14 +219,14 @@ class MergeRankTreesTests(unittest.TestCase):
         row_a = {"label": "start_thread", "parent": None, "count": 1, "self_sum": 1.0, "sum": 1.0, "gpu": False}
         row_b = {"label": "start_thread", "parent": None, "count": 1, "self_sum": 1.0, "sum": 1.0, "gpu": True}
         ranks = [("rankA", [row_a], [row_a]), ("rankB", [row_b], [row_b])]
-        merged_roots = ctc.merge_rank_trees(ranks)
+        merged_roots = s4t.merge_rank_trees(ranks)
         self.assertTrue(merged_roots[0]["gpu"])
 
 
 class AggregateNodeStatsTests(unittest.TestCase):
     def test_missing_rank_counts_as_zero_not_omitted(self):
         per_rank = {"r0": {"count": 10, "self_sum": 2.0, "sum": 2.0}}
-        stats = ctc.aggregate_node_stats(per_rank, ["r0", "r1", "r2"])
+        stats = s4t.aggregate_node_stats(per_rank, ["r0", "r1", "r2"])
         self.assertAlmostEqual(stats["self_avg"], 2.0 / 3)
         self.assertAlmostEqual(stats["self_min"], 0.0)
         self.assertAlmostEqual(stats["self_max"], 2.0)
@@ -246,68 +237,11 @@ class AggregateNodeStatsTests(unittest.TestCase):
             "r1": {"count": 1, "self_sum": 3.0, "sum": 3.0},
             "r2": {"count": 1, "self_sum": 5.0, "sum": 5.0},
         }
-        stats = ctc.aggregate_node_stats(per_rank, ["r0", "r1", "r2"])
+        stats = s4t.aggregate_node_stats(per_rank, ["r0", "r1", "r2"])
         self.assertAlmostEqual(stats["self_avg"], 3.0)
         self.assertAlmostEqual(stats["self_std"], 1.632993161855452)
         self.assertAlmostEqual(stats["self_min"], 1.0)
         self.assertAlmostEqual(stats["self_max"], 5.0)
-
-
-class RenderingTests(unittest.TestCase):
-    def test_render_forest_uses_tree_connectors(self):
-        main = make_row("main", count=1, self_sum=0.0, total_sum=10.0)
-        child_a = make_row("child_a", parent=main, count=1, self_sum=4.0, total_sum=4.0)
-        child_b = make_row("child_b", parent=main, count=1, self_sum=6.0, total_sum=6.0)
-        rows = [main, child_a, child_b]
-        children_map = ctc.build_children_map(rows)
-
-        out = ctc.render_forest([main], children_map, None, NEVER_PRUNED, DEFAULT_NODE_VALUES)
-        labels = [text for text, _values in out]
-        self.assertEqual(labels[0], "main")  # root prints flush, no connector
-        self.assertTrue(labels[1].startswith("├── child_a"))
-        self.assertTrue(labels[2].startswith("└── child_b"))
-
-    def test_max_depth_truncates_with_hidden_count(self):
-        main = make_row("main")
-        child = make_row("child", parent=main)
-        grandchild = make_row("grandchild", parent=child)
-        rows = [main, child, grandchild]
-        children_map = ctc.build_children_map(rows)
-
-        out = ctc.render_forest([main], children_map, 0, NEVER_PRUNED, DEFAULT_NODE_VALUES)
-        marker_lines = [text for text, values in out if values is None]
-        self.assertEqual(len(marker_lines), 1)
-        self.assertIn("2 more node(s) hidden", marker_lines[0])
-
-    def test_build_children_map_collapse_hides_grandchildren(self):
-        main = make_row("main")
-        mpi_call = make_row("MPI_Allreduce", parent=main)
-        internal = make_row("MPIR_Allreduce_cdesc", parent=mpi_call)
-        rows = [main, mpi_call, internal]
-
-        children_map = ctc.build_children_map(rows, collapses_children=lambda row: row["label"] == "MPI_Allreduce")
-        out = ctc.render_forest([main], children_map, None, NEVER_PRUNED, DEFAULT_NODE_VALUES)
-        labels = [text for text, _values in out]
-        self.assertTrue(any("MPI_Allreduce" in l for l in labels))
-        self.assertFalse(any("MPIR_Allreduce_cdesc" in l for l in labels))
-
-
-class FormatAlignedRowsTests(unittest.TestCase):
-    def test_real_columns_not_bracketed_string(self):
-        rows = [("main", (10, 1.5, 3.0))]
-        text = ctc.format_aligned_rows(rows, DEFAULT_HEADERS)
-        self.assertIn("CALLS", text)
-        self.assertIn("SELF(s)", text)
-        self.assertNotIn("[calls=", text)
-
-    def test_none_value_renders_as_dash(self):
-        headers = [("CALLS", 8, "d"), ("EXTRA(s)", 12, ".6f")]
-        rows = [("main", (10, None))]
-        text = ctc.format_aligned_rows(rows, headers)
-        self.assertIn("-", text.splitlines()[-1])
-
-    def test_empty_block_renders_as_empty_string(self):
-        self.assertEqual(ctc.format_aligned_rows([], DEFAULT_HEADERS), "")
 
 
 if __name__ == "__main__":

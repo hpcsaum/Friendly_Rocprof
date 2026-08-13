@@ -19,11 +19,11 @@ Unlike extract_CPU_hotspots.py's scan_ranks()/aggregate(), this does NOT merge
 same-label rows within one rank's own file -- a calltree needs every
 individual call-tree node kept distinct (attach_ancestry()'s parent links
 intact), not summed by label. It DOES merge structurally ACROSS ranks (see
-calltree_common.merge_rank_trees()) into one aggregated tree -- a global view,
+stage4_rocprofsys_tree.merge_rank_trees()) into one aggregated tree -- a global view,
 not one call tree per rank -- with each node's CALLS/TOTAL-AVG(s) columns
 averaged, and SELF given a full avg/std_dev/min/max load-balance
 breakdown, the same convention extract_CPU_hotspots.compute_load_imbalance()
-already uses elsewhere in this codebase. See docs/plans/14-sampling-calltree-tool.md
+already uses elsewhere in this codebase. See docs/plans/1.14-sampling-calltree-tool.md
 for the full original design rationale, including why per-dispatch-exact
 kernel placement isn't achievable from this toolchain's text/JSON output
 (only the binary Perfetto trace has per-call timestamps, and there's no
@@ -40,19 +40,21 @@ import extract_CPU_hotspots as cpu_tool
 import extract_GPU_hotspots as gpu_tool
 from stage1_rocprofsys import PID_SUFFIX_RE, parse_table_file
 from stage1_rocprofv3 import parse_kernel_stats_csv
+from stage1_run_dirs import resolve_run_dirs
 from stage2_rocprofsys import attach_ancestry
-from calltree_common import (
-    REPORT_HEADERS,
+from stage4_rocprofsys_tree import (
     attach_kernel_summaries,
-    build_children_map,
     flatten_tree,
-    format_aligned_rows,
     make_kernel_node,
     make_node_values,
     merge_rank_trees,
-    render_forest,
-    resolve_run_dirs,
     unattached_kernel_per_rank,
+)
+from tree_render import (
+    REPORT_HEADERS,
+    build_children_map,
+    format_aligned_rows,
+    render_forest,
 )
 
 # GPU-API/runtime noise -- broadened from extract_CPU_hotspots.py's
@@ -89,7 +91,7 @@ GPU_NOISE_SUBSTRINGS = cpu_tool.GPU_API_PREFIXES + (
 # extract_CPU_hotspots.py's own tree shape has no such "real code sits
 # inside" relationship for these frames (see its comment), so it drops them
 # entirely instead -- same substrings, different treatment per tool's own
-# data shape, exactly as calltree_common.py's module docstring describes.
+# data shape, exactly as tree_render.py's module docstring describes.
 ROCPROFSYS_WRAPPER_SUBSTRINGS = cpu_tool.ROCPROFSYS_WRAPPER_SUBSTRINGS
 
 # MPI library internals -- COLLAPSED (the first real MPI frame hit while

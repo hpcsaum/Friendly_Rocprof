@@ -34,6 +34,7 @@
 | 2026-08-13 | Full `postprocess/` dependency audit and consolidation plan written (`docs/plans/2.1-postprocess-consolidation-refactor.md`); plan numbering versioned (`1.1`-`1.16` = original tool suite, `2.x` = this refactor); `CLAUDE.md` gains a Code Comments convention (describe current behavior, not history; every module gets a top-of-file scope/functions/philosophy docstring) |
 | 2026-08-13 | Plan 2.2: relocated `parse_table_file()`/`clean_label()`/`thread_id_from_raw_label()`/`PID_SUFFIX_RE` (new `stage1_rocprofsys.py`), `parse_kernel_stats_csv()` (new `stage1_rocprofv3.py`), and `attach_ancestry()` (new `stage2_rocprofsys.py`) out of `extract_CPU_hotspots.py`/`extract_GPU_hotspots.py` -- pure relocation, zero behavior change, roadmap step 1 of the consolidation plan |
 | 2026-08-13 | Plan 2.3: extracted the shared avg/std_dev/min/max-across-ranks math into new `rank_merge_math.py` (`stats_across_ranks()`), used by `calltree_common.aggregate_node_stats()` and both `compute_load_imbalance()` copies -- roadmap step 2; incidentally found and flagged (not fixed, out of scope) a pre-existing nondeterministic tie-order bug in `compute_load_imbalance()`'s sort for labels with byte-identical stats |
+| 2026-08-13 | Plan 2.4: split `calltree_common.py` into `stage4_rocprofsys_tree.py` (tree merge + kernel attachment), `tree_render.py` (rendering), and a new `stage1_run_dirs.py` (`resolve_run_dirs()`, moved out of §8's original "tree_render.py" placement after checking its real callers) -- roadmap step 3; also fixed `extract_pop_metrics.py`'s independent duplicate copy of `resolve_run_dirs()` (§6 finding 1) in the same step |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -1155,3 +1156,56 @@ beyond std_dev. Confirmed via direct testing that this reproduces identically ag
 pre-Plan-2.3 committed code (git commit `e49d148`) -- a real, pre-existing bug, not a regression
 from this step, and out of this step's scope to fix. Flagged as a follow-up task rather than fixed
 here.
+
+## 2026-08-13 — Plan 2.4: split calltree_common.py (roadmap step 3)
+
+Third implementation step of the consolidation plan: `calltree_common.py`'s 19 functions/constants
+split into `stage4_rocprofsys_tree.py` (cross-rank tree merge + GPU kernel attachment --
+`merge_rank_trees()`, `flatten_tree()`, `aggregate_node_stats()`, `make_node_values()`,
+`attach_kernel_summaries()` and its helpers, `make_kernel_node()`, `is_kernel_launch()`) and
+`tree_render.py` (rendering only -- `render_forest()`, `render_node()`, `get_children()`,
+`count_all_descendants()`, `build_children_map()`, `format_aligned_rows()`). Both candidate groups
+were confirmed internally closed (no cross-calls between them) before writing the plan, so the
+split changed only import surfaces, never logic.
+
+`resolve_run_dirs()` didn't land where `docs/plans/2.1-postprocess-consolidation-refactor.md` §8
+originally said it would. Checking its actual call sites (rather than trusting the year-old design
+doc) found it serves three tools, not two -- `extract_pop_metrics.py` had its own fully
+independent, byte-for-byte-identical copy that never imported from `calltree_common` at all (§6
+finding 1, a duplication the master plan itself flagged as looking "accidental rather than
+declared"). With zero coupling to rendering, trees, or merging, it got its own single-function
+module, `stage1_run_dirs.py`, instead of `tree_render.py`'s "deliberate exception" slot -- and since
+its only remaining real copy was already being relocated, `extract_pop_metrics.py`'s duplicate was
+deleted and pointed at the new module in the same step, closing §6 finding 1 rather than leaving it
+for a future pass. `docs/plans/2.1-postprocess-consolidation-refactor.md` §8 got a short header
+note recording this divergence, per `CLAUDE.md`'s divergence-tracking convention.
+
+Two split-induced docstring cross-references got module-name prefixes (`REPORT_HEADERS`'s comment
+naming `merge_rank_trees()`/`aggregate_node_stats()`; `make_kernel_node()`'s docstring naming
+`render_node()`) now that the functions they describe live in a sibling file. `tree_render.py`'s
+own docstring also notes a real but indirect data-shape coupling: `get_children()` reads a
+`"static_children"` list every node is expected to carry, populated by
+`stage4_rocprofsys_tree.py`'s `merge_rank_trees()`/`make_kernel_node()`/`_attach_kernel_group()`,
+with no import needed either direction.
+
+Test classes split the same way tests were split for the two new source modules
+(`test_stage4_rocprofsys_tree.py`, `test_tree_render.py`), plus a new `test_stage1_run_dirs.py`.
+`ResolveRunDirsTests` existed twice before this step too -- one thin case in
+`test_calltree_common.py`, three fuller cases in `test_extract_pop_metrics.py` -- consolidated into
+the fuller three-case version in `test_stage1_run_dirs.py`, with the redundant thin copy dropped
+and `test_extract_pop_metrics.py`'s copy removed now that it imports the function instead of
+defining it. Full suite: 306 tests (net -1 from 307, all from that de-duplication), all passing.
+
+Deleting `test_calltree_common.py` surfaced a latent bug in the test suite's own setup: it had been
+the alphabetically-first test file to insert `postprocess/` onto `sys.path`, and
+`test_extract_CPU_hotspots.py`/`test_extract_GPU_hotspots.py` were silently relying on that
+incidental ordering rather than doing it themselves. Fixed by giving both their own
+`sys.path.insert()`, matching every other test file's established pattern, rather than restoring
+the accidental ordering.
+
+Re-ran `extract_calltree.py`/`extract_calltree_traced.py`/`extract_pop_metrics.py` against all 6
+real `test_apps/results/` directories: `extract_calltree.py`/`extract_pop_metrics.py` byte-identical
+to the pre-change backup except timestamps; `extract_calltree_traced.py` (no standalone baseline
+previously saved in these directories) verified instead by running both the pre-plan-2.4 code
+(from git HEAD) and the post-split code side by side and diffing their output directly -- also
+byte-identical except timestamps.

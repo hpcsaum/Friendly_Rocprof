@@ -33,27 +33,6 @@ FLAT_LAYOUT_DIR = os.path.join(FIXTURES, "mpi_2rank")  # no rocprof-sys/ subdir,
 MPI_PREFIX_DIR = os.path.join(FIXTURES, "pop_mpi_prefix_reconciliation")
 
 
-class ResolveRunDirsTests(unittest.TestCase):
-    def test_detects_paired_subdirs(self):
-        cpu_dir, gpu_dir = pop_tool.resolve_run_dirs(COMBINED_DIR)
-        self.assertEqual(cpu_dir, os.path.join(COMBINED_DIR, "rocprof-sys"))
-        self.assertEqual(gpu_dir, os.path.join(COMBINED_DIR, "rocprofv3"))
-
-    def test_falls_back_to_run_dir_itself_when_no_rocprof_sys_subdir(self):
-        # mpi_2rank's wall_clock-*.txt files sit directly in the fixture dir --
-        # the tool-1-alone layout (no rocprof-sys/ nesting).
-        cpu_dir, gpu_dir = pop_tool.resolve_run_dirs(FLAT_LAYOUT_DIR)
-        self.assertEqual(cpu_dir, FLAT_LAYOUT_DIR)
-        self.assertIsNone(gpu_dir)
-
-    def test_cpu_only_subdir_with_no_gpu_sibling(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            os.makedirs(os.path.join(tmp, "rocprof-sys"))
-            cpu_dir, gpu_dir = pop_tool.resolve_run_dirs(tmp)
-            self.assertEqual(cpu_dir, os.path.join(tmp, "rocprof-sys"))
-            self.assertIsNone(gpu_dir)
-
-
 class ComputeRunMetricsTests(unittest.TestCase):
     def test_per_rank_totals_match_fixture_arithmetic(self):
         # pop_ref_2rank/wall_clock-3001.txt: main(10.0, self 0) with children
