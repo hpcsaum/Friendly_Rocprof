@@ -38,6 +38,7 @@
 | 2026-08-13 | Plan 2.5: built the shared stage-3 noise-classification engine (`stage3_rocprofsys.py`, `default_noise_patterns.json`) in isolation, not wired into any tool yet -- roadmap step 4; implements `splice`'s "fold" self-time-into-new-parent behavior for the first time, and generalizes the untethered-root "inherit from first real descendant" mechanism from GPU-only to any tag (e.g. MPI) |
 | 2026-08-14 | Plan 2.6: wired the stage-3 engine into `extract_CPU_hotspots.py`, `extract_calltree.py`, `extract_calltree_traced.py`, and `extract_pop_metrics.py` -- roadmap step 5, the first step allowed to change real report output; found and fixed 4 real bugs during implementation/verification (disabled `mpi_territory`'s untethered-root generalization as unsafe, fixed `structural_drop_tags` not cascading to descendants, restored a dropped `__tgt_target_kernel` pattern, fixed `gpu_api`'s prefix-vs-substring mismatch) -- see full real-data diff accounting below |
 | 2026-08-14 | Plan 2.7: built `stage4_rocprofsys_flat.py`/`stage4_rocprofv3.py` and a generic stage-5 backend (`stage5_table_render.py`) shared by every hotspots/load-imbalance/fused/POP-metrics table -- roadmap step 6; fixed the nondeterministic tie-order bug flagged (not fixed) in plan 2.3, as part of relocating `compute_load_imbalance()`; also promoted `tree_render.py` to stage 5 (renamed `stage5_tree_render.py`) and gave each calltree tool its own stage-5 companion module -- see full design/rename/real-data accounting below |
+| 2026-08-14 | Plan 2.8: built `stage6_report_builder.py` (a genuinely generic `render_report(header, sections, footer)` backend, not a thin `write_report_file()`/`section()` pair) and `stage6_run_metadata.py`, and rewrote all 6 report tools' `write_report()` as compute/assemble/write composers over them -- roadmap step 7; fixed `stage5_tree_render.py`'s two render functions self-appending a trailing blank line so both calltree tools could adopt the same generic backend in this same plan instead of being deferred -- see full design/real-data accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -1419,4 +1420,79 @@ level for every reordered group, not just eyeballed: every swapped pair/group sh
 `self_sum` (to full float precision) and the new order is alphabetical by label, exactly
 `select_entries()`'s designed tie-break. No other differences of any kind in any of the 24
 regenerated files.
+
+## 2026-08-14 — Plan 2.8: stage-6 composition -- report_builder + run_metadata (roadmap step 7)
+
+Seventh implementation step: finished what plan 2.6 started on the report-writing tools
+themselves. All 6 (`extract_CPU_hotspots.py`, `extract_GPU_hotspots.py`, `extract_hotspots.py`,
+`extract_pop_metrics.py`, `extract_calltree.py`, `extract_calltree_traced.py`) still had the same
+`parts = [] ... report = "".join(parts) ... write to dest_path ... return report` assembly
+boilerplate inline, and the two hotspots tools each carried their own near-identical copy of the
+run-metadata-guessing helpers. Both moved out into new `stage6_report_builder.py` and
+`stage6_run_metadata.py` modules.
+
+The design went through four rounds of user-directed revision from the original roadmap sketch:
+
+1. **A genuine generic `render_report(header, sections, footer)` backend, not a thin
+   `write_report_file()`/`section()` pair.** Every tool's `write_report()` turned out to have the
+   same real structure underneath its own wording -- compute data, then assemble a header + a
+   repeated sequence of title+body sections + a footer, then write it out. `render_report()` owns
+   the "for each section: title, body, blank line" loop generically; each tool keeps full control
+   of what its own header/sections/footer text actually says.
+2. **New shared modules get the `stage6_` prefix, matching the existing `stage1_`-`stage5_`
+   convention** (`report_builder.py` -> `stage6_report_builder.py`, `run_metadata.py` ->
+   `stage6_run_metadata.py`) -- but the tool files themselves (`extract_*.py`) are the user-facing
+   CLI surface and keep their unprefixed names; the prefix marks an internal shared module, not
+   "everything touched in stage 6."
+3. **`stage5_tree_render.py`'s two render functions stopped self-terminating with a blank line**
+   (`render_calltree_text()`/`attach_and_render_gpu_kernels()` each used to append their own
+   trailing `"\n"`) instead of giving `render_report()` a third `blank_line` tuple element to work
+   around them -- fixing the actual inconsistency (every other stage-5 render function already put
+   its blank line at the assembly layer, never inside the leaf renderer) meant both calltree tools
+   could adopt the same plain, uniform section shape in this same plan, rather than being deferred
+   to a later step as originally sketched.
+4. **A narrow, explicit exception to "byte-identical output" for blank lines**, added mid-
+   implementation once a real inconsistency surfaced: `extract_GPU_hotspots.py`'s existing
+   `write_report()` was the one tool among all 6 with no trailing blank line after its last
+   (load-imbalance) section. Routing that block through `footer` (which never gets a trailing
+   blank) would have preserved that one accidental gap, but only by special-casing around it;
+   instead, both `extract_GPU_hotspots.py` and `extract_hotspots.py` (which had the same gap after
+   its own last section) treat their load-imbalance block as a normal section like every other
+   tool's `write_report()` already does, and pick up the one trailing blank line that changes as a
+   result. Accepted because the new placement is exactly where §10's later uniform blank-line
+   structure will put it anyway, and it let both tools use the same plain section list as
+   everything else instead of a special case built only to dodge the diff.
+
+`stage6_run_metadata.py`'s primitives (`load_json_file()`, `find_first_key()`, `guess_executable()`,
+`guess_total_runtime()`, `guess_run_datetime()`, `guess_num_ranks()`) are shared verbatim (or made
+identical by parameterizing the one real difference, e.g. which keys-list constant or glob pattern
+to use) between what were previously two independent copies in `extract_CPU_hotspots.py` and
+`extract_GPU_hotspots.py`. `guess_run_datetime()`/`guess_num_ranks()` gained optional
+`dir_pattern`/`keys` parameters (defaulting to "skip that extra step") to cover CPU's extra
+fallback behavior GPU doesn't have, the same "generic function, optional no-op-by-default hook"
+shape plan 2.7 established for `select_entries()`'s `prepare` and `load_rank_trees()`'s
+`postprocess`. Each tool's own `gather_run_info()` stayed a small per-tool function calling the
+shared primitives with its own constants, rather than being folded into
+`stage6_run_metadata.py` as one function with 7+ keyword parameters. A further, deliberate
+non-change: `EXECUTABLE_KEYS`/`CONFIG_EXECUTABLE_KEYS` (and the two same-named-but-different
+`PID_SUFFIX_RE` regexes) were left as two separate tool-owned constants rather than reconciled into
+one -- that's a report-*content* decision belonging with §10's uniform metadata presentation
+(roadmap step 9), not this structural-extraction step.
+
+Test rework followed the same "run the existing suite first" discipline: of 369 tests, 9 broke
+(all `extract_CPU_hotspots.py`/`extract_GPU_hotspots.py` tests calling the now-moved metadata
+functions by their old names/signatures) plus one that had been silently passing an old-signature
+positional argument and got a wrong answer instead of an error (`guess_run_datetime`'s old 2-arg
+call shape mapped a directory-path string onto the new `keys` parameter). All fixed by updating
+call sites to the new shared-primitive signatures; none of the breakage was a real behavior change.
+New `test_stage6_report_builder.py` and `test_stage6_run_metadata.py` cover the two new modules
+directly; `test_stage5_tree_render.py`'s `RenderCalltreeTextTests`/`AttachAndRenderGpuKernelsTests`
+were updated to assert the corrected single-trailing-newline behavior instead of the old
+self-appended blank line. Final suite: 369 tests, all passing.
+
+Real-data verification across all 6 `test_apps/results/` directories: `calltree.txt`,
+`calltree_traced.txt`, and `pop_metrics.txt` came back completely byte-identical in all 6 dirs.
+`hotspots.txt` differed in all 6 dirs in exactly one line each -- the one accepted trailing blank
+line added after the load-imbalance section, per point 4 above. No other differences of any kind
+in any of the 24 regenerated files.
 

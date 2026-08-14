@@ -237,9 +237,8 @@ def attach_and_render_gpu_kernels(flat, gpu_per_rank, gpu_dir, rank_keys, is_pru
     kernel_stats.csv (kernel_totals_with_counts()), mutates flat in place to attach matched
     kernels onto the tree (stage4_rocprofsys_tree.attach_kernel_summaries()), and renders the
     '=== GPU kernels ... ===' fallback table for anything that couldn't be attached. Returns
-    fallback text (empty string if gpu_per_rank is None or nothing was left unattached) --
-    including its own trailing blank line, so a caller can just concatenate this after
-    render_calltree_text()'s output."""
+    fallback text (empty string if gpu_per_rank is None or nothing was left unattached), ending in
+    exactly its own content's newline and no more -- the caller supplies any blank line."""
     if gpu_per_rank is None:
         return ""
 
@@ -258,7 +257,6 @@ def attach_and_render_gpu_kernels(flat, gpu_per_rank, gpu_dir, rank_keys, is_pru
     return (
         "=== GPU kernels (rocprofv3) -- no owning subroutine or launch call site found in CPU tree ===\n"
         + format_aligned_rows(fallback_rows, REPORT_HEADERS)
-        + "\n"
     )
 
 
@@ -267,9 +265,9 @@ def render_calltree_text(merged_roots, flat, max_depth, is_pruned, node_values,
     """Renders the merged tree as text via build_children_map()/render_forest()/
     format_aligned_rows() -- the one call both calltree tools make identically.
     collapses_children defaults to a no-op; only the sampling tool passes a real one (for
-    MPI-internals collapsing). Includes a trailing blank line, so a caller can just concatenate
-    attach_and_render_gpu_kernels()'s output directly after this."""
+    MPI-internals collapsing). Ends in exactly its own content's newline and no more -- the
+    caller supplies any blank line."""
     children_map = build_children_map(flat, collapses_children=collapses_children)
     return format_aligned_rows(
         render_forest(merged_roots, children_map, max_depth, is_pruned, node_values), REPORT_HEADERS,
-    ) + "\n"
+    )

@@ -37,6 +37,7 @@ from datetime import datetime
 
 from stage1_run_dirs import resolve_run_dirs
 from stage5_calltree_view import build_calltree_view
+from stage6_report_builder import render_report, write_report_file
 
 HELP_BLURB = """\
 Reads a rocprof-sys (optionally paired with rocprofv3) output directory and
@@ -90,30 +91,31 @@ def write_report(run_dir, dest_path, max_depth=None, show_gpu_api=False,
     )
     rank_keys = view["rank_keys"]
 
-    parts = []
-    parts.append("Call tree report (sampling-based, aggregated across ranks)\n")
-    parts.append(f"generated: {datetime.now().isoformat(timespec='seconds')}\n")
-    parts.append(f"source directory: {os.path.abspath(run_dir)}\n")
-    parts.append(f"CPU data: {os.path.abspath(cpu_dir)}\n")
-    parts.append(f"GPU data: {os.path.abspath(gpu_dir) if view['gpu_paired'] else '(none)'}\n")
-    parts.append(f"ranks aggregated: {len(rank_keys)} (rank keys: {', '.join(rank_keys)})\n")
-    parts.append(
-        "Showing: GPU-API/runtime noise "
-        + ("included" if show_gpu_api else "hidden (--show-gpu-api to reveal)") + ", "
-        "rocprof-sys internals "
-        + ("included" if show_rocprofsys_internals else "spliced out (--show-rocprofsys-internals to reveal)") + ", "
-        "MPI internals "
-        + ("included" if show_mpi_internals else "collapsed (--show-mpi-internals to reveal)") + ", "
-        "compiler-runtime helpers "
-        + ("included" if show_compiler_runtime else "hidden (--show-compiler-runtime to reveal)") + "\n"
+    header = (
+        "Call tree report (sampling-based, aggregated across ranks)\n"
+        f"generated: {datetime.now().isoformat(timespec='seconds')}\n"
+        f"source directory: {os.path.abspath(run_dir)}\n"
+        f"CPU data: {os.path.abspath(cpu_dir)}\n"
+        f"GPU data: {os.path.abspath(gpu_dir) if view['gpu_paired'] else '(none)'}\n"
+        f"ranks aggregated: {len(rank_keys)} (rank keys: {', '.join(rank_keys)})\n"
+        + (
+            "Showing: GPU-API/runtime noise "
+            + ("included" if show_gpu_api else "hidden (--show-gpu-api to reveal)") + ", "
+            "rocprof-sys internals "
+            + ("included" if show_rocprofsys_internals else "spliced out (--show-rocprofsys-internals to reveal)") + ", "
+            "MPI internals "
+            + ("included" if show_mpi_internals else "collapsed (--show-mpi-internals to reveal)") + ", "
+            "compiler-runtime helpers "
+            + ("included" if show_compiler_runtime else "hidden (--show-compiler-runtime to reveal)") + "\n"
+        )
+        + f"max depth: {max_depth if max_depth is not None else 'unlimited'}\n"
+        + "\n"
     )
-    parts.append(f"max depth: {max_depth if max_depth is not None else 'unlimited'}\n")
-    parts.append("\n")
+    sections = [(None, view["tree_text"])]
+    if view["fallback_text"]:
+        sections.append((None, view["fallback_text"]))
 
-    parts.append(view["tree_text"])
-    parts.append(view["fallback_text"])
-
-    parts.append(
+    footer = (
         "Caveats:\n"
         "  - Every row is aggregated across all ranks (not one call tree per rank): CALLS and\n"
         "    TOTAL-AVG(s) are plain averages; SELF gets a full avg/std_dev/min/max load-balance\n"
@@ -147,10 +149,7 @@ def write_report(run_dir, dest_path, max_depth=None, show_gpu_api=False,
         "    (deferred future work, not attempted here).\n"
     )
 
-    report = "".join(parts)
-    with open(dest_path, "w") as f:
-        f.write(report)
-    return report
+    return write_report_file(dest_path, render_report(header, sections, footer))
 
 
 def main(argv=None):

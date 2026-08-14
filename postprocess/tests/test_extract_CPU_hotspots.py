@@ -24,32 +24,39 @@ import stage4_rocprofsys_flat as flat  # noqa: E402  (needs sys.path insert abov
 
 class MetadataGuessingTests(unittest.TestCase):
     def test_guesses_from_mpi_fixture_metadata_json(self):
-        metadata = hotspots.load_metadata(os.path.join(FIXTURES, "mpi_2rank"))
-        self.assertEqual(hotspots.guess_executable(metadata), "jacobi_mpi")
-        self.assertEqual(hotspots.guess_run_datetime(metadata, "irrelevant"), "2026-07-21T07:40:00")
-        self.assertEqual(hotspots.guess_total_runtime(metadata), "21.824161 sec")
+        data = hotspots.load_json_file(os.path.join(FIXTURES, "mpi_2rank"), hotspots.METADATA_FILENAME)
+        self.assertEqual(hotspots.guess_executable(data, hotspots.EXECUTABLE_KEYS), "jacobi_mpi")
+        self.assertEqual(
+            hotspots.guess_run_datetime(data, hotspots.RUN_DATETIME_KEYS), "2026-07-21T07:40:00",
+        )
+        self.assertEqual(hotspots.guess_total_runtime(data, hotspots.TOTAL_RUNTIME_KEYS), "21.824161 sec")
         # world_size is nested under "settings" -- exercises the one-level-deep search
-        self.assertEqual(hotspots.guess_num_ranks(metadata, []), 2)
+        self.assertEqual(hotspots.guess_num_ranks(data, hotspots.PID_SUFFIX_RE, [], keys=hotspots.NUM_RANKS_KEYS), 2)
 
     def test_missing_metadata_json_leaves_fields_blank(self):
-        metadata = hotspots.load_metadata(os.path.join(FIXTURES, "single_rank"))
-        self.assertEqual(metadata, {})
-        self.assertIsNone(hotspots.guess_executable(metadata))
-        self.assertIsNone(hotspots.guess_total_runtime(metadata))
+        data = hotspots.load_json_file(os.path.join(FIXTURES, "single_rank"), hotspots.METADATA_FILENAME)
+        self.assertEqual(data, {})
+        self.assertIsNone(hotspots.guess_executable(data, hotspots.EXECUTABLE_KEYS))
+        self.assertIsNone(hotspots.guess_total_runtime(data, hotspots.TOTAL_RUNTIME_KEYS))
 
     def test_num_ranks_falls_back_to_distinct_pids_in_filenames(self):
-        metadata = {}
         scanned = ["/x/wall_clock-1001.txt", "/x/wall_clock-1002.txt", "/x/roctracer-1001.txt"]
-        self.assertEqual(hotspots.guess_num_ranks(metadata, scanned), 2)
+        self.assertEqual(hotspots.guess_num_ranks({}, hotspots.PID_SUFFIX_RE, scanned, keys=hotspots.NUM_RANKS_KEYS), 2)
 
     def test_run_datetime_falls_back_to_output_dir_timestamp_pattern(self):
-        metadata = {}
         output_dir = "/some/rocprof-sys-app-output/2025-01-21_07.40"
-        self.assertEqual(hotspots.guess_run_datetime(metadata, output_dir), "2025-01-21_07.40")
+        self.assertEqual(
+            hotspots.guess_run_datetime(
+                {}, hotspots.RUN_DATETIME_KEYS, output_dir=output_dir, dir_pattern=hotspots.TIME_OUTPUT_DIR_RE,
+            ),
+            "2025-01-21_07.40",
+        )
 
     def test_gather_run_info_end_to_end_with_metadata(self):
         info = hotspots.gather_run_info(os.path.join(FIXTURES, "mpi_2rank"), [])
         self.assertEqual(info["executable"], "jacobi_mpi")
+        self.assertEqual(info["run_datetime"], "2026-07-21T07:40:00")
+        self.assertEqual(info["total_runtime"], "21.824161 sec")
         self.assertEqual(info["num_ranks"], 2)
 
     def test_gather_run_info_end_to_end_without_metadata(self):
@@ -148,14 +155,20 @@ class NestedDatedSubdirectoryTests(unittest.TestCase):
     DIR = os.path.join(FIXTURES, "mpi_2rank_dated_subdir")
 
     def test_load_metadata_finds_nested_metadata_json(self):
-        metadata = hotspots.load_metadata(self.DIR)
-        self.assertEqual(hotspots.guess_executable(metadata), "jacobi_mpi")
-        self.assertEqual(hotspots.guess_num_ranks(metadata, []), 2)
+        data = hotspots.load_json_file(self.DIR, hotspots.METADATA_FILENAME)
+        self.assertEqual(hotspots.guess_executable(data, hotspots.EXECUTABLE_KEYS), "jacobi_mpi")
+        self.assertEqual(hotspots.guess_num_ranks(data, hotspots.PID_SUFFIX_RE, [], keys=hotspots.NUM_RANKS_KEYS), 2)
 
     def test_guess_run_datetime_falls_back_to_nested_scanned_file_dirname(self):
         _cpu, _gpu, scanned, _total = flat.aggregate(self.DIR)
-        metadata = hotspots.load_metadata(self.DIR)  # no start_time field in this fixture
-        self.assertEqual(hotspots.guess_run_datetime(metadata, self.DIR, scanned), "2026-08-03_09.24")
+        data = hotspots.load_json_file(self.DIR, hotspots.METADATA_FILENAME)  # no start_time field in this fixture
+        self.assertEqual(
+            hotspots.guess_run_datetime(
+                data, hotspots.RUN_DATETIME_KEYS, output_dir=self.DIR, scanned_files=scanned,
+                dir_pattern=hotspots.TIME_OUTPUT_DIR_RE,
+            ),
+            "2026-08-03_09.24",
+        )
 
     def test_write_report_succeeds_instead_of_raising(self):
         with tempfile.TemporaryDirectory() as tmp:

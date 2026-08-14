@@ -22,27 +22,29 @@ spec.loader.exec_module(hotspots)
 
 class ConfigJsonGuessingTests(unittest.TestCase):
     def test_guesses_from_config_json(self):
-        config = hotspots.load_config_json(os.path.join(FIXTURES, "rocprofv3_mpi_2rank"))
-        self.assertEqual(hotspots.guess_executable(config), "jacobi_hip")
-        self.assertEqual(hotspots.guess_run_datetime(config), "2026-07-25T09:15:00")
+        config = hotspots.load_json_file(os.path.join(FIXTURES, "rocprofv3_mpi_2rank"), "*_config.json")
+        self.assertEqual(hotspots.guess_executable(config, hotspots.CONFIG_EXECUTABLE_KEYS), "jacobi_hip")
+        self.assertEqual(
+            hotspots.guess_run_datetime(config, hotspots.CONFIG_DATETIME_KEYS), "2026-07-25T09:15:00",
+        )
         # "elapsed" is nested under "timing" -- exercises the one-level-deep search
-        self.assertEqual(hotspots.guess_total_runtime(config), "5.980000 sec")
+        self.assertEqual(hotspots.guess_total_runtime(config, hotspots.CONFIG_RUNTIME_KEYS), "5.980000 sec")
 
     def test_missing_config_json_leaves_fields_blank(self):
-        config = hotspots.load_config_json(os.path.join(FIXTURES, "rocprofv3_single_rank"))
+        config = hotspots.load_json_file(os.path.join(FIXTURES, "rocprofv3_single_rank"), "*_config.json")
         self.assertEqual(config, {})
-        self.assertIsNone(hotspots.guess_executable(config))
-        self.assertIsNone(hotspots.guess_total_runtime(config))
+        self.assertIsNone(hotspots.guess_executable(config, hotspots.CONFIG_EXECUTABLE_KEYS))
+        self.assertIsNone(hotspots.guess_total_runtime(config, hotspots.CONFIG_RUNTIME_KEYS))
 
     def test_num_ranks_from_distinct_pids(self):
         scanned = [
             "/x/myhost/2001_kernel_stats.csv",
             "/x/myhost/2002_kernel_stats.csv",
         ]
-        self.assertEqual(hotspots.guess_num_ranks({}, scanned), 2)
+        self.assertEqual(hotspots.guess_num_ranks({}, hotspots.PID_SUFFIX_RE, scanned), 2)
 
     def test_num_ranks_none_when_no_files(self):
-        self.assertIsNone(hotspots.guess_num_ranks({}, []))
+        self.assertIsNone(hotspots.guess_num_ranks({}, hotspots.PID_SUFFIX_RE, []))
 
 
 class WriteReportTests(unittest.TestCase):

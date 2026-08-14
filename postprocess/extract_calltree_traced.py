@@ -32,6 +32,7 @@ from datetime import datetime
 
 from stage1_run_dirs import resolve_run_dirs
 from stage5_calltree_traced_view import build_calltree_view
+from stage6_report_builder import render_report, write_report_file
 
 HELP_BLURB = """\
 Reads a rocprof-sys (optionally paired with rocprofv3) output directory and
@@ -80,24 +81,25 @@ def write_report(run_dir, dest_path, max_depth=None, show_gpu_api=False):
     view = build_calltree_view(run_dir, cpu_dir, gpu_dir, max_depth=max_depth, show_gpu_api=show_gpu_api)
     rank_keys = view["rank_keys"]
 
-    parts = []
-    parts.append("Call tree report (traced/wall_clock-based, aggregated across ranks)\n")
-    parts.append(f"generated: {datetime.now().isoformat(timespec='seconds')}\n")
-    parts.append(f"source directory: {os.path.abspath(run_dir)}\n")
-    parts.append(f"CPU data: {os.path.abspath(cpu_dir)}\n")
-    parts.append(f"GPU data: {os.path.abspath(gpu_dir) if view['gpu_paired'] else '(none)'}\n")
-    parts.append(f"ranks aggregated: {len(rank_keys)} (rank keys: {', '.join(rank_keys)})\n")
-    parts.append(
-        "Showing user code + MPI calls only"
-        + (", GPU-API/runtime calls included\n" if show_gpu_api else " (pass --show-gpu-api to also show GPU-API/runtime calls)\n")
+    header = (
+        "Call tree report (traced/wall_clock-based, aggregated across ranks)\n"
+        f"generated: {datetime.now().isoformat(timespec='seconds')}\n"
+        f"source directory: {os.path.abspath(run_dir)}\n"
+        f"CPU data: {os.path.abspath(cpu_dir)}\n"
+        f"GPU data: {os.path.abspath(gpu_dir) if view['gpu_paired'] else '(none)'}\n"
+        f"ranks aggregated: {len(rank_keys)} (rank keys: {', '.join(rank_keys)})\n"
+        + (
+            "Showing user code + MPI calls only"
+            + (", GPU-API/runtime calls included\n" if show_gpu_api else " (pass --show-gpu-api to also show GPU-API/runtime calls)\n")
+        )
+        + f"max depth: {max_depth if max_depth is not None else 'unlimited'}\n"
+        + "\n"
     )
-    parts.append(f"max depth: {max_depth if max_depth is not None else 'unlimited'}\n")
-    parts.append("\n")
+    sections = [(None, view["tree_text"])]
+    if view["fallback_text"]:
+        sections.append((None, view["fallback_text"]))
 
-    parts.append(view["tree_text"])
-    parts.append(view["fallback_text"])
-
-    parts.append(
+    footer = (
         "Caveats:\n"
         "  - Every row is aggregated across all ranks (not one call tree per rank): CALLS and\n"
         "    TOTAL-AVG(s) are plain averages; SELF gets a full avg/std_dev/min/max load-balance\n"
@@ -126,10 +128,7 @@ def write_report(run_dir, dest_path, max_depth=None, show_gpu_api=False):
         "    see extract_calltree.py for the sampling-based tool that shows real call depth.\n"
     )
 
-    report = "".join(parts)
-    with open(dest_path, "w") as f:
-        f.write(report)
-    return report
+    return write_report_file(dest_path, render_report(header, sections, footer))
 
 
 def main(argv=None):

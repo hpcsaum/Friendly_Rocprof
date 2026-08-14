@@ -26,6 +26,7 @@ from stage5_fused_hotspots_table import FUSED_HOTSPOTS_COLUMNS, build_combined_v
 from stage5_gpu_hotspots_table import GPU_HOTSPOTS_COLUMNS
 from stage5_load_imbalance_table import compute_load_imbalance, load_imbalance_columns
 from stage5_table_render import render_table, select_entries
+from stage6_report_builder import render_report, write_report_file
 
 HELP_BLURB = """\
 Reads the output of a profile_hotspots.sh run (or a matching pair of
@@ -89,125 +90,108 @@ def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=
         show_all=show_all, threshold_unit="of total runtime",
     )
 
-    parts = []
-    parts.append("rocprof combined (CPU + GPU) hotspots report\n")
-    parts.append(f"generated: {datetime.now().isoformat(timespec='seconds')}\n")
-    parts.append(f"CPU run directory (rocprof-sys): {os.path.abspath(rocprof_sys_dir)}\n")
-    parts.append(f"  executable: {cpu_run_info['executable'] or ''}\n")
-    parts.append(f"  run date/time: {cpu_run_info['run_datetime'] or ''}\n")
-    parts.append(f"  total runtime: {cpu_run_info['total_runtime'] or ''}\n")
-    parts.append(f"  MPI ranks: {cpu_run_info['num_ranks'] if cpu_run_info['num_ranks'] is not None else ''}\n")
-    parts.append(f"GPU run directory (rocprofv3): {os.path.abspath(rocprofv3_dir)}\n")
-    parts.append(f"  executable: {gpu_run_info['executable'] or ''}\n")
-    parts.append(f"  run date/time: {gpu_run_info['run_datetime'] or ''}\n")
-    parts.append(f"  total runtime: {gpu_run_info['total_runtime'] or ''}\n")
-    parts.append(f"  MPI ranks: {gpu_run_info['num_ranks'] if gpu_run_info['num_ranks'] is not None else ''}\n")
-    parts.append(
-        "Note: the two directories above are not checked against each other "
-        "(same executable/test case/run) -- that's the caller's responsibility.\n"
-    )
-    parts.append("\n")
-    if unfiltered:
-        parts.append(
-            "Ranked by inclusive (total) time -- a function that just calls other "
-            "functions can still rank high. Drop --unfiltered for the self-time view.\n"
-        )
-    else:
-        parts.append(
-            "Ranked by self time (each function/kernel's own work, not counting time "
-            "spent in what it calls) -- pass-through CPU functions fall out of the "
-            "ranking on their own; GPU kernels are unaffected (already leaf events). "
-            "Pass --unfiltered for the old inclusive/cumulative-time view.\n"
-        )
-    parts.append("\n")
-    parts.append("Combined-pool arithmetic (see the footer note below for why):\n")
-    parts.append(f"  CPU run raw total:              {info['cpu_total_raw']:.6f} sec\n")
-    parts.append(f"  - GPU sync-wait time:           {info['gpu_api_overhead_sec']:.6f} sec\n")
-    parts.append(f"  = CPU pure-compute total:        {info['cpu_pure_total_sec']:.6f} sec\n")
-    parts.append(f"  + GPU kernel total:              {info['gpu_total_sec']:.6f} sec\n")
-    parts.append(f"  = combined pool:                 {info['combined_total_sec']:.6f} sec\n")
-    parts.append("\n")
-
-    parts.append(f"=== 1. Combined hotspots (fused CPU+GPU ranking) -- showing {fused_desc} ===\n")
-    parts.append("%total here is each entry's share of the combined pool above (double-counting-corrected).\n")
-    parts.append(render_table(FUSED_HOTSPOTS_COLUMNS, fused_selected))
-    parts.append(
-        "Note: this fused ranking excludes CPU-side time spent blocked in "
-        "hipStreamSynchronize/hipDeviceSynchronize, to avoid counting GPU execution time "
-        "twice -- once as CPU-side wait time, once as GPU-side kernel time. See table 4 "
-        "below for that (and every other GPU-API call rocprof-sys saw).\n"
-    )
-    parts.append("\n")
-
-    parts.append(f"=== 2. CPU compute hotspots (rocprof-sys run) -- showing {cpu_desc} ===\n")
-    parts.append("%total here is each entry's share of the CPU run's OWN total (not the combined pool).\n")
-    parts.append(render_table(CPU_HOTSPOTS_COLUMNS, cpu_selected))
-    parts.append("\n")
-
-    parts.append(f"=== 3. GPU kernel hotspots (rocprofv3 run) -- showing {gpu_desc} ===\n")
-    parts.append("%total here is each entry's share of the GPU run's OWN total (not the combined pool).\n")
-    parts.append(render_table(GPU_HOTSPOTS_COLUMNS, gpu_selected))
-    parts.append("\n")
-
     gpu_api_selected, gpu_api_desc = select_entries(
         cpu_gpu_api_entries, rank_field="self_sum", threshold_field="pct_total", top=top, threshold=threshold,
         show_all=show_all, threshold_unit="of total runtime",
         prepare=_prepare_pct_total("self_sum", info["cpu_total_raw"]),
     )
-    parts.append(f"=== 4. GPU API / launch overhead (rocprof-sys run) -- showing {gpu_api_desc} ===\n")
-    parts.append(
-        "%total here is each entry's share of the CPU run's OWN total. Every ROCm-library "
-        "call rocprof-sys saw is listed here, for digging in -- but only "
-        "hipStreamSynchronize/hipDeviceSynchronize (the two calls that actually mean \"block "
-        "the CPU until the GPU catches up\") are subtracted out of table 1's combined pool; "
-        "the rest (e.g. hsakmt_ioctl, rocr::* runtime-internal busy-wait/event threads) is "
-        "shown here but deliberately left out of that subtraction -- see the header note.\n"
-    )
-    parts.append(render_table(CPU_HOTSPOTS_COLUMNS, gpu_api_selected))
-    parts.append("\n")
 
     cpu_per_rank, cpu_imbalance_scanned = stage4_rocprofsys_flat.aggregate_per_rank(rocprof_sys_dir, unfiltered=unfiltered)
     if len(cpu_imbalance_scanned) < 2:
-        parts.append(
+        cpu_imbalance_title, cpu_imbalance_body = None, (
             "=== 5. CPU load imbalance across ranks (rocprof-sys run) -- skipped: only "
             f"{len(cpu_imbalance_scanned)} rank/file found, need at least 2 to compare ===\n"
         )
     else:
         cpu_imbalance_selected, cpu_imbalance_desc = compute_load_imbalance(cpu_per_rank, top, threshold, show_all)
-        parts.append(
+        cpu_imbalance_title = (
             f"=== 5. CPU load imbalance across {len(cpu_imbalance_scanned)} ranks (rocprof-sys run) "
             f"-- showing {cpu_imbalance_desc} ===\n"
         )
-        parts.append(
+        cpu_imbalance_body = (
             ("Each function's own inclusive" if unfiltered else "Each function's own self")
             + " time on each rank, compared across ranks -- a rank "
             "that never called a function counts as 0.0 for that rank, not omitted.\n"
-        )
-        parts.append(render_table(load_imbalance_columns(), cpu_imbalance_selected))
-    parts.append("\n")
+        ) + render_table(load_imbalance_columns(), cpu_imbalance_selected)
 
     gpu_per_rank, gpu_imbalance_scanned = stage4_rocprofv3.aggregate_per_rank(rocprofv3_dir)
     if len(gpu_imbalance_scanned) < 2:
-        parts.append(
+        gpu_imbalance_title, gpu_imbalance_body = None, (
             "=== 6. GPU kernel load imbalance across ranks (rocprofv3 run) -- skipped: only "
             f"{len(gpu_imbalance_scanned)} rank/file found, need at least 2 to compare ===\n"
         )
     else:
         gpu_imbalance_selected, gpu_imbalance_desc = compute_load_imbalance(gpu_per_rank, top, threshold, show_all)
-        parts.append(
+        gpu_imbalance_title = (
             f"=== 6. GPU kernel load imbalance across {len(gpu_imbalance_scanned)} ranks (rocprofv3 run) "
             f"-- showing {gpu_imbalance_desc} ===\n"
         )
-        parts.append(
+        gpu_imbalance_body = (
             "Each kernel's own total time on each rank, compared across ranks -- a rank "
             "that never launched a kernel counts as 0.0 for that rank, not omitted.\n"
-        )
-        parts.append(render_table(load_imbalance_columns(item_label="kernel"), gpu_imbalance_selected))
+        ) + render_table(load_imbalance_columns(item_label="kernel"), gpu_imbalance_selected)
 
-    report = "".join(parts)
-    with open(dest_path, "w") as f:
-        f.write(report)
-    return report
+    header = (
+        "rocprof combined (CPU + GPU) hotspots report\n"
+        f"generated: {datetime.now().isoformat(timespec='seconds')}\n"
+        f"CPU run directory (rocprof-sys): {os.path.abspath(rocprof_sys_dir)}\n"
+        f"  executable: {cpu_run_info['executable'] or ''}\n"
+        f"  run date/time: {cpu_run_info['run_datetime'] or ''}\n"
+        f"  total runtime: {cpu_run_info['total_runtime'] or ''}\n"
+        f"  MPI ranks: {cpu_run_info['num_ranks'] if cpu_run_info['num_ranks'] is not None else ''}\n"
+        f"GPU run directory (rocprofv3): {os.path.abspath(rocprofv3_dir)}\n"
+        f"  executable: {gpu_run_info['executable'] or ''}\n"
+        f"  run date/time: {gpu_run_info['run_datetime'] or ''}\n"
+        f"  total runtime: {gpu_run_info['total_runtime'] or ''}\n"
+        f"  MPI ranks: {gpu_run_info['num_ranks'] if gpu_run_info['num_ranks'] is not None else ''}\n"
+        "Note: the two directories above are not checked against each other "
+        "(same executable/test case/run) -- that's the caller's responsibility.\n"
+        "\n"
+        + (
+            "Ranked by inclusive (total) time -- a function that just calls other "
+            "functions can still rank high. Drop --unfiltered for the self-time view.\n"
+            if unfiltered else
+            "Ranked by self time (each function/kernel's own work, not counting time "
+            "spent in what it calls) -- pass-through CPU functions fall out of the "
+            "ranking on their own; GPU kernels are unaffected (already leaf events). "
+            "Pass --unfiltered for the old inclusive/cumulative-time view.\n"
+        )
+        + "\n"
+        "Combined-pool arithmetic (see the footer note below for why):\n"
+        f"  CPU run raw total:              {info['cpu_total_raw']:.6f} sec\n"
+        f"  - GPU sync-wait time:           {info['gpu_api_overhead_sec']:.6f} sec\n"
+        f"  = CPU pure-compute total:        {info['cpu_pure_total_sec']:.6f} sec\n"
+        f"  + GPU kernel total:              {info['gpu_total_sec']:.6f} sec\n"
+        f"  = combined pool:                 {info['combined_total_sec']:.6f} sec\n"
+        "\n"
+    )
+    sections = [
+        (f"=== 1. Combined hotspots (fused CPU+GPU ranking) -- showing {fused_desc} ===\n",
+         "%total here is each entry's share of the combined pool above (double-counting-corrected).\n"
+         + render_table(FUSED_HOTSPOTS_COLUMNS, fused_selected)
+         + "Note: this fused ranking excludes CPU-side time spent blocked in "
+         "hipStreamSynchronize/hipDeviceSynchronize, to avoid counting GPU execution time "
+         "twice -- once as CPU-side wait time, once as GPU-side kernel time. See table 4 "
+         "below for that (and every other GPU-API call rocprof-sys saw).\n"),
+        (f"=== 2. CPU compute hotspots (rocprof-sys run) -- showing {cpu_desc} ===\n",
+         "%total here is each entry's share of the CPU run's OWN total (not the combined pool).\n"
+         + render_table(CPU_HOTSPOTS_COLUMNS, cpu_selected)),
+        (f"=== 3. GPU kernel hotspots (rocprofv3 run) -- showing {gpu_desc} ===\n",
+         "%total here is each entry's share of the GPU run's OWN total (not the combined pool).\n"
+         + render_table(GPU_HOTSPOTS_COLUMNS, gpu_selected)),
+        (f"=== 4. GPU API / launch overhead (rocprof-sys run) -- showing {gpu_api_desc} ===\n",
+         "%total here is each entry's share of the CPU run's OWN total. Every ROCm-library "
+         "call rocprof-sys saw is listed here, for digging in -- but only "
+         "hipStreamSynchronize/hipDeviceSynchronize (the two calls that actually mean \"block "
+         "the CPU until the GPU catches up\") are subtracted out of table 1's combined pool; "
+         "the rest (e.g. hsakmt_ioctl, rocr::* runtime-internal busy-wait/event threads) is "
+         "shown here but deliberately left out of that subtraction -- see the header note.\n"
+         + render_table(CPU_HOTSPOTS_COLUMNS, gpu_api_selected)),
+        (cpu_imbalance_title, cpu_imbalance_body),
+        (gpu_imbalance_title, gpu_imbalance_body),
+    ]
+
+    return write_report_file(dest_path, render_report(header, sections))
 
 
 def main(argv=None):

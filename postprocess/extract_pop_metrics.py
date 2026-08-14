@@ -17,6 +17,7 @@ from datetime import datetime
 
 from stage3_rocprofsys import load_default_patterns
 from stage5_pop_metrics_table import compute_run_metrics, format_metrics_table, run_label
+from stage6_report_builder import render_report, write_report_file
 
 TAG_DEFS = load_default_patterns()
 
@@ -43,86 +44,87 @@ def write_report(run_dirs, dest_path, scaling=None):
     all_metrics = [compute_run_metrics(d) for d in run_dirs]
     multi_run = len(all_metrics) > 1
 
-    parts = []
-    parts.append("POP-inspired parallel efficiency metrics report\n")
-    parts.append(f"generated: {datetime.now().isoformat(timespec='seconds')}\n")
-    parts.append(f"reference run: {os.path.abspath(run_dirs[0])}\n")
-    for m in all_metrics:
-        parts.append(f"  - {run_label(m['run_dir'])}: {m['num_ranks']} rank(s)")
-        parts.append(", CPU+GPU combined pool" if m["gpu_dir"] else ", CPU-only pool")
-        parts.append("\n")
-    parts.append("\n")
+    header = (
+        "POP-inspired parallel efficiency metrics report\n"
+        f"generated: {datetime.now().isoformat(timespec='seconds')}\n"
+        f"reference run: {os.path.abspath(run_dirs[0])}\n"
+        + "".join(
+            f"  - {run_label(m['run_dir'])}: {m['num_ranks']} rank(s)"
+            + (", CPU+GPU combined pool" if m["gpu_dir"] else ", CPU-only pool")
+            + "\n"
+            for m in all_metrics
+        )
+        + "\n"
+    )
 
     table_text, show_gpu_cols, show_gpu_eff = format_metrics_table(all_metrics, scaling)
-    parts.append(table_text)
+    sections = [(None, table_text)]
 
-    parts.append("\n")
-    parts.append("Metric explanation:\n")
-    parts.append("  - LB    = avg / max useful compute time across ranks\n")
-    parts.append(
+    footer = "Metric explanation:\n"
+    footer += "  - LB    = avg / max useful compute time across ranks\n"
+    footer += (
         "  - CommE = max useful compute time / max total elapsed time across ranks "
         "(direct formula, not Dimemas's Serialisation x Transfer split -- see docs/pop_metrics_reference.md)\n"
     )
-    parts.append("  - PE    = LB x CommE\n")
+    footer += "  - PE    = LB x CommE\n"
     if show_gpu_cols:
-        parts.append(
+        footer += (
             "  - GPU-Util = max GPU busy time / max total elapsed time across ranks -- NOT an official POP "
             "metric; the GPU's raw share of wall-clock time, INCLUDING any idling caused by growing "
             "communication overhead -- unlike GPU-Off, this drops when CommE drops too, since a "
             "comm-starved GPU is genuinely less utilized, whatever the root cause\n"
         )
-        parts.append(
+        footer += (
             "  - GPU-Off = 1 - (max non-offloaded CPU compute time / max total elapsed time) across ranks -- "
             "NOT an official POP metric; how much of the critical-path rank's time is still CPU-only "
             "compute (serial, not-yet-ported, or not-worth-porting code) -- deliberately excludes "
             "communication time, already covered by CommE\n"
         )
-        parts.append(
+        footer += (
             "  - GPU-LB = avg / max GPU busy time across ranks -- NOT an official POP metric; load balance "
             "between GPUs specifically, separate from LB's whole CPU+GPU pool\n"
         )
     if multi_run:
         if scaling == "weak":
-            parts.append(
+            footer += (
                 "  - CompE = avg per-rank useful compute time (reference) / avg per-rank useful compute time (this run) "
                 "-- weak scaling's total is expected to grow with rank count even at perfect efficiency, "
                 "so only the average is meaningful\n"
             )
         else:
-            parts.append(
+            footer += (
                 "  - CompE = total useful compute time (reference) / total useful compute time (this run), summed "
                 "across ranks -- strong scaling's ideal keeps this total constant as rank count grows\n"
             )
-        parts.append("  - GE    = PE x CompE\n")
+        footer += "  - GE    = PE x CompE\n"
     else:
-        parts.append(
+        footer += (
             "  - CompE, GE need a scaling study (2+ directories, compared against the first as reference) "
             "-- pass additional directories to see them\n"
         )
     if show_gpu_eff:
         if scaling == "weak":
-            parts.append(
+            footer += (
                 "  - GPU-Eff = avg per-rank GPU busy time (reference) / avg per-rank GPU busy time (this run) -- "
                 "NOT an official POP metric; isolates whether it's specifically the GPU's own contribution "
                 "that stopped scaling, as opposed to CompE's whole-pool view\n"
             )
         else:
-            parts.append(
+            footer += (
                 "  - GPU-Eff = total GPU busy time (reference) / total GPU busy time (this run), summed across "
                 "ranks -- NOT an official POP metric; a low value in strong scaling flags the per-rank "
                 "problem size shrinking below what keeps the GPU saturated\n"
             )
-    parts.append("\n")
-
-    parts.append(
+    footer += "\n"
+    footer += (
         "Not computed (see docs/pop_metrics_reference.md for why):\n"
         "  - Serialisation Efficiency / Transfer Efficiency: need a Dimemas-style ideal-network\n"
         "    simulation, not part of this toolchain.\n"
         "  - Instruction Scaling / IPC Scaling: need PAPI hardware counters, not present in\n"
         "    rocprof-sys's output unless ROCPROFSYS_PAPI_EVENTS was explicitly configured.\n"
     )
-    parts.append("\n")
-    parts.append(
+    footer += "\n"
+    footer += (
         "Caveats:\n"
         "  - Communication time is classified by function-name prefix (case-insensitive: "
         f"{', '.join(TAG_DEFS['mpi_territory']['prefixes'])}) or Fortran-shim suffix "
@@ -134,10 +136,7 @@ def write_report(run_dirs, dest_path, scaling=None):
         "    sorted-filename order between the two directories -- not cross-checked.\n"
     )
 
-    report = "".join(parts)
-    with open(dest_path, "w") as f:
-        f.write(report)
-    return report
+    return write_report_file(dest_path, render_report(header, sections, footer))
 
 
 def main(argv=None):

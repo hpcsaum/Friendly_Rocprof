@@ -208,17 +208,24 @@ class AttachAndRenderGpuKernelsTests(unittest.TestCase):
         fallback = tr.attach_and_render_gpu_kernels(flat, gpu_per_rank, gpu_dir, rank_keys, NEVER_PRUNED, node_values)
         self.assertIn("=== GPU kernels (rocprofv3)", fallback)
         self.assertIn("JacobiIterationKernel", fallback)
+        # ends in exactly the table's own trailing newline -- no self-appended blank line;
+        # any blank line between sections is the caller's (render_report()'s) job now.
+        self.assertFalse(fallback.endswith("\n\n"))
+        self.assertTrue(fallback.endswith("\n"))
 
 
 class RenderCalltreeTextTests(unittest.TestCase):
-    def test_renders_tree_with_trailing_blank_line(self):
+    def test_renders_tree_ending_in_single_newline(self):
         main = make_row("main", count=1, self_sum=0.0, total_sum=10.0)
         child = make_row("child", parent=main, count=1, self_sum=4.0, total_sum=4.0)
         rows = [main, child]
         text = tr.render_calltree_text([main], rows, None, NEVER_PRUNED, DEFAULT_NODE_VALUES)
         self.assertIn("main", text)
         self.assertIn("child", text)
-        self.assertTrue(text.endswith("\n\n"))  # the table's own trailing newline + the blank-line separator
+        # ends in exactly the table's own trailing newline -- no self-appended blank line;
+        # any blank line between sections is the caller's (render_report()'s) job now.
+        self.assertFalse(text.endswith("\n\n"))
+        self.assertTrue(text.endswith("\n"))
 
     def test_collapses_children_hides_grandchildren(self):
         main = make_row("main")
