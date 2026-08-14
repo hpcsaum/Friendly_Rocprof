@@ -39,6 +39,7 @@
 | 2026-08-14 | Plan 2.6: wired the stage-3 engine into `extract_CPU_hotspots.py`, `extract_calltree.py`, `extract_calltree_traced.py`, and `extract_pop_metrics.py` -- roadmap step 5, the first step allowed to change real report output; found and fixed 4 real bugs during implementation/verification (disabled `mpi_territory`'s untethered-root generalization as unsafe, fixed `structural_drop_tags` not cascading to descendants, restored a dropped `__tgt_target_kernel` pattern, fixed `gpu_api`'s prefix-vs-substring mismatch) -- see full real-data diff accounting below |
 | 2026-08-14 | Plan 2.7: built `stage4_rocprofsys_flat.py`/`stage4_rocprofv3.py` and a generic stage-5 backend (`stage5_table_render.py`) shared by every hotspots/load-imbalance/fused/POP-metrics table -- roadmap step 6; fixed the nondeterministic tie-order bug flagged (not fixed) in plan 2.3, as part of relocating `compute_load_imbalance()`; also promoted `tree_render.py` to stage 5 (renamed `stage5_tree_render.py`) and gave each calltree tool its own stage-5 companion module -- see full design/rename/real-data accounting below |
 | 2026-08-14 | Plan 2.8: built `stage6_report_builder.py` (a genuinely generic `render_report(header, sections, footer)` backend, not a thin `write_report_file()`/`section()` pair) and `stage6_run_metadata.py`, and rewrote all 6 report tools' `write_report()` as compute/assemble/write composers over them -- roadmap step 7; fixed `stage5_tree_render.py`'s two render functions self-appending a trailing blank line so both calltree tools could adopt the same generic backend in this same plan instead of being deferred -- see full design/real-data accounting below |
+| 2026-08-14 | Plan 2.9: added `extract_calltree.py`'s and `extract_pop_metrics.py`'s two missing `HELP_BLURB` gaps identified by §10's rule-5 redirect precondition audit -- roadmap step 8, additive only, no report output changed |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -1495,4 +1496,37 @@ Real-data verification across all 6 `test_apps/results/` directories: `calltree.
 `hotspots.txt` differed in all 6 dirs in exactly one line each -- the one accepted trailing blank
 line added after the load-imbalance section, per point 4 above. No other differences of any kind
 in any of the 24 regenerated files.
+
+## 2026-08-14 — Plan 2.9: HELP_BLURB precondition updates (roadmap step 8)
+
+Eighth implementation step, and the smallest so far: `docs/plans/2.1-postprocess-consolidation-
+refactor.md` §10's own precondition audit for its "redirect general/methodology caveats to
+`--help`" rule (step 9) had already checked every tool's `Caveats:` footer against its own
+`HELP_BLURB` line-by-line and found exactly two gaps, named explicitly there. This step closes
+both, additively, without touching any report's actual output:
+
+- **`extract_calltree.py`** -- `HELP_BLURB` named the four `--show-*` noise-hiding flags but not
+  *how* each tier is hidden by default. Added two sentences to its existing flags paragraph,
+  reusing the report's own `Caveats:` wording verbatim so the two stay consistent: which
+  tree-surgery action applies to which tier (wrapper frames spliced out, MPI internals collapsed,
+  GPU-API/compiler-runtime pruned), and the compiler-runtime tier being built from Cray's Fortran
+  runtime specifically, not verified against other compilers. `extract_calltree_traced.py` has its
+  own, already-complete `HELP_BLURB` and wasn't in scope -- the audit named only
+  `extract_calltree.py`'s two gaps.
+- **`extract_pop_metrics.py`** -- its `Caveats:` footer (the MPI-classification-is-heuristic
+  caveat, the CPU<->GPU per-rank pairing assumption) wasn't in `HELP_BLURB` at all. Added a new
+  paragraph covering both. Since the footer's MPI-prefix sentence is built dynamically from
+  `TAG_DEFS` at report time rather than hardcoded, `HELP_BLURB` became an f-string embedding the
+  same live `TAG_DEFS['mpi_territory']['prefixes']`/`['suffixes']` values, so the two can never
+  silently drift apart the way two independently-hand-typed prefix lists eventually would. Its
+  `Not computed:` block was already in `HELP_BLURB` almost verbatim (no change needed), and its
+  `Metric explanation:` block is a per-shown-column legend rather than general background, so
+  rule 5 doesn't apply to it.
+
+No test currently asserts on `HELP_BLURB` content, and none of this step's changes touch
+`write_report()` in either file, so verification was a manual read-through of both tools' rendered
+`-h` output (confirming natural wrapping at the file's existing ~75-column convention) plus the
+full test suite (369 tests, unchanged, confirming the f-string conversion didn't break import).
+`git status` on all 6 `test_apps/results/` directories came back empty -- no report output changed,
+exactly as expected for an additive, `--help`-only step.
 

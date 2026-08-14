@@ -21,7 +21,7 @@ from stage6_report_builder import render_report, write_report_file
 
 TAG_DEFS = load_default_patterns()
 
-HELP_BLURB = """\
+HELP_BLURB = f"""\
 Reads one or more rocprof-sys (optionally paired with rocprofv3) output
 directories from the same program and computes POP-inspired parallel
 efficiency metrics: Load Balance, Communication Efficiency, and Parallel
@@ -33,6 +33,14 @@ This does NOT compute every POP metric -- Serialisation/Transfer Efficiency
 need a Dimemas-style network simulation, and Instruction/IPC Scaling need
 PAPI hardware counters; neither is available from rocprof-sys's own output.
 See docs/pop_metrics_reference.md for the full picture.
+
+Communication time is classified by function-name prefix (case-insensitive:
+{', '.join(TAG_DEFS['mpi_territory']['prefixes'])}) or Fortran-shim suffix
+({', '.join(TAG_DEFS['mpi_territory']['suffixes'])}) -- MPICH/Cray-MPICH prefixes are confirmed from real
+captured data; the Open MPI prefixes are a probable addition, not yet
+confirmed against a real Open MPI run. CPU<->GPU per-rank pairing (when a
+rocprofv3 directory is given) assumes matching sorted-filename order
+between the two directories -- not cross-checked.
 
 Under the hood, this parses output written by AMD's rocprof-sys (and,
 optionally, rocprofv3) -- see

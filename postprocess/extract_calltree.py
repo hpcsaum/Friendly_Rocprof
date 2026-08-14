@@ -60,7 +60,13 @@ machinery, GPU/offload-runtime internals, the compiler runtime's allocator
 internals, and deep MPI-implementation internals. Four independent flags
 reveal each of these, hidden by default: --show-gpu-api,
 --show-rocprofsys-internals, --show-mpi-internals, --show-compiler-runtime
-(or --show-all-internals for all four at once).
+(or --show-all-internals for all four at once). Wrapper frames are spliced
+out (children reparented, not deleted); MPI internals are collapsed (the
+first real MPI frame is shown, its own internals are not); GPU-API and
+compiler-runtime noise are pruned (whole subtree hidden). The compiler-
+runtime tier was built from Cray's Fortran runtime specifically -- not
+necessarily complete for other compilers, since none have been observed in
+this project's data so far.
 
 When a paired rocprofv3 directory is found, real GPU kernel data is nested
 into the tree at the CPU subroutine that actually contains it -- Cray's
