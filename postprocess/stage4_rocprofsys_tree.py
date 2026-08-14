@@ -50,8 +50,10 @@ def make_kernel_node(label, per_rank):
     merge_rank_trees()) so tree_render.render_node()/aggregate_node_stats() can treat
     it identically, plus "static_children" for its own kernel-name breakdown
     (a merged real node never has populated static_children until
-    attach_kernel_summaries() adds one)."""
-    return {"label": label, "per_rank": per_rank, "gpu": False, "static_children": []}
+    attach_kernel_summaries() adds one). Empty "tags"/"structural_drop_tags" --
+    a synthetic kernel-summary node is never itself subject to stage3_rocprofsys
+    noise tagging, so it's never pruned/collapsed."""
+    return {"label": label, "per_rank": per_rank, "tags": set(), "structural_drop_tags": set(), "static_children": []}
 
 
 def nearest_visible_ancestor(row, is_pruned):
@@ -67,7 +69,7 @@ def nearest_visible_ancestor(row, is_pruned):
 def merge_rank_trees(ranks):
     """Merges N per-rank call trees (as returned by a tool's own
     load_rank_trees(): a list of (rank_key, rows, roots) tuples, each rows
-    entry carrying "parent"/"label"/"count"/"self_sum"/"sum"/"gpu"/etc.) into
+    entry carrying "parent"/"label"/"count"/"self_sum"/"sum"/"tags"/etc.) into
     ONE call tree -- a global view instead of one tree per rank.
 
     Matching is purely structural, by label at each tree level, walked
@@ -85,10 +87,10 @@ def merge_rank_trees(ranks):
     Returns a list of merged root nodes. Each merged node has: "label",
     "parent" (a merged node or None -- same shape real rows use, so
     nearest_visible_ancestor() works unchanged), "children" ({label: merged
-    child}, insertion-ordered by first-seen rank), "gpu"/"compiler_runtime"/
-    "mpi_territory" (True if ANY contributing rank classified it as such --
-    these are properties of a code location, not really rank-dependent, so
-    OR-ing is a safe, conservative merge), and "per_rank"
+    child}, insertion-ordered by first-seen rank), "tags"/"structural_drop_tags"
+    (the union of every contributing rank's own stage3_rocprofsys tag sets for
+    this code location -- these are properties of a code location, not really
+    rank-dependent, so union is a safe, conservative merge), and "per_rank"
     ({rank_key: {"count", "self_sum", "sum"}}, one entry per rank that had a
     row at this exact tree position).
     """
@@ -106,14 +108,13 @@ def merge_rank_trees(ranks):
             if merged_node is None:
                 merged_node = {
                     "label": row["label"], "parent": merged_parent, "children": {},
-                    "gpu": False, "compiler_runtime": False, "mpi_territory": False,
+                    "tags": set(), "structural_drop_tags": set(),
                     "per_rank": {}, "static_children": [],
                 }
                 merged_siblings[row["label"]] = merged_node
 
-            merged_node["gpu"] = merged_node["gpu"] or bool(row.get("gpu"))
-            merged_node["compiler_runtime"] = merged_node["compiler_runtime"] or bool(row.get("compiler_runtime"))
-            merged_node["mpi_territory"] = merged_node["mpi_territory"] or bool(row.get("mpi_territory"))
+            merged_node["tags"] |= row.get("tags", set())
+            merged_node["structural_drop_tags"] |= row.get("structural_drop_tags", set())
 
             entry = merged_node["per_rank"].setdefault(rank_key, {"count": 0, "self_sum": 0.0, "sum": 0.0})
             entry["count"] += row["count"]

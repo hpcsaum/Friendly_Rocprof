@@ -1,12 +1,13 @@
 {
   "gpu_api": {
-    "prefixes": ["hip", "hsa", "roctx", "kfd", "rocdecode", "rocjpeg", "rocr"],
     "substrings": [
+      "hip", "hsa", "roctx", "kfd", "rocdecode", "rocjpeg", "rocr",
       "clang::", "llvm::", "amd_comgr", "rocprofiler::", "cray_acc",
-      "hiphardwaredevice", "present_table", "pluginmanager::", "devicety::",
-      "llvm::omp::target::plugin::"
+      "hiphardwaredevice", "present_table", "__tgt_target_kernel",
+      "pluginmanager::", "devicety::", "llvm::omp::target::plugin::"
     ],
     "suffixes": [".kd"],
+    "filename_substrings": ["roctracer", "hsa"],
     "ancestor_for_thread_roots": true,
     "first_real_descendant_skip_tag": "wrapper_noise"
   },
@@ -21,8 +22,7 @@
   "mpi_territory": {
     "prefixes": ["mpi_", "pmpi_", "mpir_", "mpid_", "mpidi_", "ompi_", "opal_", "orte_"],
     "suffixes": ["_f08_", "_f08ts_"],
-    "ancestor_for_thread_roots": true,
-    "first_real_descendant_skip_tag": "wrapper_noise"
+    "ancestor_for_thread_roots": true
   },
   "compiler_runtime_noise": {
     "substrings": [
@@ -31,7 +31,7 @@
       "__default_morecore", "sbrk", "_fwf", "_xfer_iolist"
     ]
   },
-  "wrapper_branch_contamination": {
+  "wrapper_branch_noise": {
     "sibling_group_source_tag": "wrapper_noise"
   }
 }

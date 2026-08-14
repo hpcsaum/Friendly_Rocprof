@@ -19,16 +19,9 @@ from datetime import datetime
 import extract_CPU_hotspots as cpu_tool
 import extract_GPU_hotspots as gpu_tool
 from stage1_run_dirs import resolve_run_dirs
+from stage3_rocprofsys import load_default_patterns
 
-# MPICH / Cray-MPICH function-name prefixes (plus a "most probable" Open MPI
-# addition), shared with extract_CPU_hotspots.py -- see its own definition
-# for the full rationale. Matched case-insensitively
-# (label.lower().startswith(...)) against an all-lowercase tuple, not the
-# previous case-sensitive uppercase-only comparison this file used to have,
-# which only happened to work because every MPI symbol observed in real data
-# so far is uppercase-prefixed -- a differently-cased symbol would have
-# silently been undercounted as compute instead of communication.
-MPI_PREFIXES = cpu_tool.MPI_PREFIXES
+TAG_DEFS = load_default_patterns()
 
 # The two HIP calls that mean "block the CPU until the GPU catches up" -- same
 # definition and same self-time-only rationale as extract_hotspots.py's own
@@ -61,15 +54,25 @@ def gpu_sync_wait_per_rank(cpu_dir):
     the two calls that mean "block the CPU until the GPU catches up" (see
     SYNC_WAIT_LABELS). Can't use cpu_tool.aggregate_per_rank() for this: it
     only returns CPU-classified rows (row["gpu"] is False), and both labels
-    here start with "hip" -- one of GPU_API_PREFIXES -- so scan_ranks()
-    classifies them as GPU rows and aggregate_per_rank() silently drops them.
-    Goes one level lower, straight to scan_ranks(), to see those rows at all.
+    here match the shared gpu_api tag, so scan_ranks() classifies them as GPU
+    rows and aggregate_per_rank() silently drops them. Goes one level lower,
+    straight to scan_ranks(), to see those rows at all.
     """
     ranks = cpu_tool.scan_ranks(cpu_dir)
     return [
         sum(row["self_sum"] for row in r["rows"] if row["gpu"] and row["label"] in SYNC_WAIT_LABELS)
         for r in ranks
     ]
+
+
+def mpi_comm_time_per_rank(cpu_dir):
+    """Per-rank self-time sum of every row tagged mpi_territory -- reads the tag
+    scan_ranks() already computed on the real row tree, rather than re-deriving
+    MPI classification from a bare label string a second time. Can't use
+    aggregate_per_rank() for this, same reason gpu_sync_wait_per_rank() can't:
+    it only returns non-GPU rows with the tag already discarded."""
+    ranks = cpu_tool.scan_ranks(cpu_dir)
+    return [sum(row["self_sum"] for row in r["rows"] if row["mpi"]) for r in ranks]
 
 
 def compute_run_metrics(run_dir):
@@ -84,9 +87,10 @@ def compute_run_metrics(run_dir):
     Per rank: total_time is that rank's root/whole-program inclusive wall time
     (max of its inclusive-time dict, same "largest value is the root" heuristic
     scan_ranks() already relies on internally). comm_time is the self-time sum
-    of every label matching MPI_PREFIXES -- self-time, not inclusive, so nested
-    MPI-internal helper calls (e.g. MPIR_Typerep_icopy under a PMPI_Waitall)
-    are counted exactly once, not double-counted with their parent.
+    of every row tagged mpi_territory (see mpi_comm_time_per_rank()) -- self-time,
+    not inclusive, so nested MPI-internal helper calls (e.g. MPIR_Typerep_icopy
+    under a PMPI_Waitall) are counted exactly once, not double-counted with
+    their parent.
 
     When a paired rocprofv3 dir is present, useful_compute follows
     extract_hotspots.py's own combined-pool arithmetic (CPU total minus GPU
@@ -101,8 +105,8 @@ def compute_run_metrics(run_dir):
     rather than risk combining mismatched ranks.
     """
     cpu_dir, gpu_dir = resolve_run_dirs(run_dir)
-    self_per_rank, rank_keys = cpu_tool.aggregate_per_rank(cpu_dir)
-    incl_per_rank, _ = cpu_tool.aggregate_per_rank(cpu_dir, unfiltered=True)
+    incl_per_rank, rank_keys = cpu_tool.aggregate_per_rank(cpu_dir, unfiltered=True)
+    comm_time_per_rank = mpi_comm_time_per_rank(cpu_dir)
 
     if not rank_keys:
         if gpu_dir is not None and gpu_tool.aggregate_per_rank(gpu_dir)[1]:
@@ -130,10 +134,9 @@ def compute_run_metrics(run_dir):
 
     per_rank = []
     for i, rank_key in enumerate(rank_keys):
-        self_totals = self_per_rank[i]
         incl_totals = incl_per_rank[i]
         total_time = max(incl_totals.values()) if incl_totals else 0.0
-        comm_time = sum(v for label, v in self_totals.items() if label.lower().startswith(MPI_PREFIXES))
+        comm_time = comm_time_per_rank[i]
 
         if gpu_per_rank is not None:
             gpu_api_overhead = sync_wait_per_rank[i]
@@ -386,7 +389,8 @@ def write_report(run_dirs, dest_path, scaling=None):
     parts.append(
         "Caveats:\n"
         "  - Communication time is classified by function-name prefix (case-insensitive: "
-        f"{', '.join(MPI_PREFIXES)}) --\n"
+        f"{', '.join(TAG_DEFS['mpi_territory']['prefixes'])}) or Fortran-shim suffix "
+        f"({', '.join(TAG_DEFS['mpi_territory']['suffixes'])}) --\n"
         "    MPICH/Cray-MPICH prefixes are confirmed from real captured data; the Open MPI\n"
         "    prefixes (ompi_/opal_/orte_) are a probable addition, not yet confirmed against a\n"
         "    real Open MPI run, and may need refinement.\n"

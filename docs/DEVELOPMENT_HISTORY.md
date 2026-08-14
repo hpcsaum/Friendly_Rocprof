@@ -36,6 +36,7 @@
 | 2026-08-13 | Plan 2.3: extracted the shared avg/std_dev/min/max-across-ranks math into new `rank_merge_math.py` (`stats_across_ranks()`), used by `calltree_common.aggregate_node_stats()` and both `compute_load_imbalance()` copies -- roadmap step 2; incidentally found and flagged (not fixed, out of scope) a pre-existing nondeterministic tie-order bug in `compute_load_imbalance()`'s sort for labels with byte-identical stats |
 | 2026-08-13 | Plan 2.4: split `calltree_common.py` into `stage4_rocprofsys_tree.py` (tree merge + kernel attachment), `tree_render.py` (rendering), and a new `stage1_run_dirs.py` (`resolve_run_dirs()`, moved out of §8's original "tree_render.py" placement after checking its real callers) -- roadmap step 3; also fixed `extract_pop_metrics.py`'s independent duplicate copy of `resolve_run_dirs()` (§6 finding 1) in the same step |
 | 2026-08-13 | Plan 2.5: built the shared stage-3 noise-classification engine (`stage3_rocprofsys.py`, `default_noise_patterns.json`) in isolation, not wired into any tool yet -- roadmap step 4; implements `splice`'s "fold" self-time-into-new-parent behavior for the first time, and generalizes the untethered-root "inherit from first real descendant" mechanism from GPU-only to any tag (e.g. MPI) |
+| 2026-08-14 | Plan 2.6: wired the stage-3 engine into `extract_CPU_hotspots.py`, `extract_calltree.py`, `extract_calltree_traced.py`, and `extract_pop_metrics.py` -- roadmap step 5, the first step allowed to change real report output; found and fixed 4 real bugs during implementation/verification (disabled `mpi_territory`'s untethered-root generalization as unsafe, fixed `structural_drop_tags` not cascading to descendants, restored a dropped `__tgt_target_kernel` pattern, fixed `gpu_api`'s prefix-vs-substring mismatch) -- see full real-data diff accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -1254,3 +1255,87 @@ it's missing today). Verification here is therefore unit tests only, against syn
 `test_stage3_rocprofsys.py` adds 26 cases, including one closing a real coverage gap found during
 the Explore pass -- no existing test anywhere fed a `_f08ts_`-suffixed label to `is_mpi_territory()`
 directly before this. Full suite: 332 tests, all passing.
+
+## 2026-08-14 — Plan 2.6: wire stage 3 into CPU hotspots, calltree, calltree_traced (roadmap step 5)
+
+Fifth implementation step, and the first one the roadmap allows to change real report output:
+deleted ~15 hand-written noise-classification functions across `extract_CPU_hotspots.py`,
+`extract_calltree.py`, and `extract_calltree_traced.py`, replacing them with the plan-2.5 engine
+plus a small per-tool tag-to-action mapping; migrated `extract_pop_metrics.py`'s inline MPI
+self-time check onto the shared `mpi_territory` tag. Three gaps in the initial approach were caught
+before writing code -- `extract_pop_metrics.py` needed to consume an already-tagged stage-4 output
+(a new `mpi_comm_time_per_rank()`, reading a `row["mpi"]` field `scan_ranks()` now carries, mirroring
+the existing `gpu_sync_wait_per_rank()`/`row["gpu"]` pattern) rather than a second, independent
+bare-string MPI check; `GPU_FILE_HINTS` (filename-based GPU classification) turned out to be the
+same kind of pattern match as everything else, just against a different string, so it became a
+`filename_substrings` field on the tag definition and an optional `filename` argument to
+`tag_rows()` instead of a hard exception; and `compiler_runtime_noise` was enabled in CPU hotspots
+in this step rather than deferred, since real-data verification was happening anyway. Two more
+gaps surfaced while actually wiring plan 2.5's engine in: `mpi_territory`'s self-match and
+ancestor-match need different actions in CPU hotspots (a real `MPI_Init` call stays, an
+ancestor-inherited noise thread drops) but `tag_rows()` merged both into one `row["tags"]` set --
+fixed by adding `row["self_tags"]` (the raw self-match, before ancestor/first-real-descendant
+enrichment); and the 5 tag names used 4 different, unrelated terminal words for no real reason --
+`wrapper_branch_contamination` renamed back to `wrapper_branch_noise` (its pre-refactor name,
+restoring the obvious connection to `wrapper_noise`), while `gpu_api`/`mpi_territory` deliberately
+kept their own precise names rather than being forced into a uniform `_noise` suffix that would be
+actively wrong for their common, non-noise case.
+
+Four additional real bugs were found and fixed during implementation and real-data verification,
+none of which the plan anticipated:
+
+1. **`mpi_territory`'s untethered-root generalization (the master plan's own "finding #2") is
+   unsafe, not just unconfirmed.** The real `mpi_spawned_thread_noise` fixture immediately caught
+   it: the mechanism can't tell a genuine program root (`main`, `parent=None`) from an actual
+   untethered thread-spawn artifact, and a real `main` whose first traced child is `MPI_Init`
+   (true of nearly every MPI program) inherited `mpi_territory` and would have been misclassified.
+   `gpu_api` has the identical theoretical gap but it never manifests in practice. Fixed by not
+   enabling `first_real_descendant_skip_tag` for `mpi_territory` in `default_noise_patterns.json` --
+   the engine mechanism stays generic and tested, just not turned on for this tag. See
+   `docs/plans/2.1-postprocess-consolidation-refactor.md` §9's updated note.
+2. **`structural_drop_tags` isn't cascaded to descendants by `tag_rows()`** -- it's only set on the
+   top of a contaminated subtree; the real `wrapper_contaminated_branch` fixture caught
+   `extract_CPU_hotspots.py`'s per-row check only dropping the top row, not its children. Fixed by
+   routing `scan_ranks()`'s rows through `remove_tagged_subtrees()` first, same as the tree-shaped
+   tools already did; strengthened `tag_rows()`'s own docstring to state this explicitly.
+3. **`__tgt_target_kernel` was silently dropped** when `extract_calltree.py`'s `GPU_NOISE_SUBSTRINGS`
+   was ported into `default_noise_patterns.json` during plan 2.5 -- a plain transcription error,
+   caught by `test_extract_calltree.py`'s existing `test_omp_target_offload_internals_hidden_by_default`.
+   Restored.
+4. **`GPU_API_PREFIXES` (`hip`/`hsa`/`roctx`/`kfd`/`rocdecode`/`rocjpeg`/`rocr`) were placed in the
+   new `"prefixes"` field (`startswith`-only)**, matching `extract_CPU_hotspots.py`'s original
+   strictness -- but `extract_calltree.py`'s own `GPU_NOISE_SUBSTRINGS` had always matched these as
+   substrings anywhere, and real-data diffing on `profile_hotspots_fortran_amd/calltree.txt` showed
+   a real, already-relied-upon wrapper function (`launch_hip_kernel`) losing its GPU classification
+   -- previously spliced/pruned, silently unfiltered after. Moved into `"substrings"` instead,
+   restoring `extract_calltree.py`'s exact prior behavior.
+
+Test rework was much smaller than the master plan's §11 estimate: running every listed
+"needs rework" test class against the wired code, unchanged, first (before touching anything) showed
+almost all of them were already end-to-end (via `write_report()`), testing observable behavior
+rather than the removed internal functions -- they needed no changes at all. Only two test methods
+in the entire suite actually broke (`test_extract_calltree.MpiCollapseTierTests
+.test_open_mpi_prefixes_matched_probably` and `test_extract_calltree_traced.KdArtifactFilteringTests
+.test_is_kernel_descriptor_artifact`, both calling now-deleted functions directly); their coverage
+moved to a new `OpenMpiPrefixTests` class in `test_stage3_rocprofsys.py`, checked against the real
+shipped patterns. Full suite: 320 tests (net -12 from 332: the ~15 deleted unit-level classes minus
+a handful of net-new tests added for the bugs above and the pop_metrics Fortran-shim integration
+case), all passing.
+
+Real-data verification across all 6 `test_apps/results/` directories, with every diff traced to a
+specific, named cause (no unexplained diff shipped):
+- `calltree_traced.txt`: byte-identical in 5 of 6 dirs; one benign change in
+  `profile_hotspots_CPP_amd` (a zero-duration GPU kernel moved out of the "no anchor found"
+  fallback section into a real attachment, a downstream ripple of fix #4 above -- no data lost).
+- `calltree.txt`: byte-identical in all 6 dirs (the pattern superset was already this tool's own
+  behavior; fix #4 above is what kept it that way).
+- `pop_metrics.txt`: only the Caveats footer text changed (now names the Fortran-shim suffix) --
+  zero numeric differences in any of the 6 real captures. The `_f08_`/`_f08ts_` fix is real and
+  verified correct (a new dedicated fixture, `pop_mpi_fortran_shim_suffix`), it just doesn't affect
+  these particular captures.
+- `hotspots.txt`: real differences in all 6 dirs, precisely accounted for by direct label-set
+  comparison against the pre-wiring code: 90 total CPU→GPU bucket reclassifications across the 6
+  dirs (the GPU-pattern-superset unification: `.kd` suffix, `cray_acc`/`hiphardwaredevice`/
+  `rocprofiler::` substrings, `__tgt_target_kernel` and its ancestor-propagated descendants, and
+  fix #4's `hip`/`hsa`/etc. substring-vs-prefix correction) and 2 rows dropped entirely across 2 of
+  the 6 dirs (`_int_malloc`, from enabling `compiler_runtime_noise`).

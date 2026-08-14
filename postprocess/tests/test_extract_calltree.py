@@ -164,18 +164,9 @@ class MpiCollapseTierTests(unittest.TestCase):
         self.assertIn("MPIR_Allreduce_cdesc", report)
         self.assertIn("PMPI_Allreduce", report)
 
-    def test_open_mpi_prefixes_matched_probably(self):
-        # ompi_/opal_/orte_ -- no real Open MPI test_apps capture exists yet,
-        # added as a "most probable" list per real Open MPI naming
-        # conventions. startswith-based, so this must NOT match a Open-MPI
-        # opaque-handle typename appearing mid-string inside rocprof-sys's own
-        # generic GOTCHA-wrapper template signature.
-        self.assertTrue(ct_tool.is_mpi_territory("ompi_request_complete"))
-        self.assertTrue(ct_tool.is_mpi_territory("opal_progress"))
-        self.assertTrue(ct_tool.is_mpi_territory("orte_grpcomm_base_pack"))
-        self.assertFalse(ct_tool.is_mpi_territory(
-            "tim::component::gotcha<101ul, int, ompi_group_t**>::construct"
-        ))
+    # Open MPI prefix matching (ompi_/opal_/orte_) and the GOTCHA-wrapper-template
+    # false-positive guard are now covered directly against the shared engine's
+    # real patterns -- see test_stage3_rocprofsys.py's OpenMpiPrefixTests.
 
 
 class CompilerRuntimeTierTests(unittest.TestCase):

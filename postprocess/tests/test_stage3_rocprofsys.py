@@ -17,6 +17,7 @@ TAG_DEFS = {
     "gpu_api": {
         "prefixes": ["hip"],
         "suffixes": [".kd"],
+        "filename_substrings": ["roctracer", "hsa"],
         "ancestor_for_thread_roots": True,
         "first_real_descendant_skip_tag": "wrapper_noise",
     },
@@ -29,7 +30,7 @@ TAG_DEFS = {
         "ancestor_for_thread_roots": True,
         "first_real_descendant_skip_tag": "wrapper_noise",
     },
-    "wrapper_branch_contamination": {
+    "wrapper_branch_noise": {
         "sibling_group_source_tag": "wrapper_noise",
     },
 }
@@ -70,6 +71,50 @@ class SelfScopeMatchingTests(unittest.TestCase):
         self.assertEqual(row["tags"], set())
 
 
+class FilenameHintTests(unittest.TestCase):
+    def test_row_in_matching_file_tags_positive_regardless_of_label(self):
+        row = make_row("some_unrelated_label")
+        s3.tag_rows([row], TAG_DEFS, filename="/path/to/roctracer-1234.txt")
+        self.assertIn("gpu_api", row["tags"])
+
+    def test_row_in_non_matching_file_unaffected(self):
+        row = make_row("some_unrelated_label")
+        s3.tag_rows([row], TAG_DEFS, filename="/path/to/wall_clock-1234.txt")
+        self.assertEqual(row["tags"], set())
+
+    def test_hint_applies_to_every_row_in_the_file(self):
+        a = make_row("first_label")
+        b = make_row("second_label")
+        s3.tag_rows([a, b], TAG_DEFS, filename="/path/to/hsa-1234.txt")
+        self.assertIn("gpu_api", a["tags"])
+        self.assertIn("gpu_api", b["tags"])
+
+    def test_no_filename_given_is_a_no_op(self):
+        row = make_row("some_unrelated_label")
+        s3.tag_rows([row], TAG_DEFS)
+        self.assertEqual(row["tags"], set())
+
+
+class SelfTagsTests(unittest.TestCase):
+    def test_self_match_appears_in_both_tags_and_self_tags(self):
+        row = make_row("hipLaunchKernel")
+        s3.tag_rows([row], TAG_DEFS)
+        self.assertIn("gpu_api", row["tags"])
+        self.assertIn("gpu_api", row["self_tags"])
+
+    def test_ancestor_only_match_appears_in_tags_not_self_tags(self):
+        ancestor = make_row("mpi_init")
+        thread_root = make_row("start_thread", parent=ancestor, is_thread_root=True)
+        s3.tag_rows([ancestor, thread_root], TAG_DEFS)
+        self.assertIn("mpi_territory", thread_root["tags"])
+        self.assertNotIn("mpi_territory", thread_root["self_tags"])
+
+    def test_filename_hint_counts_as_self_tag(self):
+        row = make_row("some_unrelated_label")
+        s3.tag_rows([row], TAG_DEFS, filename="/path/to/roctracer-1234.txt")
+        self.assertIn("gpu_api", row["self_tags"])
+
+
 class AncestorForThreadRootsTests(unittest.TestCase):
     def test_thread_root_with_gpu_ancestor_tags_positive(self):
         ancestor = make_row("hipLaunchKernel")
@@ -104,8 +149,20 @@ class SiblingGroupTests(unittest.TestCase):
         clean_sibling = make_row("run_simulation", parent=root)
         rows = [root, contaminated_top, buried, clean_sibling]
         s3.tag_rows(rows, TAG_DEFS)
-        self.assertIn("wrapper_branch_contamination", contaminated_top["structural_drop_tags"])
+        self.assertIn("wrapper_branch_noise", contaminated_top["structural_drop_tags"])
         self.assertEqual(clean_sibling["structural_drop_tags"], set())
+
+    def test_structural_drop_tags_not_cascaded_to_descendants(self):
+        # tag_rows() itself only marks the TOP of a contaminated subtree -- a caller
+        # iterating rows as a flat list (not remove_tagged_subtrees()'s recursive removal)
+        # must not assume every descendant carries the tag too. See tag_rows()'s docstring.
+        root = make_row("main")
+        contaminated_top = make_row("std::pair<...>", parent=root)
+        buried = make_row("gotcha_call", parent=contaminated_top)
+        clean_sibling = make_row("run_simulation", parent=root)
+        rows = [root, contaminated_top, buried, clean_sibling]
+        s3.tag_rows(rows, TAG_DEFS)
+        self.assertEqual(buried["structural_drop_tags"], set())
 
     def test_linear_no_sibling_chain_is_not_marked(self):
         root = make_row("root_frame")
@@ -147,14 +204,31 @@ class FirstRealDescendantTests(unittest.TestCase):
         self.assertIn("gpu_api", root["tags"])
 
     def test_mpi_territory_inherited_through_wrapper_hop(self):
-        # proves the scope-5 generalization works mechanically for a tag other than gpu_api --
-        # still unconfirmed whether this shape occurs in real captures, tracked separately.
+        # Proves the mechanism itself works generically for any tag configured with
+        # first_real_descendant_skip_tag, using mpi_territory as the example tag here --
+        # NOT a claim that the real shipped default_noise_patterns.json enables this for
+        # mpi_territory. It deliberately doesn't: see
+        # test_real_root_with_matching_first_child_is_a_known_limitation below for why.
         root = make_row("start_thread")
         wrapper_hop = make_row("gotcha_call", parent=root)
         real_child = make_row("mpi_init", parent=wrapper_hop)
         rows = [root, wrapper_hop, real_child]
         s3.tag_rows(rows, TAG_DEFS)
         self.assertIn("mpi_territory", root["tags"])
+
+    def test_real_root_with_matching_first_child_is_a_known_limitation(self):
+        # The mechanism can't tell a genuine, real program root apart from an untethered
+        # thread-spawn artifact -- both just have parent=None. A real root whose very first
+        # traced child happens to match the tag gets it inherited too, same as an actual
+        # untethered noise root would. This is exactly why default_noise_patterns.json does
+        # NOT enable first_real_descendant_skip_tag for mpi_territory: a real "main" whose
+        # first call is MPI_Init (extremely common) would otherwise be misclassified.
+        # Confirmed via test_extract_CPU_hotspots.py's mpi_spawned_thread_noise fixture.
+        main = make_row("main")
+        mpi_init = make_row("mpi_init", parent=main)
+        rows = [main, mpi_init]
+        s3.tag_rows(rows, TAG_DEFS)
+        self.assertIn("mpi_territory", main["tags"])
 
     def test_already_self_tagged_root_is_a_no_op(self):
         root = make_row("hipLaunchKernel")
@@ -188,7 +262,7 @@ class RemoveTaggedSubtreesTests(unittest.TestCase):
         clean_sibling = make_row("run_simulation", parent=root)
         rows = [root, contaminated_top, buried, clean_sibling]
         s3.tag_rows(rows, TAG_DEFS)
-        result = s3.remove_tagged_subtrees(rows, {"wrapper_branch_contamination"})
+        result = s3.remove_tagged_subtrees(rows, {"wrapper_branch_noise"})
         self.assertEqual({r["label"] for r in result}, {"main", "run_simulation"})
 
 
@@ -241,9 +315,9 @@ class ClosureTests(unittest.TestCase):
         self.assertFalse(collapses({"tags": set()}))
 
     def test_make_is_pruned_checks_both_tag_fields(self):
-        is_pruned = s3.make_is_pruned({"gpu_api", "wrapper_branch_contamination"})
+        is_pruned = s3.make_is_pruned({"gpu_api", "wrapper_branch_noise"})
         self.assertTrue(is_pruned({"tags": {"gpu_api"}, "structural_drop_tags": set()}))
-        self.assertTrue(is_pruned({"tags": set(), "structural_drop_tags": {"wrapper_branch_contamination"}}))
+        self.assertTrue(is_pruned({"tags": set(), "structural_drop_tags": {"wrapper_branch_noise"}}))
         self.assertFalse(is_pruned({"tags": set(), "structural_drop_tags": set()}))
 
 
@@ -252,8 +326,31 @@ class LoadDefaultPatternsTests(unittest.TestCase):
         patterns = s3.load_default_patterns()
         self.assertEqual(
             set(patterns.keys()),
-            {"gpu_api", "wrapper_noise", "mpi_territory", "compiler_runtime_noise", "wrapper_branch_contamination"},
+            {"gpu_api", "wrapper_noise", "mpi_territory", "compiler_runtime_noise", "wrapper_branch_noise"},
         )
+
+
+class OpenMpiPrefixTests(unittest.TestCase):
+    # ompi_/opal_/orte_ -- no real Open MPI test_apps capture exists yet, added as a
+    # "most probable" list per real Open MPI naming conventions. Against the REAL
+    # shipped patterns (not the synthetic TAG_DEFS above), since this is specifically
+    # about default_noise_patterns.json's own mpi_territory prefix list.
+    def test_matches_open_mpi_prefixes(self):
+        real_defs = s3.load_default_patterns()
+        mpi_def = real_defs["mpi_territory"]
+        self.assertTrue(s3._label_matches("ompi_request_complete", mpi_def))
+        self.assertTrue(s3._label_matches("opal_progress", mpi_def))
+        self.assertTrue(s3._label_matches("orte_grpcomm_base_pack", mpi_def))
+
+    def test_rejects_mid_string_match_inside_gotcha_template(self):
+        # startswith-based, so this must NOT match an Open-MPI opaque-handle typename
+        # appearing mid-string inside rocprof-sys's own generic GOTCHA-wrapper template
+        # signature.
+        real_defs = s3.load_default_patterns()
+        mpi_def = real_defs["mpi_territory"]
+        self.assertFalse(s3._label_matches(
+            "tim::component::gotcha<101ul, int, ompi_group_t**>::construct", mpi_def
+        ))
 
 
 if __name__ == "__main__":

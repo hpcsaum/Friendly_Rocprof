@@ -31,12 +31,12 @@ import glob
 import os
 from datetime import datetime
 
-import extract_CPU_hotspots as cpu_tool
 import extract_GPU_hotspots as gpu_tool
 from stage1_rocprofsys import PID_SUFFIX_RE, parse_table_file
 from stage1_rocprofv3 import parse_kernel_stats_csv
 from stage1_run_dirs import resolve_run_dirs
 from stage2_rocprofsys import attach_ancestry
+from stage3_rocprofsys import load_default_patterns, make_is_pruned, tag_rows
 from stage4_rocprofsys_tree import (
     attach_kernel_summaries,
     flatten_tree,
@@ -51,6 +51,8 @@ from tree_render import (
     format_aligned_rows,
     render_forest,
 )
+
+TAG_DEFS = load_default_patterns()
 
 HELP_BLURB = """\
 Reads a rocprof-sys (optionally paired with rocprofv3) output directory and
@@ -95,7 +97,7 @@ https://rocm.docs.amd.com/projects/rocprofiler-systems/en/latest/ for details.
 
 
 def load_rank_trees(cpu_dir):
-    """Per rank: parse_table_file() + attach_ancestry() + classify_gpu() directly
+    """Per rank: parse_table_file() + attach_ancestry() + tag_rows() directly
     (NOT scan_ranks(), which merges same-label rows and would destroy tree
     identity). wall_clock-<pid>.txt wins when present; sampling_wall_clock-<pid>.txt
     is used only for a rank that has no wall_clock file at all -- the two are
@@ -103,12 +105,15 @@ def load_rank_trees(cpu_dir):
     independently-reconstructed call orders.
 
     Returns a list of (rank_key, rows, roots) tuples, one per rank, in sorted
-    order. rows is every parsed row (parent/depth/thread_id/gpu all set); roots
+    order. rows is every parsed row (parent/depth/thread_id/tags all set); roots
     is the subset with parent is None -- every row with parent is None starts
     its own tree, which correctly separates multiple OS threads' subtrees
     within one rank regardless of which of the two DEPTH-numbering shapes the
     file uses (see docs/plans/1.13-calltree-tool.md point 2 -- is_thread_root
     isn't reliably set in the DEPTH-resets-to-0 case, but parent is None always is).
+    This tool only ever acts on the gpu_api tag (see write_report()) -- tag_rows()
+    also computes wrapper_noise/mpi_territory/compiler_runtime_noise on every row,
+    harmlessly unused, keeping this tool's own "exactly one filter tier" scope.
     """
     paths_by_rank = {}
     order = []
@@ -131,34 +136,10 @@ def load_rank_trees(cpu_dir):
         if not rows:
             continue
         attach_ancestry(rows)
-        for row in rows:
-            row["gpu"] = cpu_tool.classify_gpu(row, path) or is_kernel_descriptor_artifact(row["label"])
+        tag_rows(rows, TAG_DEFS, filename=path)
         roots = [r for r in rows if r["parent"] is None]
         result.append((rank_key, rows, roots))
     return result
-
-
-def is_kernel_descriptor_artifact(label):
-    """rocprof-sys's default sampling sometimes attributes a GPU kernel launch to
-    its compiled kernel-descriptor ELF symbol (the ".kd" suffix -- standard
-    AMDGPU convention) directly inside a wall_clock-<pid>.txt row, at near-zero
-    duration. Confirmed real (not a wall_clock/sampling_wall_clock merge issue --
-    these rows are already present in wall_clock-<pid>.txt on its own): the same
-    kernel's real device time is already reported by rocprofv3's kernel_stats.csv
-    and surfaces correctly via attach_kernel_summaries(); left visible, this shows
-    up as a near-duplicate, near-zero-duration entry under whatever CPU call site
-    happened to be sampled at launch time. Treated the same as GPU-API/runtime
-    noise: hidden by default, visible with --show-gpu-api.
-    """
-    return label.endswith(".kd")
-
-
-def make_is_pruned(show_gpu_api):
-    """This tool has exactly one filter tier (GPU-API/runtime noise, including
-    .kd artifacts, already folded into row["gpu"] by load_rank_trees())."""
-    def is_pruned(node):
-        return node["gpu"] and not show_gpu_api
-    return is_pruned
 
 
 def write_report(run_dir, dest_path, max_depth=None, show_gpu_api=False):
@@ -170,7 +151,7 @@ def write_report(run_dir, dest_path, max_depth=None, show_gpu_api=False):
             "(expected files like wall_clock-<pid>.txt) -- nothing to render"
         )
 
-    is_pruned = make_is_pruned(show_gpu_api)
+    is_pruned = make_is_pruned(set() if show_gpu_api else {"gpu_api"})
     rank_keys = [rank_key for rank_key, _rows, _roots in ranks]
     node_values = make_node_values(rank_keys)
 

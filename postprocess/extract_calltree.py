@@ -36,12 +36,19 @@ import glob
 import os
 from datetime import datetime
 
-import extract_CPU_hotspots as cpu_tool
 import extract_GPU_hotspots as gpu_tool
 from stage1_rocprofsys import PID_SUFFIX_RE, parse_table_file
 from stage1_rocprofv3 import parse_kernel_stats_csv
 from stage1_run_dirs import resolve_run_dirs
 from stage2_rocprofsys import attach_ancestry
+from stage3_rocprofsys import (
+    load_default_patterns,
+    make_collapses_children,
+    make_is_pruned,
+    remove_tagged_subtrees,
+    splice_by_tag,
+    tag_rows,
+)
 from stage4_rocprofsys_tree import (
     attach_kernel_summaries,
     flatten_tree,
@@ -57,66 +64,7 @@ from tree_render import (
     render_forest,
 )
 
-# GPU-API/runtime noise -- broadened from extract_CPU_hotspots.py's
-# GPU_API_PREFIXES (startswith-only) to substring/`in` matching, to also catch
-# namespace-qualified C++ symbols the prefix check misses (e.g.
-# "rocprofiler::hip::..."), plus GPU/offload-runtime noise observed in real
-# sampled data that classify_gpu() has no prefix for at all.
-# "__tgt_target_kernel", "pluginmanager::", "devicety::", and
-# "llvm::omp::target::plugin::" are confirmed present, unfiltered, in real
-# test_apps HPC data (AMD/LLVM's OpenMP-target-offload launch/plugin-loading
-# internals -- PluginManager::getDevice -> DeviceTy::loadBinary ->
-# llvm::omp::target::plugin::{GenericPluginTy,GenericDeviceTy,AMDGPUDeviceTy,
-# AsyncInfoWrapperTy} -- sitting directly under __tgt_target_kernel).
-# "clang::", "llvm::", "amd_comgr" cover the same GPU-kernel-JIT-compilation
-# noise confirmed via the same rocprof-sys data feeding extract_hotspots.py's
-# "CPU compute hotspots" table (clang/LLVM compiling GPU machine code on first
-# kernel launch, via AMD's comgr) -- included here for consistency even though
-# it hasn't been observed leaking into a rendered calltree.txt yet.
-GPU_NOISE_SUBSTRINGS = cpu_tool.GPU_API_PREFIXES + (
-    "rocprofiler::", "cray_acc", "hiphardwaredevice", "present_table",
-    "__tgt_target_kernel", "pluginmanager::", "devicety::",
-    "llvm::omp::target::plugin::", "clang::", "llvm::", "amd_comgr",
-)
-
-# rocprof-sys's own instrumentation/GOTCHA plumbing and dynamic-linker
-# bootstrap frames -- shared with extract_CPU_hotspots.py (see its own
-# definition for why: the two tools used to maintain independent copies,
-# which is how lookup_hashtable/lookup.constprop.0 ended up unfiltered in
-# hotspots.txt's "CPU compute hotspots" table while already hidden here).
-# Real code (eventually main() and everything in it) sits *inside* these
-# wrapper frames here, not beside them -- so THIS tool SPLICES them out
-# (node removed, children reparented to its own parent), never prunes:
-# pruning them would delete the whole program along with them.
-# extract_CPU_hotspots.py's own tree shape has no such "real code sits
-# inside" relationship for these frames (see its comment), so it drops them
-# entirely instead -- same substrings, different treatment per tool's own
-# data shape, exactly as tree_render.py's module docstring describes.
-ROCPROFSYS_WRAPPER_SUBSTRINGS = cpu_tool.ROCPROFSYS_WRAPPER_SUBSTRINGS
-
-# MPI library internals -- COLLAPSED (the first real MPI frame hit while
-# descending is shown, its own further internals are not), not pruned: the
-# MPI call itself is real application-relevant information, only its
-# multi-level implementation internals underneath are noise. Shared with
-# extract_CPU_hotspots.py (see its own definition for why -- the two tools
-# used to maintain independent, drifted-apart copies of this list, and
-# extract_CPU_hotspots.py also now needs it for a second purpose: recognizing
-# an MPI-runtime-spawned background thread by ancestry, see classify_gpu()'s
-# sibling there).
-MPI_PREFIXES = cpu_tool.MPI_PREFIXES
-MPI_FORTRAN_SHIM_SUFFIXES = cpu_tool.MPI_FORTRAN_SHIM_SUFFIXES
-
-# Compiler-runtime helper noise -- observed on Cray's Fortran runtime
-# specifically (string/array intrinsics, the allocator chain behind
-# ALLOCATE/DEALLOCATE, Fortran formatted I/O internals). The LEAST universal
-# of the four tiers: not necessarily present with other compilers, since none
-# have been observed in this project's data so far. PRUNED (nothing real is
-# expected nested inside a compiler runtime's own allocator machinery).
-COMPILER_RUNTIME_SUBSTRINGS = (
-    "_f90_", "__allocate", "_dealloc", "posix_memalign", "_mid_memalign",
-    "_int_memalign", "_int_malloc", "_int_free", "sysmalloc",
-    "__default_morecore", "sbrk", "_fwf", "_xfer_iolist",
-)
+TAG_DEFS = load_default_patterns()
 
 HELP_BLURB = """\
 Reads a rocprof-sys (optionally paired with rocprofv3) output directory and
@@ -159,213 +107,6 @@ https://rocm.docs.amd.com/projects/rocprofiler-systems/en/latest/ for details.
 """
 
 
-def is_kernel_descriptor_artifact(label):
-    """See extract_calltree_traced.py's identical function: rocprof-sys's
-    sampling sometimes attributes a GPU kernel launch to its compiled
-    kernel-descriptor ELF symbol (the ".kd" suffix) directly, at near-zero
-    duration, duplicating the same kernel's real device time already reported
-    by rocprofv3's kernel_stats.csv. Treated as GPU/offload-runtime noise."""
-    return label.endswith(".kd")
-
-
-def is_gpu_api_entry(label):
-    lname = label.lower()
-    return any(s in lname for s in GPU_NOISE_SUBSTRINGS)
-
-
-def is_rocprofsys_wrapper(label):
-    lname = label.lower()
-    return any(s in lname for s in ROCPROFSYS_WRAPPER_SUBSTRINGS)
-
-
-def is_mpi_territory(label):
-    lname = label.lower()
-    return lname.startswith(MPI_PREFIXES) or lname.endswith(MPI_FORTRAN_SHIM_SUFFIXES)
-
-
-def is_compiler_runtime_noise(label):
-    lname = label.lower()
-    return any(s in lname for s in COMPILER_RUNTIME_SUBSTRINGS)
-
-
-def prune_wrapper_contaminated_branches(rows):
-    """Structural counterpart to is_rocprofsys_wrapper() -- see
-    extract_CPU_hotspots.py's identical-in-spirit function for the full
-    rationale (shared root cause: rocprof-sys/GOTCHA's startup bookkeeping is
-    mostly generic std::set<std::string>/std::map<unsigned long,
-    std::set<unsigned long>> container internals that don't match
-    ROCPROFSYS_WRAPPER_SUBSTRINGS on their own at all, confirmed via real amd
-    test_apps HPC data's functions-<rank>.json -- naming every generic STL
-    frame individually risks hiding a real application's own std::map/
-    std::set usage, which this project deliberately avoids).
-
-    PER RANK, on the raw rows -- and, critically, called BEFORE
-    splice_out_wrapper_nodes() (see load_rank_trees()), not after: splicing
-    already removes any row whose OWN label matches is_rocprofsys_wrapper()
-    (e.g. get_library), which is exactly the anchor this needs to find
-    contamination in the first place. Drops (not splices/reparents -- there
-    is nothing real to preserve underneath, see docstring) a whole sibling's
-    subtree at any branching point (2+ rows sharing the same parent,
-    including top-level roots) where (a) is_rocprofsys_wrapper() matches
-    somewhere within that sibling's own subtree, AND (b) at least one OTHER
-    sibling's subtree does not -- i.e. only when there's a genuinely clean
-    sibling to tell it apart from. This is deliberately conservative: a
-    linear ancestor-wrapper chain that legitimately wraps real code (e.g.
-    rocprofsys_main -> main with no siblings at any step -- splice_out_
-    wrapper_nodes() already handles that shape) never satisfies "has an
-    uncontaminated sibling", so it's left alone here -- confirmed via real
-    test_apps HPC data that the contaminated-branch shape this function
-    targets only ever occurs as a genuinely separate, self-contained sibling
-    next to real application branches (e.g. under main, beside
-    run_simulation), never mixed into one.
-
-    Returns a new rows list with contaminated branches removed entirely.
-    """
-    children_by_parent_id = {}
-    top_level = []
-    for row in rows:
-        parent = row["parent"]
-        (top_level if parent is None else children_by_parent_id.setdefault(id(parent), [])).append(row)
-
-    memo = {}
-
-    def subtree_has_match(row):
-        key = id(row)
-        if key in memo:
-            return memo[key]
-        memo[key] = True  # cycles should never happen; break them defensively rather than recurse forever
-        result = is_rocprofsys_wrapper(row["label"]) or any(
-            subtree_has_match(child) for child in children_by_parent_id.get(id(row), [])
-        )
-        memo[key] = result
-        return result
-
-    dropped = set()
-
-    def mark_dropped(row):
-        dropped.add(id(row))
-        for child in children_by_parent_id.get(id(row), []):
-            mark_dropped(child)
-
-    def process_siblings(siblings):
-        if len(siblings) < 2:
-            return
-        matches = [subtree_has_match(s) for s in siblings]
-        if not any(matches) or all(matches):
-            return
-        for sibling, matched in zip(siblings, matches):
-            # A sibling whose OWN label already matches (e.g.
-            # gotcha_wrapper_call) is splice_out_wrapper_nodes()'s job, not
-            # this one's -- it wraps real code beneath it (e.g.
-            # real_child_under_wrapper), which splicing correctly reparents
-            # up rather than deletes. Only a sibling that DOESN'T match on
-            # its own, but has a matching descendant somewhere inside (e.g.
-            # the generic std::pair<..._Rb_tree...> top of a contaminated
-            # branch), is this function's target.
-            if matched and not is_rocprofsys_wrapper(sibling["label"]):
-                mark_dropped(sibling)
-
-    def visit(nodes):
-        process_siblings(nodes)
-        for node in nodes:
-            if id(node) not in dropped:
-                visit(children_by_parent_id.get(id(node), []))
-
-    visit(top_level)
-    return [r for r in rows if id(r) not in dropped]
-
-
-def classify_gpu_broad(row):
-    """Same ancestry-propagation idea as extract_CPU_hotspots.classify_gpu()
-    (a thread-root row with no GPU label of its own still inherits GPU
-    classification if any ancestor has one -- e.g. a background thread the
-    HIP runtime spawns), but matching is_gpu_api_entry()/
-    is_kernel_descriptor_artifact() (substring-based) instead of
-    classify_gpu()'s startswith-only check. Filename hints
-    (extract_CPU_hotspots.GPU_FILE_HINTS) are skipped entirely here -- this
-    tool only ever reads wall_clock-<pid>.txt/sampling_wall_clock-<pid>.txt,
-    whose names never carry those hints anyway.
-    """
-    if is_gpu_api_entry(row["label"]) or is_kernel_descriptor_artifact(row["label"]):
-        return True
-    if row.get("is_thread_root"):
-        ancestor = row["parent"]
-        while ancestor is not None:
-            if is_gpu_api_entry(ancestor["label"]) or is_kernel_descriptor_artifact(ancestor["label"]):
-                return True
-            ancestor = ancestor["parent"]
-    return False
-
-
-def propagate_gpu_to_untethered_thread_roots(rows):
-    """A background/event-loop thread rocprof-sys's own pthread_create_gotcha
-    wrapper spawns (e.g. HIP/ROCr's async-completion or event-polling
-    threads) samples as its OWN independent root: its DEPTH resets to 0 for
-    the new OS thread, so attach_ancestry() gives it parent=None -- the same
-    as a real top-level thread spawned directly by application code, and
-    unlike the nested case classify_gpu_broad() already handles (a
-    thread-root row still linked to its spawning ancestor via a real parent
-    chain, DEPTH nesting one level deeper instead of resetting to 0). With no
-    parent to walk upward through at all, the only signal that such a root is
-    driver-internal noise rather than real application work is what's
-    immediately inside it: real data confirmed the exact shape --
-    "start_thread" -> rocprofsys's own pthread_create_gotcha wrapper (every
-    spawned thread gets this hop, regardless of what it does) ->
-    "rocr::os::ThreadTrampoline" and deeper ROCm-runtime internals. This
-    walks down through any wrapper hop to the first real content; if that's
-    GPU/ROCm-runtime noise, the untethered root itself is reclassified too,
-    so the whole subtree hides as one block under --show-gpu-api like any
-    other GPU noise -- regardless of whether --show-rocprofsys-internals
-    also reveals the wrapper hop's own label. A root already GPU-classified,
-    with no children, or whose real content is genuine application code
-    (e.g. a worker thread the application itself spawns, also wrapped by the
-    same rocprof-sys instrumentation but leading to real code instead) is
-    left untouched. Mutates rows in place.
-    """
-    children_by_parent_id = {}
-    for row in rows:
-        parent = row["parent"]
-        if parent is not None:
-            children_by_parent_id.setdefault(id(parent), []).append(row)
-
-    for row in rows:
-        if row["parent"] is not None or row["gpu"]:
-            continue
-        node = row
-        seen = set()
-        while True:
-            kids = children_by_parent_id.get(id(node))
-            if not kids:
-                break
-            child = kids[0]
-            if id(child) in seen:
-                break  # defensive: a real cycle should never happen here
-            seen.add(id(child))
-            if not is_rocprofsys_wrapper(child["label"]):
-                if child["gpu"]:
-                    row["gpu"] = True
-                break
-            node = child
-
-
-def splice_out_wrapper_nodes(rows):
-    """Reassigns every row's parent pointer to skip past any chain of
-    is_rocprofsys_wrapper() ancestors, then drops wrapper rows from the list
-    entirely -- a row whose whole ancestor chain was wrapper frames ends up
-    with parent=None, correctly becoming a new root (e.g. "main", once
-    __libc_start_main/__libc_start_call_main/rocprofsys_main are spliced out
-    from above it). Splicing (not pruning) is essential here: real code sits
-    *inside* these wrapper frames, not beside them, so pruning them like GPU
-    noise would delete the whole program along with them.
-    """
-    for row in rows:
-        parent = row["parent"]
-        while parent is not None and is_rocprofsys_wrapper(parent["label"]):
-            parent = parent["parent"]
-        row["parent"] = parent
-    return [r for r in rows if not is_rocprofsys_wrapper(r["label"])]
-
-
 def load_rank_trees(cpu_dir, show_rocprofsys_internals):
     """Per rank: parse_table_file() + attach_ancestry() directly (NOT
     scan_ranks(), which merges same-label rows and would destroy tree
@@ -374,16 +115,15 @@ def load_rank_trees(cpu_dir, show_rocprofsys_internals):
     instrumented boundaries); wall_clock-<pid>.txt is used only as a
     whole-file fallback for a rank with no sampling file at all.
 
-    Returns a list of (rank_key, rows, roots) tuples, one per rank. Before
-    roots are computed: propagate_gpu_to_untethered_thread_roots() catches a
-    background/event-loop thread that samples as its own untethered root (no
-    parent link at all -- see its own docstring); then, unless
-    show_rocprofsys_internals, prune_wrapper_contaminated_branches() drops
-    any whole sibling branch that's rocprof-sys/GOTCHA startup-bookkeeping
-    noise (see its own docstring for why this must run BEFORE the next
-    step), then the wrapper-splice pass runs, so a rank whose whole top of
-    stack was wrapper frames correctly surfaces "main" (or whatever real
-    code sits under them) as its own root.
+    Returns a list of (rank_key, rows, roots) tuples, one per rank.
+    tag_rows() classifies every row in one pass (including inheriting
+    gpu_api/mpi_territory onto a background/event-loop thread that samples as
+    its own untethered root, no parent link at all -- see
+    stage3_rocprofsys.py's first-real-descendant scope); then, unless
+    show_rocprofsys_internals, the whole wrapper_branch_noise-tagged sibling
+    subtree is dropped before the wrapper-splice pass runs, so a rank whose
+    whole top of stack was wrapper frames correctly surfaces "main" (or
+    whatever real code sits under them) as its own root.
     """
     paths_by_rank = {}
     order = []
@@ -406,18 +146,15 @@ def load_rank_trees(cpu_dir, show_rocprofsys_internals):
         if not rows:
             continue
         attach_ancestry(rows)
-        for row in rows:
-            row["gpu"] = classify_gpu_broad(row)
-            row["compiler_runtime"] = is_compiler_runtime_noise(row["label"])
-            row["mpi_territory"] = is_mpi_territory(row["label"])
-        propagate_gpu_to_untethered_thread_roots(rows)
+        tag_rows(rows, TAG_DEFS, filename=path)
         if not show_rocprofsys_internals:
-            # Order matters: prune_wrapper_contaminated_branches() needs
-            # is_rocprofsys_wrapper()-matching descendants (e.g. get_library)
-            # still present to find contamination in the first place --
-            # splice_out_wrapper_nodes() would have already removed them.
-            rows = prune_wrapper_contaminated_branches(rows)
-            rows = splice_out_wrapper_nodes(rows)
+            # Order matters: remove_tagged_subtrees() needs wrapper_noise-matching
+            # descendants (e.g. get_library) still present to find contamination in
+            # the first place -- splice_by_tag() would have already removed them.
+            rows = remove_tagged_subtrees(rows, {"wrapper_branch_noise"})
+            rows = splice_by_tag(rows, "wrapper_noise", fold=False)  # fold=False preserves
+                                                                        # today's discard-self-
+                                                                        # time behavior
         roots = [r for r in rows if r["parent"] is None]
         result.append((rank_key, rows, roots))
     return result
@@ -434,11 +171,12 @@ def write_report(run_dir, dest_path, max_depth=None, show_gpu_api=False,
             "(expected files like sampling_wall_clock-<pid>.txt) -- nothing to render"
         )
 
-    def is_pruned(node):
-        return (node["gpu"] and not show_gpu_api) or (node.get("compiler_runtime") and not show_compiler_runtime)
-
-    def collapses_children(row):
-        return row.get("mpi_territory", False) and not show_mpi_internals
+    prune_tags = (
+        ({"gpu_api"} if not show_gpu_api else set())
+        | ({"compiler_runtime_noise"} if not show_compiler_runtime else set())
+    )
+    is_pruned = make_is_pruned(prune_tags)
+    collapses_children = make_collapses_children({"mpi_territory"} if not show_mpi_internals else set())
 
     rank_keys = [rank_key for rank_key, _rows, _roots in ranks]
     node_values = make_node_values(rank_keys)

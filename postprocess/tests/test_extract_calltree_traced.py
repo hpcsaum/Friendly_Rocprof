@@ -139,11 +139,9 @@ class RenderTreeTests(unittest.TestCase):
 
 
 class KdArtifactFilteringTests(unittest.TestCase):
-    def test_is_kernel_descriptor_artifact(self):
-        self.assertTrue(ct_tool.is_kernel_descriptor_artifact("some_kernel_name.kd"))
-        self.assertFalse(ct_tool.is_kernel_descriptor_artifact("some_kernel_name"))
-        self.assertFalse(ct_tool.is_kernel_descriptor_artifact("hipLaunchKernel"))
-
+    # .kd-suffix matching itself is the shared engine's gpu_api suffix pattern now --
+    # see test_stage3_rocprofsys.py's suffix-matching coverage; these two stay because
+    # they exercise this tool's own end-to-end rendering behavior, not the match itself.
     def test_kd_suffixed_row_hidden_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "calltree.txt")

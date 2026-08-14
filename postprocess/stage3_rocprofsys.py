@@ -18,6 +18,11 @@ usually default_noise_patterns.json, see load_default_patterns() -- not from Pyt
 new noise patterns don't require a code change. Each tag definition may combine:
   - "prefixes"/"substrings"/"suffixes": label-matching rules (all case-insensitive, checked
     against the row's own label only).
+  - "filename_substrings": matched case-insensitively against the basename of the file a whole
+    batch of rows came from (see tag_rows()'s `filename` argument) -- a fact about where the data
+    came from rather than what a row's own label says, but mechanically the same kind of match as
+    the three above, just against a different string. True for one row in a file means true for
+    every row in that file.
   - "ancestor_for_thread_roots": true -- a thread-root row (row["is_thread_root"]) that doesn't
     match by its own label also carries this tag if ANY ancestor's label does.
   - "first_real_descendant_skip_tag": <other tag name> -- an untethered root (row["parent"] is
@@ -67,16 +72,28 @@ def _build_children_map(rows):
     return children_map
 
 
-def tag_rows(rows, tag_defs):
+def tag_rows(rows, tag_defs, filename=None):
     """Mutates every row in place: row["tags"] becomes a set of every tag whose pattern matched
-    this row's own label, or (for a thread-root row) any ancestor's label, or (for an untethered
-    root, parent=None) the first real descendant's tags. row["structural_drop_tags"] becomes a
-    set of tags for which this row's WHOLE SUBTREE should be removed because of a sibling
-    comparison -- kept separate from "tags" since it's a removal decision about a row, not a fact
-    about what the row's own label looks like.
+    this row's own label, or the file it came from (see `filename` below), or (for a thread-root
+    row) any ancestor's label, or (for an untethered root, parent=None) the first real descendant's
+    tags. row["self_tags"] is the raw self-match set alone (label + filename hints only, before
+    ancestor/first-real-descendant enrichment) -- kept separate so a caller can tell "this row's
+    own identity matches" apart from "this row inherited the tag from somewhere else," which
+    matters when the same tag needs a different action depending on which one fired.
+    row["structural_drop_tags"] becomes a set of tags for which this row's WHOLE SUBTREE should be
+    removed because of a sibling comparison -- kept separate from "tags" since it's a removal
+    decision about a row, not a fact about what the row's own label looks like. IMPORTANT: this is
+    only ever set on the top of a contaminated subtree, never propagated down to its descendants --
+    a caller iterating rows as a flat list (not a recursive tree walk) MUST route them through
+    remove_tagged_subtrees() first to actually drop the whole subtree; checking
+    row["structural_drop_tags"] directly, one row at a time, only catches the top row itself.
 
     tag_defs is a dict as returned by load_default_patterns() (or an equivalent hand-built dict
     for tests) -- pattern-bearing tags and sibling-group-derived tags may be mixed freely.
+
+    filename, when given, is the single source file every row in `rows` was parsed from -- matched
+    against each tag's own "filename_substrings" once for the whole batch, since a file-level fact
+    is equally true for every row in it.
     """
     children_map = _build_children_map(rows)
     top_level = [row for row in rows if row["parent"] is None]
@@ -84,9 +101,19 @@ def tag_rows(rows, tag_defs):
     patterned_tags = {name: td for name, td in tag_defs.items() if "sibling_group_source_tag" not in td}
     derived_tags = {name: td for name, td in tag_defs.items() if "sibling_group_source_tag" in td}
 
+    file_matches = set()
+    if filename is not None:
+        fname = os.path.basename(filename).lower()
+        file_matches = {
+            name for name, td in patterned_tags.items()
+            if any(hint in fname for hint in td.get("filename_substrings", ()))
+        }
+
     self_match = {}
     for row in rows:
-        self_match[id(row)] = {name for name, td in patterned_tags.items() if _label_matches(row["label"], td)}
+        self_match[id(row)] = file_matches | {
+            name for name, td in patterned_tags.items() if _label_matches(row["label"], td)
+        }
 
     subtree_memo = {}
 
@@ -125,6 +152,7 @@ def tag_rows(rows, tag_defs):
             for name, td in patterned_tags.items():
                 if td.get("ancestor_for_thread_roots") and name in ancestor_memo[key]:
                     tags.add(name)
+        row["self_tags"] = set(self_match[key])
         row["tags"] = tags
         row["structural_drop_tags"] = set()
 

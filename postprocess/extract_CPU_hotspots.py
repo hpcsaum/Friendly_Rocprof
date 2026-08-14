@@ -18,6 +18,9 @@ from datetime import datetime
 from stage1_rocprofsys import PID_SUFFIX_RE, parse_table_file
 from stage2_rocprofsys import attach_ancestry
 from rank_merge_math import stats_across_ranks
+from stage3_rocprofsys import load_default_patterns, remove_tagged_subtrees, tag_rows
+
+TAG_DEFS = load_default_patterns()
 
 NON_TIMING_FILES = {"available.txt", "instrumented.txt", "excluded.txt", "overlapping.txt"}
 # rocprof-sys's default config (ROCPROFSYS_FLAT_PROFILE=0, sampling on) writes THREE
@@ -29,77 +32,6 @@ NON_TIMING_FILES = {"available.txt", "instrumented.txt", "excluded.txt", "overla
 # self-time. Excluded by filename prefix (the numeric rank suffix varies) before
 # parse_table_file() is even called, same treatment NON_TIMING_FILES gets.
 EXCLUDED_METRIC_FILE_PREFIXES = ("sampling_cpu_clock-",)
-
-GPU_API_PREFIXES = ("hip", "hsa", "roctx", "kfd", "rocdecode", "rocjpeg", "rocr")
-# "rocr" specifically covers ROCr (ROCm Runtime) internals like
-# rocr::core::BusyWaitSignal::WaitAcquire, rocr::os::ThreadTrampoline, and
-# rocr::core::Runtime::AsyncEventsLoop -- driver-internal busy-wait/event-loop
-# threads, not application code, so they belong in the GPU-API/overhead bucket
-# (table 4) rather than being mistaken for real CPU compute hotspots (tables 1/2).
-GPU_FILE_HINTS = ("roctracer", "hsa")
-
-# GPU-kernel-JIT-compilation noise -- AMD's runtime compiles GPU machine code
-# via the clang/LLVM frontend + comgr the first time a kernel launches, and
-# that compilation shows up in real sampled data as CPU-side frames
-# (clang::CodeGen::mergeDefaultFunctionDefinition, amd_comgr_iterate_map_
-# metadata, llvm::AttrBuilder::..., confirmed in real test_apps HPC captures'
-# hotspots.txt, misclassified there as genuine CPU application compute).
-# Matched via substring/`in` (unlike GPU_API_PREFIXES's startswith), because
-# real observed labels include return-type-prefixed forms a prefix check
-# can't catch (e.g. "int llvm::array_pod_sort_by_key(...)").
-GPU_COMPILE_NOISE_SUBSTRINGS = ("clang::", "llvm::", "amd_comgr")
-
-# rocprof-sys's own instrumentation/GOTCHA plumbing and dynamic-linker
-# bootstrap frames. Defined here (not in extract_calltree.py, which used to
-# own this list) so both tools apply the same classification -- extract_
-# calltree.py had it and SPLICED matching nodes out of the tree (real code
-# sits inside these wrapper frames), but this base module's is_gpu_entry()/
-# aggregate() had no matching concept at all, so the same frames -- confirmed
-# via real test_apps HPC data's hotspots.txt, e.g. lookup_hashtable/
-# lookup.constprop.0 -- were showing up unfiltered in "CPU compute hotspots"
-# here. Neither GPU-related nor real CPU compute, so unlike GPU_API_PREFIXES/
-# GPU_COMPILE_NOISE_SUBSTRINGS these rows are dropped entirely (see
-# scan_ranks()) rather than classified into either bucket -- labeling
-# GOTCHA/dynamic-linker bookkeeping as "GPU API overhead" would be actively
-# wrong, not just imprecise.
-# get_library/get_tool/add_binding_to_tool/create_hashtable/
-# lookup_exported_symbol/prepare_symbol are real GOTCHA API function names,
-# confirmed (via functions-<rank>.json) sitting deep inside rocprof-sys/
-# GOTCHA's own startup library/symbol-registration machinery on real amd
-# test_apps HPC data -- the anchor matches mark_wrapper_contaminated_
-# branches() uses to find and drop that WHOLE branch (see its own docstring
-# for why: most of that branch's own frames are generic std::set<std::string
-# >/std::map<unsigned long, std::set<unsigned long>> container internals
-# that don't match any substring here on their own at all).
-ROCPROFSYS_WRAPPER_SUBSTRINGS = (
-    "tim::", "gotcha", "rocprofsys", "__libc_start", "lookup_hashtable",
-    "lookup.constprop", "lib_bindings", "library_gots",
-    "get_library", "get_tool", "add_binding_to_tool", "create_hashtable",
-    "lookup_exported_symbol", "prepare_symbol",
-)
-
-# MPICH / Cray-MPICH function-name prefixes -- covers both the user-facing
-# MPI_* calls and PMPI_* (the profiling interface most GOTCHA-based tools
-# actually intercept), plus MPIR_/MPID_/MPIDI_ internal helpers that do real
-# work on behalf of an MPI_* call. ompi_/opal_/orte_ are Open MPI's own
-# well-documented internal-symbol prefixes -- no real Open MPI test_apps
-# capture exists yet, so these are a "most probable" addition to refine once
-# one does. Matched via startswith (not substring/`in`) specifically because
-# a bare substring check would misfire on "ompi_group_t" appearing mid-string
-# inside rocprof-sys/timemory's own generic GOTCHA-wrapper template signature
-# (e.g. "tim::component::gotcha<101ul, int, ompi_group_t**>(...)", present
-# regardless of which MPI is actually linked) -- startswith naturally avoids
-# that false positive since it never occurs at the start of a label.
-# Defined here (not in extract_calltree.py, which used to own this list) for
-# the same reason as ROCPROFSYS_WRAPPER_SUBSTRINGS above -- shared, not
-# hand-copied twice -- plus this base module now needs it for a second
-# purpose: recognizing an MPI-runtime-spawned background thread by ancestry
-# (see is_runtime_thread_noise()).
-MPI_PREFIXES = (
-    "mpi_", "pmpi_", "mpir_", "mpid_", "mpidi_",
-    "ompi_", "opal_", "orte_",
-)
-MPI_FORTRAN_SHIM_SUFFIXES = ("_f08_", "_f08ts_")
 
 METADATA_FILENAME = "metadata.json"
 # Field names are not documented anywhere -- these are best-effort guesses tried
@@ -134,171 +66,6 @@ https://rocm.docs.amd.com/projects/rocprofiler-systems/en/latest/ for details.
 """
 
 
-def is_gpu_entry(label, filename):
-    lname = label.lower()
-    if lname.startswith(GPU_API_PREFIXES):
-        return True
-    if any(sub in lname for sub in GPU_COMPILE_NOISE_SUBSTRINGS):
-        return True
-    fname = os.path.basename(filename).lower()
-    return any(hint in fname for hint in GPU_FILE_HINTS)
-
-
-def is_rocprofsys_wrapper_noise(label):
-    lname = label.lower()
-    return any(sub in lname for sub in ROCPROFSYS_WRAPPER_SUBSTRINGS)
-
-
-def classify_gpu(row, path):
-    """Like is_gpu_entry(), but a thread-root row (see attach_ancestry()) that
-    doesn't match by its own label also inherits GPU classification if ANY
-    ancestor in its call-tree does -- e.g. a background thread the HIP runtime
-    spawns as a side effect of hipRuntimeGetVersion/hipStreamCreate shows up as
-    a generic "start_thread" node with no further instrumented breakdown
-    (100% self, often spanning nearly the whole run), which would otherwise be
-    mistaken for real CPU application work. A thread spawned directly by real
-    application code has no GPU-classified ancestor, so it's untouched.
-    Non-thread-root rows are never affected by ancestry -- only a thread-root
-    node's own classification can come from something other than its own
-    label.
-    """
-    if is_gpu_entry(row["label"], path):
-        return True
-    if row.get("is_thread_root"):
-        ancestor = row["parent"]
-        while ancestor is not None:
-            if is_gpu_entry(ancestor["label"], path):
-                return True
-            ancestor = ancestor["parent"]
-    return False
-
-
-def is_mpi_territory(label):
-    lname = label.lower()
-    return lname.startswith(MPI_PREFIXES) or lname.endswith(MPI_FORTRAN_SHIM_SUFFIXES)
-
-
-def is_runtime_thread_noise(row):
-    """Generalizes classify_gpu()'s ancestry trick (see its docstring) to a
-    second real shape, confirmed via real test_apps HPC data: Cray MPICH
-    spawning its own background/progress threads directly under MPI_Init
-    (`pthread_create` as MPI_Init's own child, not HIP's), each surfacing as
-    a generic "start_thread" thread-root node with 100% self time spanning
-    nearly the whole run -- the exact same "whole-lifetime dumped under a
-    generic entry symbol" distortion classify_gpu() already fixes for
-    HIP-runtime-spawned threads, just with an MPI-runtime ancestor instead of
-    a GPU-API one. Unlike that case, an MPI progress thread has no GPU
-    relationship at all, so it isn't folded into the GPU bucket (table 4)
-    the way classify_gpu() does -- it's dropped entirely (see scan_ranks()),
-    same treatment as ROCPROFSYS_WRAPPER_SUBSTRINGS, and for the same reason:
-    mislabeling it as "GPU API overhead" would be wrong, not just imprecise.
-    Only a thread-root's OWN row is eligible (mirrors classify_gpu() exactly)
-    -- real work legitimately running deeper inside that same thread's own
-    call tree is a separate, non-thread-root row and untouched.
-    """
-    if not row.get("is_thread_root"):
-        return False
-    ancestor = row["parent"]
-    while ancestor is not None:
-        if is_mpi_territory(ancestor["label"]):
-            return True
-        ancestor = ancestor["parent"]
-    return False
-
-
-def mark_wrapper_contaminated_branches(rows):
-    """Structural counterpart to is_rocprofsys_wrapper_noise(): confirmed via
-    real amd test_apps HPC data (functions-<rank>.json), rocprof-sys/GOTCHA's
-    startup library/symbol-registration bookkeeping is mostly built out of
-    generic STL container internals -- std::set<std::string>::emplace(),
-    std::map<unsigned long, std::set<unsigned long>>::_M_erase(), etc. -- that
-    don't match ROCPROFSYS_WRAPPER_SUBSTRINGS (or any other tier) on their
-    own at all, only a few frames genuinely deep inside do (get_library,
-    create_hashtable, ...). Naming every generic STL frame individually was
-    rejected: a real application could plausibly use std::map/std::set for
-    its own bookkeeping too, and this project deliberately avoids filtering
-    "every std:: call" for exactly that reason.
-
-    Instead this finds the noise STRUCTURALLY: at any branching point (2+
-    rows sharing the same parent), a sibling has its WHOLE subtree marked
-    "wrapper_branch_noise" if (a) it does NOT itself match is_rocprofsys_
-    wrapper_noise() (a sibling that DOES match directly is already excluded
-    on its own via that check -- and, unlike this one, any REAL content
-    nested underneath it is legitimately kept, not noise; see below), (b)
-    is_rocprofsys_wrapper_noise() matches somewhere further down in its own
-    subtree, AND (c) at least one OTHER sibling's subtree does not match at
-    all -- i.e. only when there's a genuinely clean sibling to tell it apart
-    from. Point (a) matters: without it, a sibling like "gotcha_wrapper_call"
-    (which directly matches, but has real content nested underneath it, e.g.
-    a real "real_child_under_wrapper" row) would have that whole real
-    subtree wrongly swept away too -- that shape (wrapper wraps real code)
-    is exactly what a plain per-row is_rocprofsys_wrapper_noise() check
-    already handles correctly on its own (only the matching row itself is
-    excluded, its real children evaluated independently). This function's
-    OWN job is the opposite shape: a generic, non-matching top label (e.g.
-    the std::pair<..._Rb_tree...> chain) with NOTHING real anywhere
-    underneath it, just more noise all the way down including a few
-    directly-matching frames (get_library, ...) buried inside.
-
-    This is deliberately conservative: an ancestor-wrapper chain that
-    legitimately wraps real code (e.g. a linear rocprofsys_main -> main
-    chain with no siblings at any step) never satisfies "has an
-    uncontaminated sibling", so it's left alone -- confirmed via real
-    test_apps HPC data that this contaminated-branch shape only ever occurs
-    as a genuinely separate, self-contained sibling next to real
-    application branches (e.g. under main, beside run_simulation), never
-    mixed into one.
-
-    Mutates rows in place, marking the ENTIRE subtree of a contaminated
-    sibling (not just its top row) -- most of that subtree's own frames
-    don't match anything on their own at all (see above), so leaving them
-    unmarked would still show most of the noise. Must run on the FULL,
-    unfiltered rows (before dropping anything else in scan_ranks()) so
-    descendant frames are still present to check.
-    """
-    children_by_parent_id = {}
-    top_level = []
-    for row in rows:
-        parent = row["parent"]
-        (top_level if parent is None else children_by_parent_id.setdefault(id(parent), [])).append(row)
-
-    memo = {}
-
-    def subtree_has_match(row):
-        key = id(row)
-        if key in memo:
-            return memo[key]
-        memo[key] = True  # cycles should never happen; break them defensively rather than recurse forever
-        result = is_rocprofsys_wrapper_noise(row["label"]) or any(
-            subtree_has_match(child) for child in children_by_parent_id.get(id(row), [])
-        )
-        memo[key] = result
-        return result
-
-    def mark_contaminated(row):
-        row["wrapper_branch_noise"] = True
-        for child in children_by_parent_id.get(id(row), []):
-            mark_contaminated(child)
-
-    def process_siblings(siblings):
-        if len(siblings) < 2:
-            return
-        matches = [subtree_has_match(s) for s in siblings]
-        if not any(matches) or all(matches):
-            return
-        for sibling, matched in zip(siblings, matches):
-            if matched and not is_rocprofsys_wrapper_noise(sibling["label"]):
-                mark_contaminated(sibling)
-
-    def visit(nodes):
-        process_siblings(nodes)
-        for node in nodes:
-            if not node.get("wrapper_branch_noise"):
-                visit(children_by_parent_id.get(id(node), []))
-
-    visit(top_level)
-
-
 def scan_ranks(output_dir):
     """Scan output_dir for timemory text tables and group them by RANK, not by
     file -- rocprof-sys's default config (sampling on) writes multiple per-rank
@@ -317,11 +84,11 @@ def scan_ranks(output_dir):
     exact instrumented value is preferred over the statistical one.
 
     Returns a list of {"rank_key": str, "rows": [...merged, each tagged with
-    "gpu": bool...], "files": [source paths], "root_sum": float}, one entry
-    per distinct rank, in the same order the sorted glob produces. "root_sum"
-    is that rank's largest RAW row SUM across all its included files, from
-    before same-label rows were merged together -- deliberately NOT
-    recomputed from the merged rows, because a rank's wall_clock table has
+    "gpu"/"mpi": bool...], "files": [source paths], "root_sum": float}, one
+    entry per distinct rank, in the same order the sorted glob produces.
+    "root_sum" is that rank's largest RAW row SUM across all its included
+    files, from before same-label rows were merged together -- deliberately
+    NOT recomputed from the merged rows, because a rank's wall_clock table has
     one raw row per call-tree node (e.g. one "start_thread" row per worker
     thread), and merging those by label first (as aggregate()'s per-label
     totals need) can make a leaf label's summed SUM exceed the true root
@@ -331,16 +98,17 @@ def scan_ranks(output_dir):
     unfiltered row list (see below), so it still reflects the whole run's
     true wall-clock regardless of what gets dropped next.
 
-    Rows matching is_rocprofsys_wrapper_noise(), is_runtime_thread_noise(),
-    or mark_wrapper_contaminated_branches()'s structural check are dropped
-    entirely here, before either cpu/gpu classification or merging -- every
-    consumer of this function (aggregate(), aggregate_per_rank(), and
-    extract_pop_metrics.py's own direct use of scan_ranks()) inherits the
-    exclusion for free. attach_ancestry() still runs on the full, unfiltered
-    rows first, so a dropped row's parent-chain links stay intact for
-    anything walking through it (e.g. classify_gpu()'s, is_runtime_thread_
-    noise()'s, or mark_wrapper_contaminated_branches()'s own ancestry/
-    descendant checks) -- it's just never itself added to the merged output.
+    Rows tagged wrapper_noise, compiler_runtime_noise, wrapper_branch_noise,
+    or mpi_territory-via-ancestor-only (a thread-root row whose own label
+    isn't itself an MPI call -- see stage3_rocprofsys.tag_rows()'s
+    self_tags/tags distinction) are dropped entirely here, before either
+    cpu/gpu classification or merging -- every consumer of this function
+    (aggregate(), aggregate_per_rank(), and extract_pop_metrics.py's own
+    direct use of scan_ranks()) inherits the exclusion for free.
+    attach_ancestry() still runs on the full, unfiltered rows first, so a
+    dropped row's parent-chain links stay intact for tag_rows()'s own
+    ancestry/descendant/sibling checks -- it's just never itself added to the
+    merged output.
     """
     candidates = sorted(glob.glob(os.path.join(output_dir, "**", "*.txt"), recursive=True))
     per_rank = {}
@@ -354,7 +122,7 @@ def scan_ranks(output_dir):
         if rows is None:
             continue
         attach_ancestry(rows)
-        mark_wrapper_contaminated_branches(rows)
+        tag_rows(rows, TAG_DEFS, filename=path)
 
         m = PID_SUFFIX_RE.search(base)
         rank_key = m.group(1) if m else path
@@ -367,21 +135,28 @@ def scan_ranks(output_dir):
             bucket["root_sum"] = max(bucket["root_sum"], max(row["sum"] for row in rows))
 
         # Keyed by (label, gpu), not just label -- two rows can share a generic
-        # label (e.g. "start_thread") while classify_gpu() tells them apart by
-        # ancestry; merging them by label alone would silently recombine what
-        # ancestry just split apart.
+        # label (e.g. "start_thread") while tag_rows()'s ancestor scope tells them
+        # apart by ancestry; merging them by label alone would silently recombine
+        # what ancestry just split apart.
         target = bucket["wall_clock"] if base.startswith("wall_clock-") else bucket["sampling"]
-        for row in rows:
-            if (is_rocprofsys_wrapper_noise(row["label"]) or is_runtime_thread_noise(row)
-                    or row.get("wrapper_branch_noise")):
+        # remove_tagged_subtrees() cascades wrapper_branch_noise down to every row in a
+        # contaminated sibling's subtree -- tag_rows() itself only marks the top of it.
+        for row in remove_tagged_subtrees(rows, {"wrapper_branch_noise"}):
+            if (
+                "wrapper_noise" in row["tags"]
+                or ("mpi_territory" in row["tags"] and "mpi_territory" not in row["self_tags"])
+                or "compiler_runtime_noise" in row["tags"]
+            ):
                 continue
-            gpu = classify_gpu(row, path)
+            gpu = "gpu_api" in row["tags"]
+            mpi = "mpi_territory" in row["tags"]  # always self-matched here -- ancestor-only already dropped above
             row = {
                 "label": row["label"],
                 "count": row["count"],
                 "sum": row["sum"],
                 "self_sum": row["self_sum"],
                 "gpu": gpu,
+                "mpi": mpi,
             }
             key = (row["label"], gpu)
             existing = target.get(key)

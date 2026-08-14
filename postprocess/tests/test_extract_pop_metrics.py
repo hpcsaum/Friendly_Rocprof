@@ -31,6 +31,7 @@ GPU_ONLY_DIR = os.path.join(FIXTURES, "pop_gpu_only")
 EMPTY_DIR = os.path.join(FIXTURES, "no_timing_data")
 FLAT_LAYOUT_DIR = os.path.join(FIXTURES, "mpi_2rank")  # no rocprof-sys/ subdir, files directly in the dir
 MPI_PREFIX_DIR = os.path.join(FIXTURES, "pop_mpi_prefix_reconciliation")
+MPI_FORTRAN_SHIM_DIR = os.path.join(FIXTURES, "pop_mpi_fortran_shim_suffix")
 
 
 class ComputeRunMetricsTests(unittest.TestCase):
@@ -101,6 +102,20 @@ class MpiPrefixReconciliationTests(unittest.TestCase):
         self.assertAlmostEqual(rank["total_time"], 10.0)
         self.assertAlmostEqual(rank["comm_time"], 4.0)
         self.assertAlmostEqual(rank["useful_compute"], 6.0)
+
+    def test_fortran_shim_suffixed_labels_count_as_communication(self):
+        # pop_mpi_fortran_shim_suffix/wall_clock-6001.txt: main(10.0) with
+        # compute_stencil(7.0, leaf), mpi_isend_f08_(1.5, leaf), and
+        # mpi_wait_f08ts_(1.5, leaf) -- comm_time = 1.5 + 1.5 = 3.0. Before
+        # migrating to the shared mpi_territory tag, extract_pop_metrics.py's
+        # inline label.lower().startswith(MPI_PREFIXES) check had no suffix
+        # branch at all and would have missed both labels entirely.
+        metrics = pop_tool.compute_run_metrics(MPI_FORTRAN_SHIM_DIR)
+        self.assertEqual(len(metrics["per_rank"]), 1)
+        rank = metrics["per_rank"][0]
+        self.assertAlmostEqual(rank["total_time"], 10.0)
+        self.assertAlmostEqual(rank["comm_time"], 3.0)
+        self.assertAlmostEqual(rank["useful_compute"], 7.0)
 
 
 class CombinedPoolTests(unittest.TestCase):

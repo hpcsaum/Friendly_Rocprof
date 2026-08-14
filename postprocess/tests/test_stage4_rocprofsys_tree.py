@@ -215,12 +215,12 @@ class MergeRankTreesTests(unittest.TestCase):
         self.assertEqual(merged_compute["per_rank"]["rankB"]["self_sum"], 3.0)
         self.assertIs(merged_compute["parent"], merged_main)
 
-    def test_gpu_flag_ored_across_ranks(self):
-        row_a = {"label": "start_thread", "parent": None, "count": 1, "self_sum": 1.0, "sum": 1.0, "gpu": False}
-        row_b = {"label": "start_thread", "parent": None, "count": 1, "self_sum": 1.0, "sum": 1.0, "gpu": True}
+    def test_tags_unioned_across_ranks(self):
+        row_a = {"label": "start_thread", "parent": None, "count": 1, "self_sum": 1.0, "sum": 1.0, "tags": set()}
+        row_b = {"label": "start_thread", "parent": None, "count": 1, "self_sum": 1.0, "sum": 1.0, "tags": {"gpu_api"}}
         ranks = [("rankA", [row_a], [row_a]), ("rankB", [row_b], [row_b])]
         merged_roots = s4t.merge_rank_trees(ranks)
-        self.assertTrue(merged_roots[0]["gpu"])
+        self.assertEqual(merged_roots[0]["tags"], {"gpu_api"})
 
 
 class AggregateNodeStatsTests(unittest.TestCase):
