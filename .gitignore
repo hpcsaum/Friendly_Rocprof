@@ -15,3 +15,6 @@ __pycache__/
 
 # test fixtures are checked-in sample data, not generated output
 !postprocess/tests/fixtures/**
+
+# shipped tool data, not generated rocprof output
+!postprocess/default_noise_patterns.json

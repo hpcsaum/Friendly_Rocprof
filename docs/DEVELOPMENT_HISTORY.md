@@ -35,6 +35,7 @@
 | 2026-08-13 | Plan 2.2: relocated `parse_table_file()`/`clean_label()`/`thread_id_from_raw_label()`/`PID_SUFFIX_RE` (new `stage1_rocprofsys.py`), `parse_kernel_stats_csv()` (new `stage1_rocprofv3.py`), and `attach_ancestry()` (new `stage2_rocprofsys.py`) out of `extract_CPU_hotspots.py`/`extract_GPU_hotspots.py` -- pure relocation, zero behavior change, roadmap step 1 of the consolidation plan |
 | 2026-08-13 | Plan 2.3: extracted the shared avg/std_dev/min/max-across-ranks math into new `rank_merge_math.py` (`stats_across_ranks()`), used by `calltree_common.aggregate_node_stats()` and both `compute_load_imbalance()` copies -- roadmap step 2; incidentally found and flagged (not fixed, out of scope) a pre-existing nondeterministic tie-order bug in `compute_load_imbalance()`'s sort for labels with byte-identical stats |
 | 2026-08-13 | Plan 2.4: split `calltree_common.py` into `stage4_rocprofsys_tree.py` (tree merge + kernel attachment), `tree_render.py` (rendering), and a new `stage1_run_dirs.py` (`resolve_run_dirs()`, moved out of §8's original "tree_render.py" placement after checking its real callers) -- roadmap step 3; also fixed `extract_pop_metrics.py`'s independent duplicate copy of `resolve_run_dirs()` (§6 finding 1) in the same step |
+| 2026-08-13 | Plan 2.5: built the shared stage-3 noise-classification engine (`stage3_rocprofsys.py`, `default_noise_patterns.json`) in isolation, not wired into any tool yet -- roadmap step 4; implements `splice`'s "fold" self-time-into-new-parent behavior for the first time, and generalizes the untethered-root "inherit from first real descendant" mechanism from GPU-only to any tag (e.g. MPI) |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -1209,3 +1210,47 @@ to the pre-change backup except timestamps; `extract_calltree_traced.py` (no sta
 previously saved in these directories) verified instead by running both the pre-plan-2.4 code
 (from git HEAD) and the post-split code side by side and diffing their output directly -- also
 byte-identical except timestamps.
+
+## 2026-08-13 — Plan 2.5: stage-3 noise-filtering engine, built in isolation (roadmap step 4)
+
+Fourth implementation step of the consolidation plan, and the first genuinely new design (not a
+pure relocation): a shared "tag-then-act" engine replacing today's ~15 hand-written noise-
+classification functions spread across `extract_CPU_hotspots.py`, `extract_calltree.py`, and
+`extract_calltree_traced.py`. Three Explore passes read every existing predicate in those three
+files (plus `extract_pop_metrics.py`'s MPI check) verbatim before writing the plan, surfacing
+several details the master design doc's sketch didn't spell out: each tag needs its own mix of
+prefix/substring/suffix matching (not one flat substring list); `extract_calltree.py`'s GPU pattern
+list is a strict superset of `extract_CPU_hotspots.py`'s; `.kd`-suffix matching was inconsistently
+case-sensitive; the sibling-group scope (`mark_wrapper_contaminated_branches()`) has no pattern
+list of its own, it's derived entirely from another tag's already-computed subtree-match results;
+and `splice_out_wrapper_nodes()`'s "fold a removed node's self-time into its new parent" behavior
+genuinely doesn't exist anywhere today.
+
+New `stage3_rocprofsys.py` implements `tag_rows(rows, tag_defs)`: one children-map built once,
+feeding a bottom-up pass (self-match + subtree-has-match, memoized), a top-down pass (ancestor-match,
+riding the pre-order in O(n) instead of today's O(depth)-per-row walk), a sibling-group derivation
+(reusing the bottom-up pass's results, no new tree walk), and an untethered-root first-real-descendant
+pass. The last of these is a deliberate generalization: today's `propagate_gpu_to_untethered_thread_roots()`
+only inherits the GPU tag; the new engine parameterizes the same walk by tag via each tag's own
+`first_real_descendant_skip_tag`, so `mpi_territory` gets the identical treatment for free -- closing
+one of the master plan's flagged gaps structurally, though whether an untethered MPI-spawned thread
+root actually occurs in real captures remains unconfirmed (a synthetic test proves the mechanism
+works, not that the real-world shape exists).
+
+Patterns moved into a new `default_noise_patterns.json` (5 tags: `gpu_api`, `wrapper_noise`,
+`mpi_territory`, `compiler_runtime_noise`, and the derived `wrapper_branch_contamination`) rather
+than staying as Python constants. `.kd`-suffix matching was normalized to case-insensitive during
+implementation (simpler than preserving the old inconsistent case-sensitivity, with no practical
+effect on real kernel-descriptor symbol names, which are always lowercase by AMDGPU toolchain
+convention). Also added, as generic primitives with no caller yet: `remove_tagged_subtrees()` (the
+single mechanical removal shared by both `prune` and `structural_drop` -- confirmed identical once
+a row is marked, they only differ in how it gets marked), `splice_by_tag()` (with the new `fold`
+option), and `make_collapses_children()`/`make_is_pruned()` for tree-rendering tools.
+
+This step is deliberately **not wired into any tool** -- roadmap step 5 does that, and is the first
+step expected to change real report output (in exactly the two ways already tracked: the shared
+GPU pattern superset, and `extract_pop_metrics.py`'s MPI check gaining the `_f08_`/`_f08ts_` suffix
+it's missing today). Verification here is therefore unit tests only, against synthetic trees:
+`test_stage3_rocprofsys.py` adds 26 cases, including one closing a real coverage gap found during
+the Explore pass -- no existing test anywhere fed a `_f08ts_`-suffixed label to `is_mpi_territory()`
+directly before this. Full suite: 332 tests, all passing.

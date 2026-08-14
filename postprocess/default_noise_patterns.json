@@ -1,0 +1,37 @@
+{
+  "gpu_api": {
+    "prefixes": ["hip", "hsa", "roctx", "kfd", "rocdecode", "rocjpeg", "rocr"],
+    "substrings": [
+      "clang::", "llvm::", "amd_comgr", "rocprofiler::", "cray_acc",
+      "hiphardwaredevice", "present_table", "pluginmanager::", "devicety::",
+      "llvm::omp::target::plugin::"
+    ],
+    "suffixes": [".kd"],
+    "ancestor_for_thread_roots": true,
+    "first_real_descendant_skip_tag": "wrapper_noise"
+  },
+  "wrapper_noise": {
+    "substrings": [
+      "tim::", "gotcha", "rocprofsys", "__libc_start", "lookup_hashtable",
+      "lookup.constprop", "lib_bindings", "library_gots", "get_library", "get_tool",
+      "add_binding_to_tool", "create_hashtable", "lookup_exported_symbol",
+      "prepare_symbol"
+    ]
+  },
+  "mpi_territory": {
+    "prefixes": ["mpi_", "pmpi_", "mpir_", "mpid_", "mpidi_", "ompi_", "opal_", "orte_"],
+    "suffixes": ["_f08_", "_f08ts_"],
+    "ancestor_for_thread_roots": true,
+    "first_real_descendant_skip_tag": "wrapper_noise"
+  },
+  "compiler_runtime_noise": {
+    "substrings": [
+      "_f90_", "__allocate", "_dealloc", "posix_memalign", "_mid_memalign",
+      "_int_memalign", "_int_malloc", "_int_free", "sysmalloc",
+      "__default_morecore", "sbrk", "_fwf", "_xfer_iolist"
+    ]
+  },
+  "wrapper_branch_contamination": {
+    "sibling_group_source_tag": "wrapper_noise"
+  }
+}
