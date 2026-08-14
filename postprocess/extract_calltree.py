@@ -32,39 +32,11 @@ dropped).
 """
 
 import argparse
-import glob
 import os
 from datetime import datetime
 
-import extract_GPU_hotspots as gpu_tool
-from stage1_rocprofsys import PID_SUFFIX_RE, parse_table_file
-from stage1_rocprofv3 import parse_kernel_stats_csv
 from stage1_run_dirs import resolve_run_dirs
-from stage2_rocprofsys import attach_ancestry
-from stage3_rocprofsys import (
-    load_default_patterns,
-    make_collapses_children,
-    make_is_pruned,
-    remove_tagged_subtrees,
-    splice_by_tag,
-    tag_rows,
-)
-from stage4_rocprofsys_tree import (
-    attach_kernel_summaries,
-    flatten_tree,
-    make_kernel_node,
-    make_node_values,
-    merge_rank_trees,
-    unattached_kernel_per_rank,
-)
-from tree_render import (
-    REPORT_HEADERS,
-    build_children_map,
-    format_aligned_rows,
-    render_forest,
-)
-
-TAG_DEFS = load_default_patterns()
+from stage5_calltree_view import build_calltree_view
 
 HELP_BLURB = """\
 Reads a rocprof-sys (optionally paired with rocprofv3) output directory and
@@ -107,102 +79,24 @@ https://rocm.docs.amd.com/projects/rocprofiler-systems/en/latest/ for details.
 """
 
 
-def load_rank_trees(cpu_dir, show_rocprofsys_internals):
-    """Per rank: parse_table_file() + attach_ancestry() directly (NOT
-    scan_ranks(), which merges same-label rows and would destroy tree
-    identity). sampling_wall_clock-<pid>.txt wins when present (the whole
-    point of this tool -- every real unwound stack frame, not just
-    instrumented boundaries); wall_clock-<pid>.txt is used only as a
-    whole-file fallback for a rank with no sampling file at all.
-
-    Returns a list of (rank_key, rows, roots) tuples, one per rank.
-    tag_rows() classifies every row in one pass (including inheriting
-    gpu_api/mpi_territory onto a background/event-loop thread that samples as
-    its own untethered root, no parent link at all -- see
-    stage3_rocprofsys.py's first-real-descendant scope); then, unless
-    show_rocprofsys_internals, the whole wrapper_branch_noise-tagged sibling
-    subtree is dropped before the wrapper-splice pass runs, so a rank whose
-    whole top of stack was wrapper frames correctly surfaces "main" (or
-    whatever real code sits under them) as its own root.
-    """
-    paths_by_rank = {}
-    order = []
-    for path in sorted(glob.glob(os.path.join(cpu_dir, "**", "sampling_wall_clock-*.txt"), recursive=True)):
-        m = PID_SUFFIX_RE.search(os.path.basename(path))
-        rank_key = m.group(1) if m else path
-        paths_by_rank[rank_key] = path
-        order.append(rank_key)
-    for path in sorted(glob.glob(os.path.join(cpu_dir, "**", "wall_clock-*.txt"), recursive=True)):
-        m = PID_SUFFIX_RE.search(os.path.basename(path))
-        rank_key = m.group(1) if m else path
-        if rank_key not in paths_by_rank:
-            paths_by_rank[rank_key] = path
-            order.append(rank_key)
-
-    result = []
-    for rank_key in order:
-        path = paths_by_rank[rank_key]
-        rows = parse_table_file(path)
-        if not rows:
-            continue
-        attach_ancestry(rows)
-        tag_rows(rows, TAG_DEFS, filename=path)
-        if not show_rocprofsys_internals:
-            # Order matters: remove_tagged_subtrees() needs wrapper_noise-matching
-            # descendants (e.g. get_library) still present to find contamination in
-            # the first place -- splice_by_tag() would have already removed them.
-            rows = remove_tagged_subtrees(rows, {"wrapper_branch_noise"})
-            rows = splice_by_tag(rows, "wrapper_noise", fold=False)  # fold=False preserves
-                                                                        # today's discard-self-
-                                                                        # time behavior
-        roots = [r for r in rows if r["parent"] is None]
-        result.append((rank_key, rows, roots))
-    return result
-
-
 def write_report(run_dir, dest_path, max_depth=None, show_gpu_api=False,
                   show_rocprofsys_internals=False, show_mpi_internals=False,
                   show_compiler_runtime=False):
     cpu_dir, gpu_dir = resolve_run_dirs(run_dir)
-    ranks = load_rank_trees(cpu_dir, show_rocprofsys_internals)
-    if not ranks:
-        raise SystemExit(
-            f"error: no rocprof-sys timemory text table found under {cpu_dir!r} "
-            "(expected files like sampling_wall_clock-<pid>.txt) -- nothing to render"
-        )
-
-    prune_tags = (
-        ({"gpu_api"} if not show_gpu_api else set())
-        | ({"compiler_runtime_noise"} if not show_compiler_runtime else set())
+    view = build_calltree_view(
+        run_dir, cpu_dir, gpu_dir, max_depth=max_depth, show_gpu_api=show_gpu_api,
+        show_rocprofsys_internals=show_rocprofsys_internals, show_mpi_internals=show_mpi_internals,
+        show_compiler_runtime=show_compiler_runtime,
     )
-    is_pruned = make_is_pruned(prune_tags)
-    collapses_children = make_collapses_children({"mpi_territory"} if not show_mpi_internals else set())
-
-    rank_keys = [rank_key for rank_key, _rows, _roots in ranks]
-    node_values = make_node_values(rank_keys)
-
-    merged_roots = merge_rank_trees(ranks)
-    flat = flatten_tree(merged_roots)
-
-    gpu_per_rank = None
-    if gpu_dir is not None:
-        gpu_totals, gpu_scanned = gpu_tool.aggregate_per_rank(gpu_dir)
-        if gpu_scanned and len(gpu_totals) == len(ranks):
-            gpu_per_rank = gpu_totals
-        elif gpu_scanned:
-            print(
-                f"warning: {run_dir!r}: rocprof-sys reports {len(ranks)} rank(s) but "
-                f"rocprofv3 reports {len(gpu_totals)} -- skipping GPU kernel integration "
-                "rather than risk pairing mismatched ranks",
-            )
+    rank_keys = view["rank_keys"]
 
     parts = []
     parts.append("Call tree report (sampling-based, aggregated across ranks)\n")
     parts.append(f"generated: {datetime.now().isoformat(timespec='seconds')}\n")
     parts.append(f"source directory: {os.path.abspath(run_dir)}\n")
     parts.append(f"CPU data: {os.path.abspath(cpu_dir)}\n")
-    parts.append(f"GPU data: {os.path.abspath(gpu_dir) if gpu_per_rank is not None else '(none)'}\n")
-    parts.append(f"ranks aggregated: {len(ranks)} (rank keys: {', '.join(rank_keys)})\n")
+    parts.append(f"GPU data: {os.path.abspath(gpu_dir) if view['gpu_paired'] else '(none)'}\n")
+    parts.append(f"ranks aggregated: {len(rank_keys)} (rank keys: {', '.join(rank_keys)})\n")
     parts.append(
         "Showing: GPU-API/runtime noise "
         + ("included" if show_gpu_api else "hidden (--show-gpu-api to reveal)") + ", "
@@ -216,30 +110,8 @@ def write_report(run_dir, dest_path, max_depth=None, show_gpu_api=False,
     parts.append(f"max depth: {max_depth if max_depth is not None else 'unlimited'}\n")
     parts.append("\n")
 
-    unattached = set()
-    if gpu_per_rank is not None:
-        # aggregate_per_rank() only gives total seconds, not call counts --
-        # re-derive counts from each rank's own paired kernel_stats.csv directly.
-        gpu_kernel_by_rank = {
-            rank_key: _kernel_totals_with_counts(gpu_dir, i) for i, rank_key in enumerate(rank_keys)
-        }
-        unattached = attach_kernel_summaries(flat, gpu_kernel_by_rank, is_pruned)
-
-    children_map = build_children_map(flat, collapses_children=collapses_children)
-    parts.append(format_aligned_rows(
-        render_forest(merged_roots, children_map, max_depth, is_pruned, node_values), REPORT_HEADERS,
-    ))
-    parts.append("\n")
-
-    if unattached:
-        parts.append("=== GPU kernels (rocprofv3) -- no owning subroutine or launch call site found in CPU tree ===\n")
-        fallback_rows = [
-            (f"  {kernel_name}", node_values(make_kernel_node(kernel_name, per_rank)))
-            for kernel_name, per_rank in unattached_kernel_per_rank(unattached, gpu_kernel_by_rank).items()
-        ]
-        fallback_rows.sort(key=lambda r: -r[1][1])
-        parts.append(format_aligned_rows(fallback_rows, REPORT_HEADERS))
-        parts.append("\n")
+    parts.append(view["tree_text"])
+    parts.append(view["fallback_text"])
 
     parts.append(
         "Caveats:\n"
@@ -279,21 +151,6 @@ def write_report(run_dir, dest_path, max_depth=None, show_gpu_api=False,
     with open(dest_path, "w") as f:
         f.write(report)
     return report
-
-
-def _kernel_totals_with_counts(gpu_dir, rank_index):
-    """See extract_calltree_traced.py's identical function: re-parse that
-    rank's own kernel_stats.csv directly for its Calls column, since
-    gpu_tool.aggregate_per_rank() only returns total seconds."""
-    candidates = sorted(glob.glob(os.path.join(gpu_dir, "**", "*_kernel_stats.csv"), recursive=True))
-    path = candidates[rank_index]
-    rows = parse_kernel_stats_csv(path)
-    totals = {}
-    for row in rows:
-        entry = totals.setdefault(row["label"], [0, 0.0])
-        entry[0] += row["count"]
-        entry[1] += row["total_ns"] / 1e9
-    return {k: tuple(v) for k, v in totals.items()}
 
 
 def main(argv=None):

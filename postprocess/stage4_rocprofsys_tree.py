@@ -2,7 +2,7 @@
 kernel attachment.
 
 Scope: merging N per-rank call trees into one by tree position (not by label -- see
-rank_merge_math.py, used here and by the flat, by-label merge the hotspots tools use
+stage4_rank_merge_math.py, used here and by the flat, by-label merge the hotspots tools use
 instead), computing avg/std_dev/min/max/calls statistics per node across ranks, and
 attaching real GPU kernel data (from rocprofv3) onto the CPU subroutine that actually
 launched it. Has no opinion on which nodes get rendered or how, or on any one tool's
@@ -15,7 +15,7 @@ find_kernel_anchors(), unattached_kernel_per_rank(), make_kernel_node(),
 nearest_visible_ancestor(), is_kernel_launch().
 """
 
-from rank_merge_math import stats_across_ranks
+from stage4_rank_merge_math import stats_across_ranks
 
 # Best-effort list of known GPU-kernel-launch entry points -- not exhaustive.
 # Matched via substring/`in` (case-insensitive), not startswith/equality,

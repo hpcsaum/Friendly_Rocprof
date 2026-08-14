@@ -9,8 +9,8 @@ responsibility (garbage in, garbage out).
 
 Import note: this only works when run directly (`python3
 extract_hotspots.py ...`), since it relies on Python putting this
-script's own directory at the front of sys.path so `extract_CPU_hotspots` and
-`extract_GPU_hotspots` import as plain siblings with no path hacking.
+script's own directory at the front of sys.path so its sibling stage/tool
+modules import as plain siblings with no path hacking.
 """
 
 import argparse
@@ -19,12 +19,13 @@ from datetime import datetime
 
 import extract_CPU_hotspots as cpu_tool
 import extract_GPU_hotspots as gpu_tool
-
-# The only two HIP calls that actually mean "block the CPU until the GPU
-# catches up" -- see build_combined_view()'s docstring for why the rest of
-# the GPU-API bucket (hsakmt_ioctl, rocr::core::BusyWaitSignal::WaitAcquire,
-# etc.) is deliberately excluded from the table-1 subtraction.
-SYNC_WAIT_LABELS = {"hipStreamSynchronize", "hipDeviceSynchronize"}
+import stage4_rocprofsys_flat
+import stage4_rocprofv3
+from stage5_cpu_hotspots_table import CPU_HOTSPOTS_COLUMNS
+from stage5_fused_hotspots_table import FUSED_HOTSPOTS_COLUMNS, build_combined_view
+from stage5_gpu_hotspots_table import GPU_HOTSPOTS_COLUMNS
+from stage5_load_imbalance_table import compute_load_imbalance, load_imbalance_columns
+from stage5_table_render import render_table, select_entries
 
 HELP_BLURB = """\
 Reads the output of a profile_hotspots.sh run (or a matching pair of
@@ -48,98 +49,18 @@ for details.
 """
 
 
-def build_combined_view(rocprof_sys_dir, rocprofv3_dir):
-    """Returns (fused_entries, cpu_entries, cpu_gpu_api_entries, gpu_entries, info).
-
-    fused_entries: cpu_entries + gpu_entries merged into one list, each tagged
-    "domain" ("CPU"/"GPU") with "pct_total" recomputed against info's
-    combined_total_sec (NOT copied from either source dict, which are each
-    relative to their own run's own total).
-
-    info: {cpu_scanned, gpu_scanned, cpu_total_raw, gpu_api_overhead_sec,
-    cpu_pure_total_sec, gpu_total_sec, combined_total_sec} -- every number that
-    feeds the fused %total, so the report can show its own arithmetic.
-
-    The double-counting fix: rocprof-sys's CPU total is inclusive of time
-    blocked inside hipStreamSynchronize/hipDeviceSynchronize -- the same
-    physical interval rocprofv3's kernel TotalDurationNs already counts from
-    the device side. Subtracting that out of the CPU total before adding the
-    GPU total avoids counting that overlap twice.
-
-    gpu_api_overhead_sec sums ONLY these two exact labels' self_sum --
-    deliberately not every GPU-API-classified entry in cpu_gpu_api_entries
-    (that bucket still holds everything, unabridged, for table 4). The wider
-    bucket includes things like hsakmt_ioctl and
-    rocr::core::BusyWaitSignal::WaitAcquire, whose self-time is summed across
-    however many concurrent threads call them -- on a real multi-threaded run
-    that sum can legitimately exceed a single rank's own wall-clock span
-    (several threads can be simultaneously blocked on the GPU at once), which
-    made this subtraction clamp cpu_pure_total_sec to 0 even on realistic
-    data. hipStreamSynchronize/hipDeviceSynchronize are the two calls that
-    actually mean "block the CPU until the GPU catches up" -- a good enough
-    beginner-tool approximation of "time spent on the GPU" without that
-    multi-thread-sum inflation. Self-time (not inclusive sum) still matters
-    here too: if either label appears as more than one raw row (e.g. called
-    from multiple threads), self_sum sums correctly across them since every
-    node's self-time is disjoint from every other's.
-    """
-    cpu_entries, cpu_gpu_api_entries, cpu_scanned, cpu_total_raw = cpu_tool.aggregate(rocprof_sys_dir)
-    gpu_entries, gpu_scanned, gpu_total_ns = gpu_tool.aggregate(rocprofv3_dir)
-
-    gpu_api_overhead_sec = sum(e["self_sum"] for e in cpu_gpu_api_entries if e["label"] in SYNC_WAIT_LABELS)
-    cpu_pure_total_sec = max(0.0, cpu_total_raw - gpu_api_overhead_sec)
-    gpu_total_sec = gpu_total_ns / 1e9
-    combined_total_sec = cpu_pure_total_sec + gpu_total_sec
-
-    # self_sum drives the fused ranking by default (see cpu_tool.select_entries's
-    # rank_by) -- for GPU kernel entries there's no self-vs-inclusive distinction
-    # (a kernel is already a leaf event), so self_sum == sum there. pct_total here
-    # is self-based, same convention as cpu_tool.aggregate()'s own output --
-    # select_entries() recomputes it against whichever metric it actually ranks by.
-    fused_entries = []
-    for e in cpu_entries:
-        pct = (e["self_sum"] / combined_total_sec * 100.0) if combined_total_sec > 0 else None
-        fused_entries.append({
-            "label": e["label"], "domain": "CPU", "count": e["count"],
-            "sum": e["sum"], "self_sum": e["self_sum"], "pct_total": pct,
-        })
-    for e in gpu_entries:
-        pct = (e["sum"] / combined_total_sec * 100.0) if combined_total_sec > 0 else None
-        fused_entries.append({
-            "label": e["label"], "domain": "GPU", "count": e["count"],
-            "sum": e["sum"], "self_sum": e["sum"], "pct_total": pct,
-        })
-
-    info = {
-        "cpu_scanned": cpu_scanned,
-        "gpu_scanned": gpu_scanned,
-        "cpu_total_raw": cpu_total_raw,
-        "gpu_api_overhead_sec": gpu_api_overhead_sec,
-        "cpu_pure_total_sec": cpu_pure_total_sec,
-        "gpu_total_sec": gpu_total_sec,
-        "combined_total_sec": combined_total_sec,
-    }
-    return fused_entries, cpu_entries, cpu_gpu_api_entries, gpu_entries, info
-
-
-def format_table_fused(entries):
-    if not entries:
-        return "  (none found)\n"
-    lines = []
-    lines.append(f"  {'#':>3}  {'self(s)':>12}  {'%total':>7}  {'total(s)':>12}  {'dom':>3}  {'calls':>10}  name")
-    for i, e in enumerate(entries, 1):
-        pct_str = f"{e['pct_total']:.1f}" if e["pct_total"] is not None else "n/a"
-        lines.append(
-            f"  {i:>3}  {e['self_sum']:>12.6f}  {pct_str:>7}  {e['sum']:>12.6f}  "
-            f"{e['domain']:>3}  {e['count']:>10}  {e['label']}"
-        )
-    return "\n".join(lines) + "\n"
+def _prepare_pct_total(field, total):
+    def _prepare(entries):
+        for e in entries:
+            e["pct_total"] = (e[field] / total * 100.0) if total > 0 else None
+    return _prepare
 
 
 def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=None, show_all=False,
                   unfiltered=False):
     fused_entries, cpu_entries, cpu_gpu_api_entries, gpu_entries, info = build_combined_view(rocprof_sys_dir, rocprofv3_dir)
     rank_by = "inclusive" if unfiltered else "self"
+    key_field = "sum" if rank_by == "inclusive" else "self_sum"
 
     if not info["cpu_scanned"]:
         raise SystemExit(
@@ -153,13 +74,20 @@ def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=
     cpu_run_info = cpu_tool.gather_run_info(rocprof_sys_dir, info["cpu_scanned"])
     gpu_run_info = gpu_tool.gather_run_info(rocprofv3_dir, info["gpu_scanned"])
 
-    fused_selected, fused_desc = cpu_tool.select_entries(
-        fused_entries, info["combined_total_sec"], top, threshold, show_all, rank_by
+    fused_selected, fused_desc = select_entries(
+        fused_entries, rank_field=key_field, threshold_field="pct_total", top=top, threshold=threshold,
+        show_all=show_all, threshold_unit="of total runtime",
+        prepare=_prepare_pct_total(key_field, info["combined_total_sec"]),
     )
-    cpu_selected, cpu_desc = cpu_tool.select_entries(
-        cpu_entries, info["cpu_total_raw"], top, threshold, show_all, rank_by
+    cpu_selected, cpu_desc = select_entries(
+        cpu_entries, rank_field=key_field, threshold_field="pct_total", top=top, threshold=threshold,
+        show_all=show_all, threshold_unit="of total runtime",
+        prepare=_prepare_pct_total(key_field, info["cpu_total_raw"]),
     )
-    gpu_selected, gpu_desc = gpu_tool.select_entries(gpu_entries, info["gpu_total_sec"], top, threshold, show_all)
+    gpu_selected, gpu_desc = select_entries(
+        gpu_entries, rank_field="sum", threshold_field="pct_total", top=top, threshold=threshold,
+        show_all=show_all, threshold_unit="of total runtime",
+    )
 
     parts = []
     parts.append("rocprof combined (CPU + GPU) hotspots report\n")
@@ -202,7 +130,7 @@ def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=
 
     parts.append(f"=== 1. Combined hotspots (fused CPU+GPU ranking) -- showing {fused_desc} ===\n")
     parts.append("%total here is each entry's share of the combined pool above (double-counting-corrected).\n")
-    parts.append(format_table_fused(fused_selected))
+    parts.append(render_table(FUSED_HOTSPOTS_COLUMNS, fused_selected))
     parts.append(
         "Note: this fused ranking excludes CPU-side time spent blocked in "
         "hipStreamSynchronize/hipDeviceSynchronize, to avoid counting GPU execution time "
@@ -213,15 +141,19 @@ def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=
 
     parts.append(f"=== 2. CPU compute hotspots (rocprof-sys run) -- showing {cpu_desc} ===\n")
     parts.append("%total here is each entry's share of the CPU run's OWN total (not the combined pool).\n")
-    parts.append(cpu_tool.format_table(cpu_selected))
+    parts.append(render_table(CPU_HOTSPOTS_COLUMNS, cpu_selected))
     parts.append("\n")
 
     parts.append(f"=== 3. GPU kernel hotspots (rocprofv3 run) -- showing {gpu_desc} ===\n")
     parts.append("%total here is each entry's share of the GPU run's OWN total (not the combined pool).\n")
-    parts.append(gpu_tool.format_table(gpu_selected))
+    parts.append(render_table(GPU_HOTSPOTS_COLUMNS, gpu_selected))
     parts.append("\n")
 
-    gpu_api_selected, gpu_api_desc = cpu_tool.select_entries(cpu_gpu_api_entries, info["cpu_total_raw"], top, threshold, show_all)
+    gpu_api_selected, gpu_api_desc = select_entries(
+        cpu_gpu_api_entries, rank_field="self_sum", threshold_field="pct_total", top=top, threshold=threshold,
+        show_all=show_all, threshold_unit="of total runtime",
+        prepare=_prepare_pct_total("self_sum", info["cpu_total_raw"]),
+    )
     parts.append(f"=== 4. GPU API / launch overhead (rocprof-sys run) -- showing {gpu_api_desc} ===\n")
     parts.append(
         "%total here is each entry's share of the CPU run's OWN total. Every ROCm-library "
@@ -231,17 +163,17 @@ def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=
         "the rest (e.g. hsakmt_ioctl, rocr::* runtime-internal busy-wait/event threads) is "
         "shown here but deliberately left out of that subtraction -- see the header note.\n"
     )
-    parts.append(cpu_tool.format_table(gpu_api_selected))
+    parts.append(render_table(CPU_HOTSPOTS_COLUMNS, gpu_api_selected))
     parts.append("\n")
 
-    cpu_per_rank, cpu_imbalance_scanned = cpu_tool.aggregate_per_rank(rocprof_sys_dir, unfiltered=unfiltered)
+    cpu_per_rank, cpu_imbalance_scanned = stage4_rocprofsys_flat.aggregate_per_rank(rocprof_sys_dir, unfiltered=unfiltered)
     if len(cpu_imbalance_scanned) < 2:
         parts.append(
             "=== 5. CPU load imbalance across ranks (rocprof-sys run) -- skipped: only "
             f"{len(cpu_imbalance_scanned)} rank/file found, need at least 2 to compare ===\n"
         )
     else:
-        cpu_imbalance_selected, cpu_imbalance_desc = cpu_tool.compute_load_imbalance(cpu_per_rank, top, threshold, show_all)
+        cpu_imbalance_selected, cpu_imbalance_desc = compute_load_imbalance(cpu_per_rank, top, threshold, show_all)
         parts.append(
             f"=== 5. CPU load imbalance across {len(cpu_imbalance_scanned)} ranks (rocprof-sys run) "
             f"-- showing {cpu_imbalance_desc} ===\n"
@@ -251,17 +183,17 @@ def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=
             + " time on each rank, compared across ranks -- a rank "
             "that never called a function counts as 0.0 for that rank, not omitted.\n"
         )
-        parts.append(cpu_tool.format_table_load_imbalance(cpu_imbalance_selected))
+        parts.append(render_table(load_imbalance_columns(), cpu_imbalance_selected))
     parts.append("\n")
 
-    gpu_per_rank, gpu_imbalance_scanned = gpu_tool.aggregate_per_rank(rocprofv3_dir)
+    gpu_per_rank, gpu_imbalance_scanned = stage4_rocprofv3.aggregate_per_rank(rocprofv3_dir)
     if len(gpu_imbalance_scanned) < 2:
         parts.append(
             "=== 6. GPU kernel load imbalance across ranks (rocprofv3 run) -- skipped: only "
             f"{len(gpu_imbalance_scanned)} rank/file found, need at least 2 to compare ===\n"
         )
     else:
-        gpu_imbalance_selected, gpu_imbalance_desc = gpu_tool.compute_load_imbalance(gpu_per_rank, top, threshold, show_all)
+        gpu_imbalance_selected, gpu_imbalance_desc = compute_load_imbalance(gpu_per_rank, top, threshold, show_all)
         parts.append(
             f"=== 6. GPU kernel load imbalance across {len(gpu_imbalance_scanned)} ranks (rocprofv3 run) "
             f"-- showing {gpu_imbalance_desc} ===\n"
@@ -270,7 +202,7 @@ def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=
             "Each kernel's own total time on each rank, compared across ranks -- a rank "
             "that never launched a kernel counts as 0.0 for that rank, not omitted.\n"
         )
-        parts.append(gpu_tool.format_table_load_imbalance(gpu_imbalance_selected))
+        parts.append(render_table(load_imbalance_columns(item_label="kernel"), gpu_imbalance_selected))
 
     report = "".join(parts)
     with open(dest_path, "w") as f:

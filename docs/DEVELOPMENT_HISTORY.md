@@ -37,6 +37,7 @@
 | 2026-08-13 | Plan 2.4: split `calltree_common.py` into `stage4_rocprofsys_tree.py` (tree merge + kernel attachment), `tree_render.py` (rendering), and a new `stage1_run_dirs.py` (`resolve_run_dirs()`, moved out of §8's original "tree_render.py" placement after checking its real callers) -- roadmap step 3; also fixed `extract_pop_metrics.py`'s independent duplicate copy of `resolve_run_dirs()` (§6 finding 1) in the same step |
 | 2026-08-13 | Plan 2.5: built the shared stage-3 noise-classification engine (`stage3_rocprofsys.py`, `default_noise_patterns.json`) in isolation, not wired into any tool yet -- roadmap step 4; implements `splice`'s "fold" self-time-into-new-parent behavior for the first time, and generalizes the untethered-root "inherit from first real descendant" mechanism from GPU-only to any tag (e.g. MPI) |
 | 2026-08-14 | Plan 2.6: wired the stage-3 engine into `extract_CPU_hotspots.py`, `extract_calltree.py`, `extract_calltree_traced.py`, and `extract_pop_metrics.py` -- roadmap step 5, the first step allowed to change real report output; found and fixed 4 real bugs during implementation/verification (disabled `mpi_territory`'s untethered-root generalization as unsafe, fixed `structural_drop_tags` not cascading to descendants, restored a dropped `__tgt_target_kernel` pattern, fixed `gpu_api`'s prefix-vs-substring mismatch) -- see full real-data diff accounting below |
+| 2026-08-14 | Plan 2.7: built `stage4_rocprofsys_flat.py`/`stage4_rocprofv3.py` and a generic stage-5 backend (`stage5_table_render.py`) shared by every hotspots/load-imbalance/fused/POP-metrics table -- roadmap step 6; fixed the nondeterministic tie-order bug flagged (not fixed) in plan 2.3, as part of relocating `compute_load_imbalance()`; also promoted `tree_render.py` to stage 5 (renamed `stage5_tree_render.py`) and gave each calltree tool its own stage-5 companion module -- see full design/rename/real-data accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -1339,3 +1340,83 @@ specific, named cause (no unexplained diff shipped):
   `rocprofiler::` substrings, `__tgt_target_kernel` and its ancestor-propagated descendants, and
   fix #4's `hip`/`hsa`/etc. substring-vs-prefix correction) and 2 rows dropped entirely across 2 of
   the 6 dirs (`_int_malloc`, from enabling `compiler_runtime_noise`).
+
+## 2026-08-14 — Plan 2.7: stage4 flat modules + generic stage5 table/tree-render modules (roadmap step 6)
+
+Sixth implementation step: pulled the stage-4 (merge ranks) and stage-5 (rank/select/render a
+table) logic that was still inline inside `extract_CPU_hotspots.py`, `extract_GPU_hotspots.py`, and
+`extract_hotspots.py` out into shared modules, and fixed the nondeterministic tie-order bug in
+`compute_load_imbalance()`'s sort that plan 2.3 had flagged but deliberately left unfixed, as part
+of relocating that function rather than as a separate patch.
+
+The design went through three rounds of user-directed consolidation beyond the roadmap's original
+"four stage-5 files" sketch, each closing a real duplication the previous round had missed:
+
+1. **A generic ranking/rendering backend, not four hand-written table modules.** Reading
+   `extract_CPU_hotspots.py`'s and `extract_GPU_hotspots.py`'s `select_entries()`/`format_table()`
+   pairs side by side showed `compute_load_imbalance()` was byte-identical between the two, and the
+   remaining differences in `select_entries()`/`format_table()` were genuinely just "which field to
+   rank by" and "which columns to show" -- not different algorithms. That became one domain-agnostic
+   `stage5_table_render.py` (`select_entries()`: rank + threshold-filter + truncate, parameterized
+   by field name; `render_table()`: renders a column-spec list against any entries, no idea what
+   they represent) used by every stage-5 table alike. This is also where the tie-order fix lives:
+   `select_entries()` always sorts by `(-entry[rank_field], entry[tie_break_field])` -- descending
+   primary, ascending secondary -- so every caller gets deterministic output for free, not just
+   `compute_load_imbalance()`'s own callers. CPU's one genuinely irreducible piece of per-domain
+   logic (recomputing `pct_total` against whichever of `self_sum`/`sum` `rank_by` selects) became
+   `select_entries()`'s `prepare` callable parameter (a no-op by default) rather than a name of its
+   own, the same shape used again below for `stage5_tree_render.load_rank_trees()`'s `postprocess`
+   parameter.
+2. **One file per table, not two per domain.** `stage5_cpu_hotspots_table.py`,
+   `stage5_gpu_hotspots_table.py`, and a new `stage5_load_imbalance_table.py` (load-imbalance turned
+   out to be one shared table concept used identically by both CPU and GPU tools, not a per-domain
+   variant bundled into each domain's own file, as the original roadmap sketch had it) each hold
+   just a column-spec list -- easier to open exactly the table being touched without wading through
+   the others.
+3. **`tree_render.py` promoted to stage 5 and extended, not left as a stage-6 exception.** Renamed
+   `stage5_tree_render.py`: rendering a tree into report text is the same stage-5 job as rendering a
+   table into report text, and it was already the same generic-backend/column-spec shape this plan
+   applies elsewhere (`format_aligned_rows(rows, headers)` / `REPORT_HEADERS`). Reading
+   `extract_calltree.py` and `extract_calltree_traced.py` in full for this move surfaced a second,
+   unplanned consolidation: their `load_rank_trees()`, GPU-kernel-pairing/attachment
+   (`_kernel_totals_with_counts()`, the `aggregate_per_rank()`-and-warn block, the "unattached
+   kernels" fallback table), and main-tree-rendering call were identical or near-identical between
+   the two tools. All five became shared functions in `stage5_tree_render.py`
+   (`load_rank_trees()`, now generalized via `primary_pattern`/`fallback_pattern`/`postprocess`
+   parameters instead of a hardcoded sampling-vs-traced branch; `kernel_totals_with_counts()`;
+   `pair_gpu_per_rank()`; `attach_and_render_gpu_kernels()`; `render_calltree_text()`), with each
+   tool keeping only its own prune/collapse predicates and (for the sampling tool)
+   its wrapper-noise postprocess step in a new, thin companion module
+   (`stage5_calltree_view.py` / `stage5_calltree_traced_view.py`) -- the calltree tools' equivalent
+   of the hotspots tools' stage-5 table modules. `rank_merge_math.py` was also renamed
+   `stage4_rank_merge_math.py`, matching the `stage1_`/`stage2_`/`stage3_`/`stage4_` prefix every
+   other stage module already carries.
+
+`docs/plans/2.1-postprocess-consolidation-refactor.md` §8 gains a divergence note pointing to
+[docs/plans/2.7-stage4-flat-and-stage5-tables.md](plans/2.7-stage4-flat-and-stage5-tables.md) for
+this as-built layout, alongside the plan-2.4 and plan-2.6 notes already there.
+
+Test rework followed the same "run the existing suite against the new layout first" discipline
+plan 2.6 established: of 320 tests, 42 broke on the first pass (every one an import of a moved
+function -- `select_entries`/`format_table`/`compute_load_imbalance`/`format_table_load_imbalance`
+off `extract_CPU_hotspots`/`extract_GPU_hotspots`, `compute_scaling_metrics`/`compute_gpu_efficiency`
+off `extract_pop_metrics`, `build_combined_view`/`SYNC_WAIT_LABELS` off `extract_hotspots`, and
+`load_rank_trees` off both calltree tools), none from an actual behavior change. Test files split
+along the same lines as the source: new `test_stage4_rocprofsys_flat.py`, `test_stage4_rocprofv3.py`,
+`test_stage5_table_render.py`, `test_stage5_cpu_hotspots_table.py`, `test_stage5_gpu_hotspots_table.py`,
+`test_stage5_load_imbalance_table.py`, `test_stage5_fused_hotspots_table.py`,
+`test_stage5_pop_metrics_table.py`, `test_stage5_calltree_view.py`, `test_stage5_calltree_traced_view.py`;
+`test_rank_merge_math.py`/`test_tree_render.py` renamed to match their modules; `test_stage5_tree_render.py`
+also gained direct coverage for the five newly-shared functions, previously only exercised
+indirectly through each calltree tool's own tests. Final suite: 343 tests, all passing.
+
+Real-data verification across all 6 `test_apps/results/` directories: `calltree.txt`,
+`calltree_traced.txt`, and `pop_metrics.txt` came back byte-identical in all 6 dirs (none of their
+code paths hit the tie-order fix). `hotspots.txt` differed in all 6 dirs, entirely and only where
+`select_entries()`'s new deterministic tie-break reorders entries that were already tied on their
+ranking field (mostly the GPU-API bucket's many zero-self-time entries) -- confirmed at the Python
+level for every reordered group, not just eyeballed: every swapped pair/group shares an identical
+`self_sum` (to full float precision) and the new order is alphabetical by label, exactly
+`select_entries()`'s designed tie-break. No other differences of any kind in any of the 24
+regenerated files.
+

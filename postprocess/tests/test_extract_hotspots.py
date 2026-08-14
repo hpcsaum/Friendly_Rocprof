@@ -26,99 +26,6 @@ GPU_DIR_SINGLE = os.path.join(FIXTURES, "rocprofv3_single_rank")
 CPU_DIR_EMPTY = os.path.join(FIXTURES, "no_timing_data")
 GPU_DIR_EMPTY = os.path.join(FIXTURES, "rocprofv3_no_data")
 CPU_DIR_DATED_SUBDIR = os.path.join(FIXTURES, "mpi_2rank_dated_subdir")
-CPU_DIR_GPU_API_NESTED_CHAIN = os.path.join(FIXTURES, "gpu_api_nested_chain")
-CPU_DIR_GPU_SYNC_WAIT = os.path.join(FIXTURES, "gpu_sync_wait")
-
-
-class BuildCombinedViewTests(unittest.TestCase):
-    def test_subtraction_arithmetic_matches_documented_formula(self):
-        fused, cpu_entries, cpu_gpu_api_entries, gpu_entries, info = combined.build_combined_view(
-            CPU_DIR_GPU_SYNC_WAIT, GPU_DIR_SINGLE
-        )
-
-        # Independently recompute expected numbers straight from the sibling
-        # modules' own aggregate() on the same fixtures, rather than hand-typing
-        # decimals -- this is the actual documented formula, not a guess.
-        import extract_CPU_hotspots as cpu_tool
-        import extract_GPU_hotspots as gpu_tool
-
-        exp_cpu_entries, exp_gpu_api_entries, exp_cpu_scanned, exp_cpu_total_raw = cpu_tool.aggregate(
-            CPU_DIR_GPU_SYNC_WAIT
-        )
-        exp_gpu_entries, exp_gpu_scanned, exp_gpu_total_ns = gpu_tool.aggregate(GPU_DIR_SINGLE)
-        # self_sum, not inclusive sum, and ONLY the two sync-wait labels -- see
-        # build_combined_view()'s own docstring for why the rest of the GPU-API
-        # bucket (which can include multi-thread-inflated self-time sums) is excluded.
-        exp_overhead = sum(
-            e["self_sum"] for e in exp_gpu_api_entries if e["label"] in combined.SYNC_WAIT_LABELS
-        )
-        exp_cpu_pure = max(0.0, exp_cpu_total_raw - exp_overhead)
-        exp_gpu_total_sec = exp_gpu_total_ns / 1e9
-        exp_combined_total = exp_cpu_pure + exp_gpu_total_sec
-
-        self.assertAlmostEqual(info["cpu_total_raw"], exp_cpu_total_raw)
-        self.assertAlmostEqual(info["gpu_api_overhead_sec"], exp_overhead)
-        self.assertAlmostEqual(info["gpu_api_overhead_sec"], 3.5)  # hipStreamSynchronize(2.0) + hipDeviceSynchronize(1.5)
-        self.assertAlmostEqual(info["cpu_pure_total_sec"], exp_cpu_pure)
-        self.assertAlmostEqual(info["gpu_total_sec"], exp_gpu_total_sec)
-        self.assertAlmostEqual(info["combined_total_sec"], exp_combined_total)
-        # the subtraction must have actually removed something, not be a no-op
-        self.assertLess(info["cpu_pure_total_sec"], info["cpu_total_raw"])
-
-    def test_gpu_api_overhead_excludes_non_sync_wait_calls(self):
-        # hipLaunchKernel is a real GPU-API entry (table 4 will still show it)
-        # but it isn't a blocking sync call -- it must not feed the subtraction.
-        _fused, _cpu_entries, cpu_gpu_api_entries, _gpu_entries, info = combined.build_combined_view(
-            CPU_DIR_GPU_SYNC_WAIT, GPU_DIR_SINGLE
-        )
-        gpu_api_labels = {e["label"] for e in cpu_gpu_api_entries}
-        self.assertIn("hipLaunchKernel", gpu_api_labels)  # still in table 4's source data
-        self.assertAlmostEqual(info["gpu_api_overhead_sec"], 3.5)  # NOT 3.5 + hipLaunchKernel's 0.5
-
-    def test_fused_pct_total_differs_from_each_sides_own_standalone_pct(self):
-        fused, cpu_entries, cpu_gpu_api_entries, gpu_entries, info = combined.build_combined_view(CPU_DIR, GPU_DIR)
-        fused_by_label = {(e["label"], e["domain"]): e for e in fused}
-        cpu_by_label = {e["label"]: e for e in cpu_entries}
-        gpu_by_label = {e["label"]: e for e in gpu_entries}
-
-        # same absolute "sum" as the standalone tools...
-        self.assertAlmostEqual(fused_by_label[("compute_stencil", "CPU")]["sum"], cpu_by_label["compute_stencil"]["sum"])
-        self.assertAlmostEqual(fused_by_label[("JacobiIterationKernel", "GPU")]["sum"], gpu_by_label["JacobiIterationKernel"]["sum"])
-        # ...but a DIFFERENT pct_total than each side's own standalone number,
-        # proving genuine recombination happened (not the rejected no-op rescale).
-        self.assertNotAlmostEqual(
-            fused_by_label[("compute_stencil", "CPU")]["pct_total"],
-            cpu_by_label["compute_stencil"]["pct_total"],
-        )
-        self.assertNotAlmostEqual(
-            fused_by_label[("JacobiIterationKernel", "GPU")]["pct_total"],
-            gpu_by_label["JacobiIterationKernel"]["pct_total"],
-        )
-
-    def test_fused_list_excludes_gpu_api_overhead_bucket(self):
-        fused, cpu_entries, cpu_gpu_api_entries, gpu_entries, info = combined.build_combined_view(CPU_DIR, GPU_DIR)
-        fused_labels = {e["label"] for e in fused}
-        self.assertNotIn("hipMemcpy", fused_labels)
-        self.assertIn("hipMemcpy", {e["label"] for e in cpu_gpu_api_entries})
-
-    def test_mismatched_pairing_combines_without_error_gigo(self):
-        # Deliberately mismatched: single_rank (CPU) with the 2-rank GPU fixture.
-        # No cross-validation should happen -- this must not raise.
-        fused, cpu_entries, cpu_gpu_api_entries, gpu_entries, info = combined.build_combined_view(CPU_DIR_SINGLE, GPU_DIR)
-        self.assertTrue(fused)
-        self.assertGreater(info["combined_total_sec"], 0)
-
-    def test_gpu_api_overhead_does_not_overcount_a_nested_call_chain(self):
-        # gpu_api_nested_chain fixture: hipStreamCreate -> hip::hipStreamCreate(...) ->
-        # hip::ihipStreamCreate(...) -- none of these three labels is
-        # hipStreamSynchronize/hipDeviceSynchronize, so this whole chain (a real
-        # GPU-API cost, just not a blocking sync wait) contributes NOTHING to
-        # the table-1 subtraction, even though table 4 still shows all three.
-        _fused, _cpu_entries, cpu_gpu_api_entries, _gpu_entries, info = combined.build_combined_view(
-            CPU_DIR_GPU_API_NESTED_CHAIN, GPU_DIR_SINGLE
-        )
-        self.assertEqual(len(cpu_gpu_api_entries), 3)
-        self.assertAlmostEqual(info["gpu_api_overhead_sec"], 0.0)
 
 
 class WriteReportTests(unittest.TestCase):
@@ -134,36 +41,56 @@ class WriteReportTests(unittest.TestCase):
             self.assertTrue(i1 < i2 < i3 < i4)
 
     def test_table2_matches_standalone_cpu_tool_output(self):
-        import extract_CPU_hotspots as cpu_tool
+        import stage4_rocprofsys_flat
+        from stage5_cpu_hotspots_table import CPU_HOTSPOTS_COLUMNS
+        from stage5_table_render import render_table, select_entries
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "hotspots.txt")
             report = combined.write_report(CPU_DIR, GPU_DIR, dest)
 
-        cpu_entries, cpu_gpu_api_entries, cpu_scanned, cpu_total_raw = cpu_tool.aggregate(CPU_DIR)
-        selected, _ = cpu_tool.select_entries(cpu_entries, cpu_total_raw)
-        standalone_table = cpu_tool.format_table(selected)
+        cpu_entries, _cpu_gpu_api_entries, _cpu_scanned, cpu_total_raw = stage4_rocprofsys_flat.aggregate(CPU_DIR)
+
+        def _prepare(entries):
+            for e in entries:
+                e["pct_total"] = (e["self_sum"] / cpu_total_raw * 100.0) if cpu_total_raw > 0 else None
+
+        selected, _ = select_entries(
+            cpu_entries, rank_field="self_sum", threshold_field="pct_total", prepare=_prepare,
+        )
+        standalone_table = render_table(CPU_HOTSPOTS_COLUMNS, selected)
         self.assertIn(standalone_table.strip(), report)
 
     def test_table3_matches_standalone_gpu_tool_output(self):
-        import extract_GPU_hotspots as gpu_tool
+        import stage4_rocprofv3
+        from stage5_gpu_hotspots_table import GPU_HOTSPOTS_COLUMNS
+        from stage5_table_render import render_table, select_entries
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "hotspots.txt")
             report = combined.write_report(CPU_DIR, GPU_DIR, dest)
 
-        gpu_entries, gpu_scanned, gpu_total_ns = gpu_tool.aggregate(GPU_DIR)
-        selected, _ = gpu_tool.select_entries(gpu_entries, gpu_total_ns / 1e9)
-        standalone_table = gpu_tool.format_table(selected)
+        gpu_entries, _gpu_scanned, _gpu_total_ns = stage4_rocprofv3.aggregate(GPU_DIR)
+        selected, _ = select_entries(gpu_entries, rank_field="sum", threshold_field="pct_total")
+        standalone_table = render_table(GPU_HOTSPOTS_COLUMNS, selected)
         self.assertIn(standalone_table.strip(), report)
 
     def test_table4_matches_standalone_gpu_api_bucket(self):
-        import extract_CPU_hotspots as cpu_tool
+        import stage4_rocprofsys_flat
+        from stage5_cpu_hotspots_table import CPU_HOTSPOTS_COLUMNS
+        from stage5_table_render import render_table, select_entries
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "hotspots.txt")
             report = combined.write_report(CPU_DIR, GPU_DIR, dest)
 
-        cpu_entries, cpu_gpu_api_entries, cpu_scanned, cpu_total_raw = cpu_tool.aggregate(CPU_DIR)
-        selected, _ = cpu_tool.select_entries(cpu_gpu_api_entries, cpu_total_raw)
-        standalone_table = cpu_tool.format_table(selected)
+        _cpu_entries, cpu_gpu_api_entries, _cpu_scanned, cpu_total_raw = stage4_rocprofsys_flat.aggregate(CPU_DIR)
+
+        def _prepare(entries):
+            for e in entries:
+                e["pct_total"] = (e["self_sum"] / cpu_total_raw * 100.0) if cpu_total_raw > 0 else None
+
+        selected, _ = select_entries(
+            cpu_gpu_api_entries, rank_field="self_sum", threshold_field="pct_total", prepare=_prepare,
+        )
+        standalone_table = render_table(CPU_HOTSPOTS_COLUMNS, selected)
         self.assertIn(standalone_table.strip(), report)
 
     def test_header_labels_both_runs_independently(self):
@@ -212,19 +139,21 @@ class WriteReportTests(unittest.TestCase):
             self.assertIn("JacobiIterationKernel", report[i6:])
 
     def test_load_imbalance_tables_match_standalone_tool_output(self):
-        import extract_CPU_hotspots as cpu_tool
-        import extract_GPU_hotspots as gpu_tool
+        import stage4_rocprofsys_flat
+        import stage4_rocprofv3
+        from stage5_load_imbalance_table import compute_load_imbalance, load_imbalance_columns
+        from stage5_table_render import render_table
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "hotspots.txt")
             report = combined.write_report(CPU_DIR, GPU_DIR, dest)
 
-        cpu_per_rank, _ = cpu_tool.aggregate_per_rank(CPU_DIR)
-        cpu_selected, _ = cpu_tool.compute_load_imbalance(cpu_per_rank)
-        self.assertIn(cpu_tool.format_table_load_imbalance(cpu_selected).strip(), report)
+        cpu_per_rank, _ = stage4_rocprofsys_flat.aggregate_per_rank(CPU_DIR)
+        cpu_selected, _ = compute_load_imbalance(cpu_per_rank)
+        self.assertIn(render_table(load_imbalance_columns(), cpu_selected).strip(), report)
 
-        gpu_per_rank, _ = gpu_tool.aggregate_per_rank(GPU_DIR)
-        gpu_selected, _ = gpu_tool.compute_load_imbalance(gpu_per_rank)
-        self.assertIn(gpu_tool.format_table_load_imbalance(gpu_selected).strip(), report)
+        gpu_per_rank, _ = stage4_rocprofv3.aggregate_per_rank(GPU_DIR)
+        gpu_selected, _ = compute_load_imbalance(gpu_per_rank)
+        self.assertIn(render_table(load_imbalance_columns(item_label="kernel"), gpu_selected).strip(), report)
 
     def test_load_imbalance_tables_skipped_on_single_rank_pairing(self):
         with tempfile.TemporaryDirectory() as tmp:

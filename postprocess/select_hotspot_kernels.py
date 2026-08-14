@@ -21,7 +21,8 @@ import argparse
 import os
 import sys
 
-import extract_GPU_hotspots as gpu_tool
+from stage4_rocprofv3 import aggregate
+from stage5_table_render import select_entries
 
 HELP_BLURB = """\
 Turns a profile_hotspot_kernels.sh (or extract_GPU_hotspots.py/extract_hotspots.py) report --
@@ -42,13 +43,16 @@ for details.
 
 def labels_from_output_dir(rocprofv3_dir, top=None, threshold=None, show_all=False,
                             require_multiple_calls=True):
-    entries, scanned, total_ns = gpu_tool.aggregate(rocprofv3_dir)
+    entries, scanned, total_ns = aggregate(rocprofv3_dir)
     if not scanned:
         raise SystemExit(
             f"error: no rocprofv3 kernel_stats.csv found in {rocprofv3_dir!r} -- "
             "nothing to select hotspot kernels from"
         )
-    selected, _desc = gpu_tool.select_entries(entries, total_ns, top=top, threshold=threshold, show_all=show_all)
+    selected, _desc = select_entries(
+        entries, rank_field="sum", threshold_field="pct_total", top=top, threshold=threshold,
+        show_all=show_all, threshold_unit="of total runtime",
+    )
     if require_multiple_calls:
         selected = [e for e in selected if e["count"] >= 2]
     return sorted({e["label"] for e in selected})
@@ -56,8 +60,8 @@ def labels_from_output_dir(rocprofv3_dir, top=None, threshold=None, show_all=Fal
 
 def labels_from_report(report_path, require_multiple_calls=True):
     """Reads the 'GPU kernel hotspots' table from a report written by extract_GPU_hotspots.py
-    or extract_hotspots.py -- both use the exact same gpu_tool.format_table() layout, so one
-    parser covers both. Rows are taken as-is: whatever selection produced the report is
+    or extract_hotspots.py -- both render it via the exact same GPU_HOTSPOTS_COLUMNS layout, so
+    one parser covers both. Rows are taken as-is: whatever selection produced the report is
     trusted, except for the require_multiple_calls filter applied here from the 'calls' column."""
     with open(report_path, errors="replace") as f:
         lines = f.readlines()
@@ -87,7 +91,7 @@ def labels_from_report(report_path, require_multiple_calls=True):
     for line in lines[header + 1:]:
         if not line.strip():
             break
-        # gpu_tool.format_table()'s columns: # total(s) %total calls avg(us) kernel -- maxsplit=5
+        # GPU_HOTSPOTS_COLUMNS: # total(s) %total calls avg(us) kernel -- maxsplit=5
         # keeps the kernel name (which may itself contain spaces, e.g. a templated C++ signature)
         # intact as the 6th and last piece.
         parts = line.split(maxsplit=5)

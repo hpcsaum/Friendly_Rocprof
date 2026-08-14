@@ -3,11 +3,11 @@ import os
 import sys
 import unittest
 
-MODULE_PATH = os.path.join(os.path.dirname(__file__), "..", "rank_merge_math.py")
+MODULE_PATH = os.path.join(os.path.dirname(__file__), "..", "stage4_rank_merge_math.py")
 
-spec = importlib.util.spec_from_file_location("rank_merge_math", MODULE_PATH)
+spec = importlib.util.spec_from_file_location("stage4_rank_merge_math", MODULE_PATH)
 rmm = importlib.util.module_from_spec(spec)
-sys.modules["rank_merge_math"] = rmm
+sys.modules["stage4_rank_merge_math"] = rmm
 spec.loader.exec_module(rmm)
 
 

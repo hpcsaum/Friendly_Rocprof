@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Extract a short GPU kernel hotspots report from rocprofv3 kernel_stats.csv output.
 
-Only reads `*_kernel_stats.csv` (produced by `rocprofv3 --kernel-trace --stats
---output-format csv`). This is real GPU device execution time -- unlike
-rocprof-sys's text/JSON output, which only ever captures host-side timing.
-For CPU-side hotspots, see scripts/profile_CPU_hotspots.sh instead.
+Only reads *_kernel_stats.csv files rocprofv3 writes with --kernel-trace --stats
+--output-format csv. This is REAL device kernel execution time, unlike
+extract_CPU_hotspots.py's host-side timing -- see extract_hotspots.py to combine
+both into one report.
 """
 
 import argparse
@@ -12,206 +12,44 @@ import glob
 import json
 import os
 import re
-import sys
 from datetime import datetime
 
-from stage1_rocprofv3 import parse_kernel_stats_csv
-from rank_merge_math import stats_across_ranks
+from stage4_rocprofv3 import aggregate, aggregate_per_rank
+from stage5_gpu_hotspots_table import GPU_HOTSPOTS_COLUMNS
+from stage5_load_imbalance_table import compute_load_imbalance, load_imbalance_columns
+from stage5_table_render import render_table, select_entries
 
-# rocprofv3's --output-config (-> <pid>_config.json) is a post-ROCm-7.0.2 feature;
-# absent that file (the common case for our 7.0.2 compatibility target), header
-# fields below just stay blank. No documented field-name schema was found for it
-# either, so this is a best-effort guess, same philosophy as extract_CPU_hotspots.py.
 CONFIG_EXECUTABLE_KEYS = ["command", "command_line", "argv", "cmd", "exe", "executable"]
 CONFIG_DATETIME_KEYS = ["init_time", "start_time", "launch_time", "timestamp"]
 CONFIG_RUNTIME_KEYS = ["elapsed", "duration", "wall_time", "total_time", "runtime"]
 
-# rocprofv3's default naming is "<hostname>/<pid>_kernel_stats.csv" -- used as a
-# fallback rank count (one file per process/rank) when config.json lacks one.
 PID_SUFFIX_RE = re.compile(r"(\d+)_kernel_stats\.csv$")
 
 HELP_BLURB = """\
 Reads the output of a profile_GPU_hotspots.sh run (or any rocprofv3 output
-directory) and writes a short, ranked text report: which GPU kernels
-actually spend the most time executing on the GPU itself.
+directory) and writes a short, ranked text report: which GPU kernels take
+the most device execution time.
 
-This is real device execution time, telling you which pieces of GPU work
-are worth optimizing first. It does NOT show CPU-side hotspots (functions
-still running on the CPU, possibly candidates for offloading to the GPU in
-the first place) -- for that, see extract_CPU_hotspots.py, or
-extract_hotspots.py for both combined.
-
-Numbers are percentages of total measured GPU time -- good enough to spot
-your top bottleneck, not a precise, reproducible benchmark.
+This is REAL GPU kernel execution time, measured on the device itself --
+unlike extract_CPU_hotspots.py, which only sees host-side (CPU) timing and
+can't tell you how long a kernel actually ran on the GPU. For host-side
+launch/API overhead, or a combined CPU+GPU view, see extract_hotspots.py.
 
 Under the hood, this parses output written by AMD's rocprofv3 -- see
-https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-rocprofv3.html
-for details.
+https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/ for details.
 """
 
 
-def aggregate(output_dir):
-    """Recursively find *_kernel_stats.csv under output_dir and aggregate by
-    kernel name. Returns (entries, scanned_files, total_ns) where entries is
-    [{"label", "count", "total_ns"}] (unsorted) and total_ns is the sum of
-    every row's TotalDurationNs across every scanned file -- the denominator
-    for each entry's "% of total" (rocprofv3 already aggregates duplicate
-    kernel names *within* one file, so no per-file dedup is needed here).
-    """
-    scanned_files = []
-    totals = {}  # label -> {"count": int, "total_ns": float}
-    total_ns = 0.0
-
-    candidates = sorted(glob.glob(os.path.join(output_dir, "**", "*_kernel_stats.csv"), recursive=True))
-    for path in candidates:
-        rows = parse_kernel_stats_csv(path)
-        if rows is None:
-            continue
-        scanned_files.append(path)
-        for row in rows:
-            entry = totals.setdefault(row["label"], {"count": 0, "total_ns": 0.0})
-            entry["count"] += row["count"]
-            entry["total_ns"] += row["total_ns"]
-            total_ns += row["total_ns"]
-
-    entries = []
-    for label, entry in totals.items():
-        pct_total = (entry["total_ns"] / total_ns * 100.0) if total_ns > 0 else None
-        avg_us = (entry["total_ns"] / entry["count"] / 1000.0) if entry["count"] > 0 else None
-        entries.append({
-            "label": label,
-            "count": entry["count"],
-            "sum": entry["total_ns"] / 1e9,  # seconds, for consistent naming with extract_CPU_hotspots.py
-            "avg_us": avg_us,
-            "pct_total": pct_total,
-        })
-
-    return entries, scanned_files, total_ns
-
-
-def aggregate_per_rank(output_dir):
-    """Like aggregate(), but keeps each scanned file's per-kernel sums
-    separate instead of merging them into one global total -- one scanned
-    file is treated as one rank's contribution (same file-per-process
-    assumption guess_num_ranks() already relies on). rocprofv3 already
-    aggregates duplicate kernel names within one file internally, so each
-    file's own rows are already a clean per-rank subtotal, same as
-    aggregate() itself relies on.
-
-    Returns (per_file_totals, scanned_files) where per_file_totals is a
-    list of {kernel_name: total_seconds} dicts, one per scanned file, in
-    the same order as scanned_files.
-    """
-    scanned_files = []
-    per_file_totals = []
-
-    candidates = sorted(glob.glob(os.path.join(output_dir, "**", "*_kernel_stats.csv"), recursive=True))
-    for path in candidates:
-        rows = parse_kernel_stats_csv(path)
-        if rows is None:
-            continue
-        scanned_files.append(path)
-        file_totals = {}
-        for row in rows:
-            file_totals[row["label"]] = file_totals.get(row["label"], 0.0) + row["total_ns"] / 1e9
-        per_file_totals.append(file_totals)
-
-    return per_file_totals, scanned_files
-
-
-def compute_load_imbalance(per_file_totals, top=None, threshold=None, show_all=False):
-    """Per-kernel avg/std_dev/min/max of each rank's own total time in that kernel, across all
-    ranks in per_file_totals -- the stats themselves come from the shared
-    rank_merge_math.stats_across_ranks(); the surrounding per-label loop and the
-    show_all/threshold/top selection below are still a standalone copy of
-    extract_CPU_hotspots.py's function of the same name. A rank missing a kernel counts as
-    0.0 for that rank, not omitted. --threshold here means coefficient of variation
-    (std_dev / avg, as a %), not % of total GPU time.
-    """
-    labels = {label for ft in per_file_totals for label in ft}
-    entries = []
-    for label in labels:
-        values = [ft.get(label, 0.0) for ft in per_file_totals]
-        stats = stats_across_ranks(values)
-        entries.append({
-            "label": label,
-            "avg": stats["avg"],
-            "std_dev": stats["std_dev"],
-            "min": stats["min"],
-            "max": stats["max"],
-            "cv_pct": (stats["std_dev"] / stats["avg"] * 100.0) if stats["avg"] > 0 else None,
-        })
-
-    entries_sorted = sorted(entries, key=lambda e: e["std_dev"], reverse=True)
-    total_count = len(entries_sorted)
-
-    if show_all:
-        return entries_sorted, f"all {total_count} entries"
-
-    if threshold is not None:
-        filtered = [e for e in entries_sorted if e["cv_pct"] is not None and e["cv_pct"] >= threshold]
-        return filtered, f">= {threshold:g}% coefficient of variation ({len(filtered)} of {total_count} entries)"
-
-    n = 20 if top is None else top
-    return entries_sorted[:n], f"top {n} of {total_count} entries by std_dev"
-
-
-def format_table_load_imbalance(entries):
-    if not entries:
-        return "  (none found)\n"
-    lines = []
-    lines.append(f"  {'#':>3}  {'avg(s)':>12}  {'std_dev':>10}  {'min(s)':>12}  {'max(s)':>12}  kernel")
-    for i, e in enumerate(entries, 1):
-        lines.append(f"  {i:>3}  {e['avg']:>12.6f}  {e['std_dev']:>10.6f}  {e['min']:>12.6f}  {e['max']:>12.6f}  {e['label']}")
-    return "\n".join(lines) + "\n"
-
-
-def select_entries(entries, total_ns, top=None, threshold=None, show_all=False):
-    """Same top/threshold/all selection semantics as extract_CPU_hotspots.py --
-    duplicated rather than imported, since each extractor is meant to stand alone."""
-    entries_sorted = sorted(entries, key=lambda e: e["sum"], reverse=True)
-    total_count = len(entries_sorted)
-
-    if show_all:
-        return entries_sorted, f"all {total_count} entries"
-
-    if threshold is not None:
-        if total_ns <= 0:
-            return entries_sorted, f"all {total_count} entries (total runtime unknown, threshold ignored)"
-        filtered = [e for e in entries_sorted if e["pct_total"] is not None and e["pct_total"] >= threshold]
-        return filtered, f">= {threshold:g}% of total runtime ({len(filtered)} of {total_count} entries)"
-
-    n = 20 if top is None else top
-    return entries_sorted[:n], f"top {n} of {total_count} entries"
-
-
-def format_table(entries):
-    if not entries:
-        return "  (none found)\n"
-    lines = []
-    lines.append(f"  {'#':>3}  {'total(s)':>12}  {'%total':>7}  {'calls':>10}  {'avg(us)':>10}  kernel")
-    for i, e in enumerate(entries, 1):
-        pct_total_str = f"{e['pct_total']:.1f}" if e["pct_total"] is not None else "n/a"
-        avg_str = f"{e['avg_us']:.2f}" if e["avg_us"] is not None else "n/a"
-        lines.append(f"  {i:>3}  {e['sum']:>12.6f}  {pct_total_str:>7}  {e['count']:>10}  {avg_str:>10}  {e['label']}")
-    return "\n".join(lines) + "\n"
-
-
 def load_config_json(output_dir):
-    """Best-effort search for rocprofv3's optional <pid>_config.json (from
-    --output-config). Returns the first one found, parsed, or {} if none exists
-    or it fails to parse -- this is a post-ROCm-7.0.2 feature, so absence is
-    the expected common case, not an error."""
     candidates = sorted(glob.glob(os.path.join(output_dir, "**", "*_config.json"), recursive=True))
-    for path in candidates:
-        try:
-            with open(path) as f:
-                data = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            continue
-        if isinstance(data, dict):
-            return data
-    return {}
+    if not candidates:
+        return {}
+    try:
+        with open(candidates[0]) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def find_first_key(d, candidate_keys, _depth=0):
@@ -284,7 +122,10 @@ def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False
         )
 
     run_info = gather_run_info(output_dir, scanned_files)
-    selected, desc = select_entries(entries, total_ns, top, threshold, show_all)
+    selected, desc = select_entries(
+        entries, rank_field="sum", threshold_field="pct_total", top=top, threshold=threshold,
+        show_all=show_all, threshold_unit="of total runtime",
+    )
 
     parts = []
     parts.append("rocprofv3 GPU kernel hotspots report\n")
@@ -300,7 +141,7 @@ def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False
     parts.append("\n")
 
     parts.append(f"GPU kernel hotspots -- showing {desc}\n")
-    parts.append(format_table(selected))
+    parts.append(render_table(GPU_HOTSPOTS_COLUMNS, selected))
     parts.append("\n")
 
     parts.append(
@@ -326,7 +167,7 @@ def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False
             "Each kernel's own total time on each rank, compared across ranks -- a rank "
             "that never launched a kernel counts as 0.0 for that rank, not omitted.\n"
         )
-        parts.append(format_table_load_imbalance(imbalance_selected))
+        parts.append(render_table(load_imbalance_columns(item_label="kernel"), imbalance_selected))
 
     report = "".join(parts)
     with open(dest_path, "w") as f:

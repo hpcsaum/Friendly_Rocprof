@@ -26,7 +26,8 @@ import json
 import os
 import sys
 
-import extract_CPU_hotspots as cpu_tool
+from stage4_rocprofsys_flat import aggregate
+from stage5_table_render import select_entries
 
 HELP_BLURB = """\
 Turns a profile_hotspots.sh (or extract_CPU_hotspots.py) report -- or a
@@ -68,23 +69,30 @@ def escape_for_instrument_regex(name):
 
 
 def labels_from_output_dir(rocprof_sys_dir, top=None, threshold=None, show_all=False, unfiltered=False):
-    cpu_entries, _gpu_entries, scanned, total = cpu_tool.aggregate(rocprof_sys_dir)
+    cpu_entries, _gpu_entries, scanned, total = aggregate(rocprof_sys_dir)
     if not scanned:
         raise SystemExit(
             f"error: no rocprof-sys timemory text table found in {rocprof_sys_dir!r} -- "
             "nothing to select hotspot functions from"
         )
     rank_by = "inclusive" if unfiltered else "self"
-    selected, _desc = cpu_tool.select_entries(
-        cpu_entries, total, top=top, threshold=threshold, show_all=show_all, rank_by=rank_by
+    key_field = "sum" if rank_by == "inclusive" else "self_sum"
+
+    def _set_pct_total(entries):
+        for e in entries:
+            e["pct_total"] = (e[key_field] / total * 100.0) if total > 0 else None
+
+    selected, _desc = select_entries(
+        cpu_entries, rank_field=key_field, threshold_field="pct_total", top=top, threshold=threshold,
+        show_all=show_all, threshold_unit="of total runtime", prepare=_set_pct_total,
     )
     return sorted({e["label"] for e in selected})
 
 
 def labels_from_report(report_path):
     """Reads the 'CPU compute hotspots' table from a report written by
-    extract_CPU_hotspots.py or extract_hotspots.py -- both use the exact
-    same cpu_tool.format_table() layout, so one parser covers both. Rows are
+    extract_CPU_hotspots.py or extract_hotspots.py -- both render it via the
+    exact same CPU_HOTSPOTS_COLUMNS layout, so one parser covers both. Rows are
     taken as-is: whatever selection produced the report is trusted."""
     with open(report_path, errors="replace") as f:
         lines = f.readlines()
@@ -114,7 +122,7 @@ def labels_from_report(report_path):
     for line in lines[header + 1:]:
         if not line.strip():
             break
-        # cpu_tool.format_table()'s columns: # self(s) %total total(s) calls %self function --
+        # CPU_HOTSPOTS_COLUMNS: # self(s) %total total(s) calls %self function --
         # maxsplit=6 keeps the function name (which may itself contain spaces, e.g. a C++
         # signature) intact as the 7th and last piece.
         parts = line.split(maxsplit=6)
