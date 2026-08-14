@@ -296,5 +296,31 @@ class FormatMetricsTableTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
 
 
+class MetricsLegendTests(unittest.TestCase):
+    def test_base_metrics_always_present(self):
+        legend = pop_table.metrics_legend(show_gpu_cols=False, show_gpu_eff=False, multi_run=False, scaling=None)
+        self.assertIn("LB    =", legend)
+        self.assertIn("CommE =", legend)
+        self.assertIn("PE    =", legend)
+        self.assertNotIn("GPU-Util", legend)
+        self.assertIn("CompE, GE need a scaling study", legend)
+
+    def test_gpu_columns_add_their_own_bullets(self):
+        legend = pop_table.metrics_legend(show_gpu_cols=True, show_gpu_eff=False, multi_run=False, scaling=None)
+        self.assertIn("GPU-Util =", legend)
+        self.assertIn("GPU-Off =", legend)
+        self.assertIn("GPU-LB =", legend)
+
+    def test_multi_run_strong_vs_weak_wording(self):
+        strong = pop_table.metrics_legend(show_gpu_cols=False, show_gpu_eff=False, multi_run=True, scaling="strong")
+        self.assertIn("total useful compute time (reference)", strong)
+        weak = pop_table.metrics_legend(show_gpu_cols=False, show_gpu_eff=False, multi_run=True, scaling="weak")
+        self.assertIn("avg per-rank useful compute time (reference)", weak)
+
+    def test_gpu_eff_bullet_only_when_flagged(self):
+        legend = pop_table.metrics_legend(show_gpu_cols=True, show_gpu_eff=True, multi_run=True, scaling="strong")
+        self.assertIn("GPU-Eff =", legend)
+
+
 if __name__ == "__main__":
     unittest.main()

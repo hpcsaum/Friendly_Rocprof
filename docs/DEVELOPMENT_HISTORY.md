@@ -40,6 +40,7 @@
 | 2026-08-14 | Plan 2.7: built `stage4_rocprofsys_flat.py`/`stage4_rocprofv3.py` and a generic stage-5 backend (`stage5_table_render.py`) shared by every hotspots/load-imbalance/fused/POP-metrics table -- roadmap step 6; fixed the nondeterministic tie-order bug flagged (not fixed) in plan 2.3, as part of relocating `compute_load_imbalance()`; also promoted `tree_render.py` to stage 5 (renamed `stage5_tree_render.py`) and gave each calltree tool its own stage-5 companion module -- see full design/rename/real-data accounting below |
 | 2026-08-14 | Plan 2.8: built `stage6_report_builder.py` (a genuinely generic `render_report(header, sections, footer)` backend, not a thin `write_report_file()`/`section()` pair) and `stage6_run_metadata.py`, and rewrote all 6 report tools' `write_report()` as compute/assemble/write composers over them -- roadmap step 7; fixed `stage5_tree_render.py`'s two render functions self-appending a trailing blank line so both calltree tools could adopt the same generic backend in this same plan instead of being deferred -- see full design/real-data accounting below |
 | 2026-08-14 | Plan 2.9: added `extract_calltree.py`'s and `extract_pop_metrics.py`'s two missing `HELP_BLURB` gaps identified by §10's rule-5 redirect precondition audit -- roadmap step 8, additive only, no report output changed |
+| 2026-08-14 | Plan 2.10: applied §10's report style guide rules 1-5 and 7 across all 6 tools (rule 6, hard-wrap, split to plan 2.11) -- roadmap step 9, the first step allowed to change report output everywhere; also relocated table-owned prose (`%total`/ranking/load-imbalance/aggregation legends) into the owning stage5 module, unified every tool's header into one `stage6_report_builder.standard_header()` function (closing plan 2.8's deferred metadata-presentation item), and unified `extract_hotspots.py`/`extract_calltree.py`/`extract_calltree_traced.py`'s directory handling via a new shared `resolve_two_dirs()` helper -- see full design/real-data accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -1529,4 +1530,128 @@ No test currently asserts on `HELP_BLURB` content, and none of this step's chang
 full test suite (369 tests, unchanged, confirming the f-string conversion didn't break import).
 `git status` on all 6 `test_apps/results/` directories came back empty -- no report output changed,
 exactly as expected for an additive, `--help`-only step.
+
+## 2026-08-14 — Plan 2.10: report style guide, rules 1-5 & 7 (roadmap step 9, part 1 of 2)
+
+Ninth implementation step, and the first where report output is *intentionally* allowed to change
+everywhere. Applied `docs/plans/2.1-postprocess-consolidation-refactor.md` §10's report style
+guide across all 6 tools, splitting rule 6 (120-column hard-wrap, needing changes to two
+renderers plus both `select_hotspot_*.py` re-parsers) into its own follow-up, plan 2.11.
+
+Two real gaps surfaced while drafting this plan, both about report content living in the wrong
+place -- the same problem §10 exists to solve, just not named there:
+
+1. **Table-owned prose scattered and duplicated across tools.** The load-imbalance legend, the POP
+   metrics "Metric explanation:" block, the calltree aggregation legend, the `%total`-meaning
+   sentences, and the ranking-mode note were all hand-typed per tool (sometimes word-for-word
+   duplicated, sometimes silently drifted) despite describing what a stage-5 table module renders,
+   not tool-specific business logic. All five moved into new functions beside the table module
+   that owns them: `stage5_table_render.pct_total_note()`/`ranking_note()`,
+   `stage5_load_imbalance_table.imbalance_note()`, `stage5_pop_metrics_table.metrics_legend()`,
+   `stage5_tree_render.aggregation_note()`/`tree_view_note()`. The `%total`/ranking notes are
+   generated from the exact `threshold_unit`/`unfiltered` values already given to
+   `select_entries()`, so the "showing top N ... X" line and "%total means X" line can no longer
+   drift apart the way `extract_hotspots.py`'s 4 tables' identical, but semantically wrong,
+   `threshold_unit="of total runtime"` already had.
+2. **Metadata/header consolidation plan 2.8 deferred here.** Every tool's header reduced to the
+   same handful of facts (which tool wrote it, when, a 1-2 line description, one or more runs each
+   with one or more source directories and an optional executable/runtime/rank-count/scanned-files,
+   and which tables the report contains) -- closed with one new
+   `stage6_report_builder.standard_header(tool_name, description, runs)` function every tool calls,
+   plus a `render_report()` change that auto-lists titled section names under a `tables:` heading
+   and auto-generates the "these N directories aren't checked against each other" caveat whenever
+   more than one directory feeds the report in total (previously hand-typed only in
+   `extract_hotspots.py`; now also correctly appears for `extract_pop_metrics.py`'s multi-directory
+   scaling studies, a real caveat that was simply never stated there before). The header's own first
+   line is the report's full identity in one sentence -- `"tool name" report generated "timestamp".`
+   followed by the tool's short description -- replacing an earlier two-line `tool: .../generated:
+   ...` draft folded into one function, `generated_line()`, once that draft's header and the
+   description sentence were reviewed together and read better merged than split. Each `runs` entry
+   carries a `directories` list (label/path pairs) rather than a single label/directory, precisely
+   so one run can show more than one physical directory (a CPU side and a GPU side) under one shared
+   metadata block instead of two separate blocks -- see the directory-handling unification below,
+   which is what actually needed this shape.
+
+`render_report()` itself gained the section-numbering mechanism rules 2-4 needed: `title` is now
+plain, undecorated text, and `render_report()` decides the decoration once, for the whole report --
+0 titled sections stays unchanged (calltree's untitled tree/fallback blocks), 2+ get
+`=== N. Title ===` numbered by position among titled sections only, and exactly 1 titled section
+still gets the same `=== Title ===` bracketing, just without a number -- a report reader always
+sees which table is printing, single-table tools included, but a lone table never needs to count
+itself. (An earlier draft made the single-section case a bare, undecorated sentence instead;
+reviewed against `pop_metrics`'s real output and reverted before landing, since dropping the `===`
+markers made a single-table report look unfinished rather than simpler.) Skip-message sections
+(e.g. "only 1 rank/file found") changed shape to participate in this: the skip message becomes the
+section's real, countable title with an empty body, instead of `title=None` with the whole message
+folded into body. Every note that used to be wedged between a section's title and its table moved
+to *after* the table, bulleted (rules 3+4 together) -- including `extract_hotspots.py`'s
+"Combined-pool arithmetic" breakdown, which moved from the header into a bulleted block under its
+own table -- with a blank line always separating the table's own rendered rows from its bulleted
+notes below, so a table's data and its explanatory prose never visually run together.
+
+Rule 5's redirect audit (re-checked line-by-line against each tool's current `HELP_BLURB`,
+including plan 2.9's additions) found `extract_calltree.py` and `extract_pop_metrics.py`'s
+remaining footers fully collapse to one `help_redirect()` line each -- and a gap plan 2.9 didn't
+catch: `extract_calltree_traced.py`'s own `HELP_BLURB`/footer pair was never separately audited
+(plan 2.9's precondition check only named the other two tools), and its ".kd" kernel-descriptor
+caveat lacked the "why" explanation its footer bullet gave. One sentence added to `HELP_BLURB`
+closed that gap too, so all three tools' footers now redirect. `extract_CPU_hotspots.py`/
+`extract_GPU_hotspots.py`/`extract_hotspots.py` had no redirect-eligible content, confirmed, not
+changed. Rule 7's `command_header()` reconstructs each tool's own invocation from its already-parsed
+argparse Namespace (never raw `sys.argv`, which can't distinguish a user-typed relative path from a
+coincidentally-identical option value) -- each tool's `main()` builds its own small token list, the
+same "small per-tool list" shape §10 called for, generalized from path-only to every argument. The
+`command:` line itself lives at the very end of each report's footer rather than in the header --
+reviewed against the real regenerated reports, a multi-line wrapped invocation read better as the
+last thing in the file (after the data and any redirect line) than as the first, ahead of the
+metadata a reader actually opens the report to see.
+
+One real bug found and fixed during implementation: `help_redirect()`'s script-name default
+(`os.path.basename(sys.argv[0])`) is environment-dependent whenever a tool's `write_report()` is
+called directly rather than through its own `main()` (e.g. every test in this suite) -- `sys.argv[0]`
+under a test runner isn't the tool's own path. Fixed by having each of the three redirect-calling
+tools pass their own literal script name explicitly, the same way `standard_header()` already takes
+an explicit `tool_name` rather than auto-detecting it.
+
+**Directory-handling unified between the combined-hotspots and calltree tools.** Reviewing the
+final design surfaced a real inconsistency this plan's own header work made visible:
+`extract_hotspots.py` already accepted two independent directories (a rocprof-sys CPU-side run and
+a separately-run rocprofv3 GPU-side run) or one combined directory containing both as subdirs, but
+`extract_calltree.py`/`extract_calltree_traced.py` only ever accepted the combined-directory shape
+-- no way to point either at two independently-run CPU/GPU directories. All three tools now share
+one `stage1_run_dirs.resolve_two_dirs(dir1, dir2)` helper: `dir2` given explicitly wins as-is;
+`dir2` omitted falls back to the existing single-combined-directory auto-resolution. Each tool's
+`main()` gained an optional second positional argument for the explicit-two-directories case. This
+also unified how the resulting CPU+GPU pairing is described in the header: one shared metadata
+block per run (executable, run date/time, runtime, MPI rank count), each field preferring the CPU
+side's own guess and falling back to the GPU side's only when CPU has none for that field -- instead
+of the two sides guessing independently and, for the calltree tools, not being shown as metadata at
+all. `extract_hotspots.py`'s combined-pool cross-check caveat generalizes the same way: it now
+triggers on the *total number of directories* actually feeding the report (summed across every run),
+not the number of runs, so a CPU+GPU pair sharing one run's metadata block still gets the caveat the
+same as `extract_pop_metrics.py`'s genuinely separate multi-run scaling studies do.
+
+Test rework followed the same "run the existing suite first" discipline, across two rounds -- the
+initial header/footer/numbering redesign (14 of 396 tests broke, all from the report shape actually
+changing: renamed `total runtime:` field to `runtime:`, `tables:` listing shifting where a title
+substring first appears in the report text, tightened `threshold_unit` wording, redirected content
+no longer inline), then the directory-unification follow-up (5 more broke: the calltree tools'
+`write_report()` gained a required `gpu_dir` positional, one test file's `resolve_run_dirs` import
+no longer existed under its old name, and the CPU/GPU unified-metadata design meant a GPU run's own
+`executable:` line is no longer shown separately once CPU's is present) -- none from a real logic
+regression either round. New test coverage added for every new function (`pct_total_note()`,
+`ranking_note()`, `imbalance_note()`, `metrics_legend()`, `aggregation_note()`, `tree_view_note()`,
+`standard_header()`, `help_redirect()`, `command_header()`, `resolve_two_dirs()`) plus
+`render_report()`'s 3 numbering regimes and new `MainCliTests` coverage for each tool's
+explicit-two-directories and single-combined-directory CLI paths. Final suite: 404 tests, all
+passing.
+
+Real-data verification across all 6 `test_apps/results/` directories: unlike prior plans' backup-
+and-diff method, this step keeps `.before` siblings next to each regenerated file (gitignored, so
+this costs nothing) for direct side-by-side review, since output is expected to change everywhere
+and reviewed by eye rather than diffed byte-for-byte. All 24 files regenerated cleanly; spot-checked
+across CPU/GPU/combined/calltree/calltree-traced/pop-metrics reports and multiple test apps --
+header shape, `tables:` listing, section numbering, bulleted notes, and redirect lines all read
+correctly. Real HPC data's long C++ template names visibly break table alignment in the calltree
+views, exactly the problem plan 2.11's rule 6 exists to fix next.
 

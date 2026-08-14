@@ -9,7 +9,7 @@ column means, only how wide it is and how to read its value out of an entry. Wha
 tables (which columns, which field to rank by, which field means "% of total") is data supplied by
 the caller, not new code here.
 
-Functions: select_entries(), render_table().
+Functions: select_entries(), render_table(), pct_total_note(), ranking_note().
 """
 
 
@@ -75,3 +75,24 @@ def render_table(columns, entries):
     for i, e in enumerate(entries, 1):
         lines.append("  " + "  ".join(_cell(col["value"](e, i), col) for col in columns))
     return "\n".join(lines) + "\n"
+
+
+def pct_total_note(entry_noun, threshold_unit):
+    """Bulleted note explaining what this table's %total column means -- threshold_unit is the
+    exact same string already given to select_entries() (its "showing top N ... {threshold_unit}"
+    line and this note now share one source, so they can't drift the way this codebase's %total
+    sentences used to, hand-typed separately once per table)."""
+    return f"  - '%total' is each {entry_noun}'s share {threshold_unit}.\n"
+
+
+def ranking_note(unfiltered, extra_clause=""):
+    """Bulleted note explaining which time basis (self vs. inclusive) ranked this table --
+    extra_clause lets a caller append one more tool-specific sentence (e.g. extract_hotspots.py
+    noting GPU kernels are unaffected, already leaf events)."""
+    basis = (
+        "inclusive (total) time -- a function that just calls other functions can still rank high"
+        if unfiltered else
+        "self time -- each function's own work, not counting time spent in whatever it calls, so "
+        "pass-through functions fall out of the ranking on their own"
+    )
+    return f"  - Ranked by {basis}.{extra_clause}\n"

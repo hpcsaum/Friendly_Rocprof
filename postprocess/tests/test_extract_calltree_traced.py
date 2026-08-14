@@ -24,14 +24,16 @@ KERNEL_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_kernel_anchor")
 EMPTY_DIR = os.path.join(FIXTURES, "no_timing_data")
 
 
-class ResolveRunDirsTests(unittest.TestCase):
+class ResolveTwoDirsTests(unittest.TestCase):
+    # extract_calltree_traced.py imports resolve_two_dirs() from stage1_run_dirs.py (which has
+    # its own thorough direct tests) -- this just confirms the import wires through correctly.
     def test_detects_paired_subdirs(self):
-        cpu_dir, gpu_dir = ct_tool.resolve_run_dirs(KERNEL_ANCHOR_DIR)
+        cpu_dir, gpu_dir = ct_tool.resolve_two_dirs(KERNEL_ANCHOR_DIR, None)
         self.assertEqual(cpu_dir, os.path.join(KERNEL_ANCHOR_DIR, "rocprof-sys"))
         self.assertEqual(gpu_dir, os.path.join(KERNEL_ANCHOR_DIR, "rocprofv3"))
 
     def test_falls_back_to_run_dir_itself_when_flat(self):
-        cpu_dir, gpu_dir = ct_tool.resolve_run_dirs(MPI_2RANK_DIR)
+        cpu_dir, gpu_dir = ct_tool.resolve_two_dirs(MPI_2RANK_DIR, None)
         self.assertEqual(cpu_dir, MPI_2RANK_DIR)
         self.assertIsNone(gpu_dir)
 
@@ -40,8 +42,8 @@ class HeaderProseTests(unittest.TestCase):
     def test_header_states_ranks_aggregated(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "calltree_traced.txt")
-            report = ct_tool.write_report(MPI_2RANK_DIR, dest)
-        self.assertIn("ranks aggregated: 2", report)
+            report = ct_tool.write_report(MPI_2RANK_DIR, None, dest)
+        self.assertIn("MPI ranks: 2", report)
 
 
 class MainCliTests(unittest.TestCase):
@@ -58,6 +60,15 @@ class MainCliTests(unittest.TestCase):
             dest = os.path.join(tmp, "out.txt")
             ct_tool.main([MPI_2RANK_DIR, "-o", dest, "--max-depth", "1"])
             self.assertTrue(os.path.isfile(dest))
+
+    def test_explicit_two_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "out.txt")
+            ct_tool.main([MPI_2RANK_DIR, MPI_2RANK_DIR, "-o", dest])
+            with open(dest) as f:
+                report = f.read()
+            self.assertIn("CPU run directory:", report)
+            self.assertIn("GPU run directory:", report)
 
 
 if __name__ == "__main__":

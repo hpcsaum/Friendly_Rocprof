@@ -132,5 +132,24 @@ class LoadImbalanceColumnsTests(unittest.TestCase):
         self.assertIn("none found", render_table(imb.load_imbalance_columns(), []))
 
 
+class ImbalanceNoteTests(unittest.TestCase):
+    def test_function_self(self):
+        note = imb.imbalance_note("function", "self")
+        self.assertEqual(
+            note,
+            "  - Each function's own self time on each rank, compared across ranks -- a rank "
+            "that never called a function counts as 0.0 for that rank, not omitted.\n",
+        )
+
+    def test_function_inclusive(self):
+        note = imb.imbalance_note("function", "inclusive")
+        self.assertIn("own inclusive time", note)
+
+    def test_kernel_total(self):
+        note = imb.imbalance_note("kernel", "total")
+        self.assertIn("Each kernel's own total time", note)
+        self.assertIn("never launched a kernel", note)
+
+
 if __name__ == "__main__":
     unittest.main()

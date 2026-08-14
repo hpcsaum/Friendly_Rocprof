@@ -37,5 +37,16 @@ class ResolveRunDirsTests(unittest.TestCase):
             self.assertIsNone(gpu_dir)
 
 
+class ResolveTwoDirsTests(unittest.TestCase):
+    def test_dir2_none_auto_resolves_like_resolve_run_dirs(self):
+        cpu_dir, gpu_dir = srd.resolve_two_dirs(COMBINED_DIR, None)
+        self.assertEqual((cpu_dir, gpu_dir), srd.resolve_run_dirs(COMBINED_DIR))
+
+    def test_dir2_given_used_explicitly_no_auto_resolution(self):
+        cpu_dir, gpu_dir = srd.resolve_two_dirs("/explicit/cpu", "/explicit/gpu")
+        self.assertEqual(cpu_dir, "/explicit/cpu")
+        self.assertEqual(gpu_dir, "/explicit/gpu")
+
+
 if __name__ == "__main__":
     unittest.main()

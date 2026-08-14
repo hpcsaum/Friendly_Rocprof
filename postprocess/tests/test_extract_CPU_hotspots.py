@@ -80,7 +80,7 @@ class WriteReportTests(unittest.TestCase):
             self.assertIn("scripts/profile_GPU_hotspots.sh", report)
             self.assertIn("executable: jacobi_mpi", report)
             self.assertIn("run date/time: 2026-07-21T07:40:00", report)
-            self.assertIn("total runtime: 21.824161 sec", report)
+            self.assertIn("runtime: 21.824161 sec", report)
             self.assertIn("MPI ranks: 2", report)
 
     def test_end_to_end_on_single_rank_fixture_blank_header(self):
@@ -89,14 +89,14 @@ class WriteReportTests(unittest.TestCase):
             report = hotspots.write_report(os.path.join(FIXTURES, "single_rank"), dest)
             self.assertIn("executable: \n", report)
             self.assertIn("run date/time: \n", report)
-            self.assertIn("total runtime: \n", report)
+            self.assertIn("runtime: \n", report)
             self.assertIn("MPI ranks: 1\n", report)
 
     def test_threshold_selection_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "hotspots.txt")
             report = hotspots.write_report(os.path.join(FIXTURES, "mpi_2rank"), dest, threshold=50.0)
-            self.assertIn(">= 50% of total runtime", report)
+            self.assertIn(">= 50% of total measured time", report)
             self.assertNotIn("apply_boundary", report)  # not present in this fixture anyway, sanity check
 
     def test_show_all_selection_end_to_end(self):
@@ -134,7 +134,7 @@ class WriteReportTests(unittest.TestCase):
             dest = os.path.join(tmp, "hotspots.txt")
             report = hotspots.write_report(os.path.join(FIXTURES, "mpi_2rank"), dest, show_all=True)
             self.assertIn("Ranked by self time", report)
-            hotspots_section = report[report.index("CPU compute hotspots"):report.index("GPU API")]
+            hotspots_section = report[report.index("=== 1."):report.index("=== 2.")]
             self.assertLess(hotspots_section.index("compute_stencil"), hotspots_section.index("main"))
 
     def test_unfiltered_ranks_by_inclusive_time_main_beats_compute_stencil(self):
@@ -142,7 +142,7 @@ class WriteReportTests(unittest.TestCase):
             dest = os.path.join(tmp, "hotspots.txt")
             report = hotspots.write_report(os.path.join(FIXTURES, "mpi_2rank"), dest, show_all=True, unfiltered=True)
             self.assertIn("Ranked by inclusive (total) time", report)
-            hotspots_section = report[report.index("CPU compute hotspots"):report.index("GPU API")]
+            hotspots_section = report[report.index("=== 1."):report.index("=== 2.")]
             self.assertLess(hotspots_section.index("main"), hotspots_section.index("compute_stencil"))
 
 

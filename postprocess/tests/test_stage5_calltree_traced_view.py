@@ -107,9 +107,9 @@ class RenderTreeTests(unittest.TestCase):
 
     def test_real_columns_not_bracketed_string(self):
         report = render(MPI_2RANK_DIR)
-        self.assertIn("CALLS", report)
-        self.assertIn("SELF-AVG(s)", report)
-        self.assertIn("TOTAL-AVG(s)", report)
+        self.assertIn("calls", report)
+        self.assertIn("self-avg(s)", report)
+        self.assertIn("total-avg(s)", report)
         self.assertNotIn("[calls=", report)  # old per-line bracketed format, must be gone
 
     def test_tree_connectors_present(self):

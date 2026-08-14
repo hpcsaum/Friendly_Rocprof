@@ -10,13 +10,13 @@ both into one report.
 import argparse
 import os
 import re
-from datetime import datetime
+import sys
 
 from stage4_rocprofv3 import aggregate, aggregate_per_rank
 from stage5_gpu_hotspots_table import GPU_HOTSPOTS_COLUMNS
-from stage5_load_imbalance_table import compute_load_imbalance, load_imbalance_columns
-from stage5_table_render import render_table, select_entries
-from stage6_report_builder import render_report, write_report_file
+from stage5_load_imbalance_table import compute_load_imbalance, imbalance_note, load_imbalance_columns
+from stage5_table_render import pct_total_note, render_table, select_entries
+from stage6_report_builder import command_header, render_report, standard_header, write_report_file
 from stage6_run_metadata import guess_executable, guess_num_ranks, guess_run_datetime, guess_total_runtime, load_json_file
 
 CONFIG_EXECUTABLE_KEYS = ["command", "command_line", "argv", "cmd", "exe", "executable"]
@@ -24,6 +24,8 @@ CONFIG_DATETIME_KEYS = ["init_time", "start_time", "launch_time", "timestamp"]
 CONFIG_RUNTIME_KEYS = ["elapsed", "duration", "wall_time", "total_time", "runtime"]
 
 PID_SUFFIX_RE = re.compile(r"(\d+)_kernel_stats\.csv$")
+
+SHORT_DESCRIPTION = "Ranks real GPU kernel execution time from rocprofv3 kernel-trace data.\n"
 
 HELP_BLURB = """\
 Reads the output of a profile_GPU_hotspots.sh run (or any rocprofv3 output
@@ -50,7 +52,7 @@ def gather_run_info(output_dir, scanned_files):
     }
 
 
-def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False):
+def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False, command_line=""):
     entries, scanned_files, total_ns = aggregate(output_dir)
     if not scanned_files:
         raise SystemExit(
@@ -60,48 +62,45 @@ def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False
         )
 
     run_info = gather_run_info(output_dir, scanned_files)
+    threshold_unit = "of total measured GPU time (summed across all scanned files)"
     selected, desc = select_entries(
         entries, rank_field="sum", threshold_field="pct_total", top=top, threshold=threshold,
-        show_all=show_all, threshold_unit="of total runtime",
+        show_all=show_all, threshold_unit=threshold_unit,
     )
 
     per_file_totals, imbalance_scanned = aggregate_per_rank(output_dir)
     if len(imbalance_scanned) < 2:
-        imbalance_title, imbalance_body = None, (
-            "GPU kernel load imbalance across ranks -- skipped: only "
-            f"{len(imbalance_scanned)} rank/file found, need at least 2 to compare.\n"
+        imbalance_title = (
+            f"GPU kernel load imbalance across ranks -- skipped: only {len(imbalance_scanned)} "
+            "rank/file found, need at least 2 to compare\n"
         )
+        imbalance_body = ""
     else:
         imbalance_selected, imbalance_desc = compute_load_imbalance(per_file_totals, top, threshold, show_all)
         imbalance_title = f"GPU kernel load imbalance across {len(imbalance_scanned)} ranks -- showing {imbalance_desc}\n"
         imbalance_body = (
-            "Each kernel's own total time on each rank, compared across ranks -- a rank "
-            "that never launched a kernel counts as 0.0 for that rank, not omitted.\n"
-        ) + render_table(load_imbalance_columns(item_label="kernel"), imbalance_selected)
+            render_table(load_imbalance_columns(item_label="kernel"), imbalance_selected) + "\n"
+            + imbalance_note("kernel", "total")
+        )
 
-    header = (
-        "rocprofv3 GPU kernel hotspots report\n"
-        f"generated: {datetime.now().isoformat(timespec='seconds')}\n"
-        f"source directory: {os.path.abspath(output_dir)}\n"
-        f"executable: {run_info['executable'] or ''}\n"
-        f"run date/time: {run_info['run_datetime'] or ''}\n"
-        f"total runtime: {run_info['total_runtime'] or ''}\n"
-        f"MPI ranks: {run_info['num_ranks'] if run_info['num_ranks'] is not None else ''}\n"
-        "files scanned:\n"
-        + "".join(f"  - {os.path.relpath(f, output_dir)}\n" for f in scanned_files)
-        + "\n"
-    )
+    header = standard_header("extract_GPU_hotspots.py", SHORT_DESCRIPTION, [{
+        "directories": [("source directory", output_dir)], "executable": run_info["executable"],
+        "run_datetime": run_info["run_datetime"], "runtime": run_info["total_runtime"],
+        "num_ranks": run_info["num_ranks"], "scanned_files": scanned_files,
+    }])
     sections = [
-        (f"GPU kernel hotspots -- showing {desc}\n", render_table(GPU_HOTSPOTS_COLUMNS, selected)),
-        (None,
-         "Note: this covers GPU kernel execution time only. '%total' is each "
-         "kernel's share of total measured GPU time (summed across all scanned "
-         "files); it will not add up to 100% if a --threshold/--top cut entries.\n"
-         "For host-side (HIP API / launch overhead) hotspots, use scripts/profile_CPU_hotspots.sh.\n"),
+        (f"GPU kernel hotspots -- showing {desc}\n",
+         render_table(GPU_HOTSPOTS_COLUMNS, selected) + "\n"
+         + pct_total_note("kernel", threshold_unit)
+         + "  - This won't add up to 100% if a --threshold/--top cut entries.\n"),
         (imbalance_title, imbalance_body),
     ]
+    footer = (
+        "For host-side (HIP API / launch overhead) hotspots, use scripts/profile_CPU_hotspots.sh.\n"
+        + command_line
+    )
 
-    return write_report_file(dest_path, render_report(header, sections))
+    return write_report_file(dest_path, render_report(header, sections, footer))
 
 
 def main(argv=None):
@@ -122,7 +121,19 @@ def main(argv=None):
         raise SystemExit(f"error: no such directory: {args.output_dir!r}")
 
     dest = args.dest or os.path.join(args.output_dir, "hotspots.txt")
-    write_report(args.output_dir, dest, top=args.top, threshold=args.threshold, show_all=args.show_all)
+    tokens = [os.path.abspath(args.output_dir)]
+    if args.dest:
+        tokens += ["-o", os.path.abspath(args.dest)]
+    if args.top is not None:
+        tokens += ["--top", str(args.top)]
+    elif args.threshold is not None:
+        tokens += ["--threshold", str(args.threshold)]
+    elif args.show_all:
+        tokens += ["--all"]
+    command_line = command_header(sys.argv[0], tokens)
+
+    write_report(args.output_dir, dest, top=args.top, threshold=args.threshold, show_all=args.show_all,
+                 command_line=command_line)
     print(f"wrote {dest}")
 
 

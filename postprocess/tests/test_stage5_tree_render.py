@@ -240,5 +240,37 @@ class RenderCalltreeTextTests(unittest.TestCase):
         self.assertNotIn("MPIR_Allreduce_cdesc", text)
 
 
+class AggregationNoteTests(unittest.TestCase):
+    def test_fixed_bulleted_text_lowercase_columns(self):
+        note = tr.aggregation_note()
+        self.assertTrue(note.startswith("  - "))
+        self.assertIn("calls and", note)
+        self.assertIn("total-avg(s)", note)
+        self.assertNotIn("CALLS", note)
+        self.assertNotIn("SELF-AVG", note)
+
+
+class TreeViewNoteTests(unittest.TestCase):
+    def test_all_four_tiers(self):
+        note = tr.tree_view_note(
+            ["1001", "1002"], 5, show_gpu_api=True, show_rocprofsys_internals=False,
+            show_mpi_internals=False, show_compiler_runtime=True,
+        )
+        self.assertIn("Ranks aggregated: 1001, 1002\n", note)
+        self.assertIn("GPU-API/runtime noise (shown)", note)
+        self.assertIn("rocprof-sys internals (hidden)", note)
+        self.assertIn("MPI internals (hidden)", note)
+        self.assertIn("compiler-runtime helpers (shown)", note)
+        self.assertIn("Max depth: 5\n", note)
+
+    def test_only_gpu_api_tier_when_others_omitted(self):
+        note = tr.tree_view_note(["1001"], None, show_gpu_api=False)
+        self.assertIn("GPU-API/runtime noise (hidden)", note)
+        self.assertNotIn("rocprof-sys internals", note)
+        self.assertNotIn("MPI internals", note)
+        self.assertNotIn("compiler-runtime helpers", note)
+        self.assertIn("Max depth: unlimited\n", note)
+
+
 if __name__ == "__main__":
     unittest.main()

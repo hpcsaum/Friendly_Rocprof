@@ -50,13 +50,17 @@ class WriteReportTests(unittest.TestCase):
             self.assertIn("CompE", header_line)
             self.assertIn("GE", header_line)
 
-    def test_not_computed_and_caveats_sections_present(self):
+    def test_not_computed_and_caveats_redirect_to_help(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "pop_metrics.txt")
             report = pop_tool.write_report([REF_DIR], dest)
-            self.assertIn("Serialisation Efficiency", report)
-            self.assertIn("PAPI hardware counters", report)
-            self.assertIn("MPICH/Cray-MPICH", report)
+            # rule 5: this content is redirected to --help, not repeated in the report --
+            # confirm the redirect line is present, and HELP_BLURB actually says it.
+            self.assertIn("see extract_pop_metrics.py --help", report)
+            self.assertNotIn("Serialisation Efficiency", report)
+            self.assertIn("Serialisation/Transfer Efficiency", pop_tool.HELP_BLURB)
+            self.assertIn("PAPI hardware counters", pop_tool.HELP_BLURB)
+            self.assertIn("MPICH/Cray-MPICH", pop_tool.HELP_BLURB)
 
     def test_gpu_columns_shown_only_when_gpu_data_present(self):
         with tempfile.TemporaryDirectory() as tmp:

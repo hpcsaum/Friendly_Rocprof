@@ -26,6 +26,7 @@ GPU_DIR_SINGLE = os.path.join(FIXTURES, "rocprofv3_single_rank")
 CPU_DIR_EMPTY = os.path.join(FIXTURES, "no_timing_data")
 GPU_DIR_EMPTY = os.path.join(FIXTURES, "rocprofv3_no_data")
 CPU_DIR_DATED_SUBDIR = os.path.join(FIXTURES, "mpi_2rank_dated_subdir")
+COMBINED_DIR = os.path.join(FIXTURES, "pop_combined_2rank")
 
 
 class WriteReportTests(unittest.TestCase):
@@ -93,15 +94,24 @@ class WriteReportTests(unittest.TestCase):
         standalone_table = render_table(CPU_HOTSPOTS_COLUMNS, selected)
         self.assertIn(standalone_table.strip(), report)
 
-    def test_header_labels_both_runs_independently(self):
+    def test_header_shows_one_shared_metadata_block_cpu_preferred(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "hotspots.txt")
             report = combined.write_report(CPU_DIR, GPU_DIR, dest)
-            self.assertIn("CPU run directory (rocprof-sys):", report)
-            self.assertIn("GPU run directory (rocprofv3):", report)
+            self.assertIn("CPU run directory:", report)
+            self.assertIn("GPU run directory:", report)
             self.assertIn("not checked against each other", report)
-            self.assertIn("executable: jacobi_mpi", report)  # from mpi_2rank's metadata.json
-            self.assertIn("executable: jacobi_hip", report)  # from rocprofv3_mpi_2rank's config.json
+            # exactly one metadata block, not two -- CPU's own metadata.json wins over
+            # rocprofv3_mpi_2rank's config.json when both are available
+            self.assertEqual(report.count("executable:"), 1)
+            self.assertIn("executable: jacobi_mpi", report)
+
+    def test_header_falls_back_to_gpu_metadata_when_cpu_has_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            # single_rank has no metadata.json at all -- GPU side's config.json should be used instead
+            report = combined.write_report(CPU_DIR_SINGLE, GPU_DIR, dest)
+            self.assertIn("executable: jacobi_hip", report)
 
     def test_mismatched_pairing_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -170,6 +180,27 @@ class WriteReportTests(unittest.TestCase):
             report = combined.write_report(CPU_DIR_DATED_SUBDIR, GPU_DIR, dest)
             self.assertIn("=== 1. Combined hotspots", report)
             self.assertIn("compute_stencil", report)
+
+
+class MainCliTests(unittest.TestCase):
+    def test_two_explicit_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "out.txt")
+            combined.main([CPU_DIR, GPU_DIR, "-o", dest])
+            self.assertTrue(os.path.isfile(dest))
+
+    def test_single_combined_directory_auto_resolves_both_sides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "out.txt")
+            combined.main([COMBINED_DIR, "-o", dest])
+            with open(dest) as f:
+                report = f.read()
+            self.assertIn(f"CPU run directory: {os.path.abspath(os.path.join(COMBINED_DIR, 'rocprof-sys'))}", report)
+            self.assertIn(f"GPU run directory: {os.path.abspath(os.path.join(COMBINED_DIR, 'rocprofv3'))}", report)
+
+    def test_single_directory_with_no_gpu_subdir_raises_clear_error(self):
+        with self.assertRaises(SystemExit):
+            combined.main([CPU_DIR])
 
 
 if __name__ == "__main__":

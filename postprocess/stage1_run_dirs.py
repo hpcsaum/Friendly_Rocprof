@@ -8,7 +8,7 @@ rocprof-sys/ and rocprofv3/ subdirectory convention profile_hotspots.sh and frie
 produce, plus the un-nested fallback profile_CPU_hotspots.sh uses on its own. Used by
 extract_calltree.py, extract_calltree_traced.py, and extract_pop_metrics.py.
 
-Functions: resolve_run_dirs().
+Functions: resolve_run_dirs(), resolve_two_dirs().
 """
 
 import os
@@ -25,3 +25,14 @@ def resolve_run_dirs(run_dir):
     cpu_dir = cpu_subdir if os.path.isdir(cpu_subdir) else run_dir
     gpu_dir = gpu_subdir if os.path.isdir(gpu_subdir) else None
     return cpu_dir, gpu_dir
+
+
+def resolve_two_dirs(dir1, dir2):
+    """The shape every CPU+GPU-pairing tool accepts uniformly: either one directory (dir2 is
+    None) auto-resolved via resolve_run_dirs() -- the profile_hotspots.sh-style single combined
+    run layout -- or two explicit directories (dir1 the CPU side, dir2 the GPU side) -- the
+    profile_CPU_hotspots.sh + profile_GPU_hotspots.sh-style independently-run layout. Returns
+    (cpu_dir, gpu_dir_or_None), same contract as resolve_run_dirs()."""
+    if dir2 is not None:
+        return dir1, dir2
+    return resolve_run_dirs(dir1)

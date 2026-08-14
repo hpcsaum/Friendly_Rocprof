@@ -28,8 +28,8 @@ class HeaderProseTests(unittest.TestCase):
     def test_header_states_ranks_aggregated(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "calltree.txt")
-            report = ct_tool.write_report(MULTI_RANK_DIR, dest)
-        self.assertIn("ranks aggregated: 3", report)
+            report = ct_tool.write_report(MULTI_RANK_DIR, None, dest)
+        self.assertIn("MPI ranks: 3", report)
 
 
 class ShowAllInternalsTests(unittest.TestCase):
@@ -57,6 +57,17 @@ class MainCliTests(unittest.TestCase):
             dest = os.path.join(tmp, "out.txt")
             ct_tool.main([FILTERS_DIR, "-o", dest, "--max-depth", "1"])
             self.assertTrue(os.path.isfile(dest))
+
+    def test_explicit_two_directories(self):
+        # FILTERS_DIR has no GPU data of its own -- passing MULTI_RANK_DIR's GPU-less directory
+        # as an explicit second arg still exercises the two-directory code path end to end.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "out.txt")
+            ct_tool.main([FILTERS_DIR, FILTERS_DIR, "-o", dest])
+            with open(dest) as f:
+                report = f.read()
+            self.assertIn("CPU run directory:", report)
+            self.assertIn("GPU run directory:", report)
 
 
 if __name__ == "__main__":

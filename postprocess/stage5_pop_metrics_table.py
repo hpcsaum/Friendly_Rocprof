@@ -9,7 +9,7 @@ scaling study), unlike the hotspots tables' fixed column sets.
 
 Functions: gpu_sync_wait_per_rank(), mpi_comm_time_per_rank(), compute_run_metrics(),
 compute_scaling_metrics(), compute_gpu_efficiency(), run_label(), fmt(), pop_metrics_columns(),
-format_metrics_table().
+metrics_legend(), format_metrics_table().
 """
 
 import os
@@ -295,10 +295,76 @@ def pop_metrics_columns(all_metrics, ref_metrics, scaling, multi_run):
     return columns, show_gpu_cols, show_gpu_eff
 
 
+def metrics_legend(show_gpu_cols, show_gpu_eff, multi_run, scaling):
+    """Bulleted explanation of every sub-metric column format_metrics_table() might show,
+    mirroring exactly the same show_gpu_cols/show_gpu_eff/multi_run/scaling booleans
+    pop_metrics_columns() already used to decide which columns exist -- the column-inclusion
+    decision and its own explanation can't drift apart, since both come from the same inputs."""
+    legend = "Metric explanation:\n"
+    legend += "  - LB    = avg / max useful compute time across ranks\n"
+    legend += (
+        "  - CommE = max useful compute time / max total elapsed time across ranks "
+        "(direct formula, not Dimemas's Serialisation x Transfer split -- see docs/pop_metrics_reference.md)\n"
+    )
+    legend += "  - PE    = LB x CommE\n"
+    if show_gpu_cols:
+        legend += (
+            "  - GPU-Util = max GPU busy time / max total elapsed time across ranks -- NOT an official POP "
+            "metric; the GPU's raw share of wall-clock time, INCLUDING any idling caused by growing "
+            "communication overhead -- unlike GPU-Off, this drops when CommE drops too, since a "
+            "comm-starved GPU is genuinely less utilized, whatever the root cause\n"
+        )
+        legend += (
+            "  - GPU-Off = 1 - (max non-offloaded CPU compute time / max total elapsed time) across ranks -- "
+            "NOT an official POP metric; how much of the critical-path rank's time is still CPU-only "
+            "compute (serial, not-yet-ported, or not-worth-porting code) -- deliberately excludes "
+            "communication time, already covered by CommE\n"
+        )
+        legend += (
+            "  - GPU-LB = avg / max GPU busy time across ranks -- NOT an official POP metric; load balance "
+            "between GPUs specifically, separate from LB's whole CPU+GPU pool\n"
+        )
+    if multi_run:
+        if scaling == "weak":
+            legend += (
+                "  - CompE = avg per-rank useful compute time (reference) / avg per-rank useful compute time (this run) "
+                "-- weak scaling's total is expected to grow with rank count even at perfect efficiency, "
+                "so only the average is meaningful\n"
+            )
+        else:
+            legend += (
+                "  - CompE = total useful compute time (reference) / total useful compute time (this run), summed "
+                "across ranks -- strong scaling's ideal keeps this total constant as rank count grows\n"
+            )
+        legend += "  - GE    = PE x CompE\n"
+    else:
+        legend += (
+            "  - CompE, GE need a scaling study (2+ directories, compared against the first as reference) "
+            "-- pass additional directories to see them\n"
+        )
+    if show_gpu_eff:
+        if scaling == "weak":
+            legend += (
+                "  - GPU-Eff = avg per-rank GPU busy time (reference) / avg per-rank GPU busy time (this run) -- "
+                "NOT an official POP metric; isolates whether it's specifically the GPU's own contribution "
+                "that stopped scaling, as opposed to CompE's whole-pool view\n"
+            )
+        else:
+            legend += (
+                "  - GPU-Eff = total GPU busy time (reference) / total GPU busy time (this run), summed across "
+                "ranks -- NOT an official POP metric; a low value in strong scaling flags the per-rank "
+                "problem size shrinking below what keeps the GPU saturated\n"
+            )
+    return legend
+
+
 def format_metrics_table(all_metrics, scaling=None):
-    """Returns (table_text, show_gpu_cols, show_gpu_eff) for the '=== Metrics ===' block. The two
-    booleans are returned because write_report()'s explanation prose below the table also branches
-    on them."""
+    """Returns (table_text, show_gpu_cols, show_gpu_eff) for the '=== Metrics ===' block -- never
+    numbered, since this tool's report always has exactly this one section (rule 2's "single
+    table still gets the === style, just no number" case, decided once here since
+    format_metrics_table() is structurally incapable of a 2nd section, so it never goes through
+    render_report()'s own numbering logic at all). The two booleans are returned because
+    metrics_legend() above also branches on them."""
     ref_metrics = all_metrics[0]
     multi_run = len(all_metrics) > 1
     columns, show_gpu_cols, show_gpu_eff = pop_metrics_columns(all_metrics, ref_metrics, scaling, multi_run)

@@ -23,7 +23,8 @@ the rest.
 
 Functions: render_forest(), render_node(), get_children(), count_all_descendants(),
 build_children_map(), format_aligned_rows(), load_rank_trees(), kernel_totals_with_counts(),
-pair_gpu_per_rank(), attach_and_render_gpu_kernels(), render_calltree_text().
+pair_gpu_per_rank(), attach_and_render_gpu_kernels(), render_calltree_text(), aggregation_note(),
+tree_view_note().
 """
 
 import glob
@@ -41,21 +42,21 @@ TAG_DEFS = load_default_patterns()
 # Real right-aligned columns for both calltree tools' rendered trees -- one row per
 # stage4_rocprofsys_tree.merge_rank_trees() node, averaged/load-balance-summarized
 # across every rank (see stage4_rocprofsys_tree.aggregate_node_stats()), not per-rank.
-# CALLS is a plain average (a function called a wildly different number of times per
-# rank is unusual and would show up in SELF-AVG/SELF-MAX anyway); SELF gets the full
+# calls is a plain average (a function called a wildly different number of times per
+# rank is unusual and would show up in self-avg/self-max anyway); self gets the full
 # avg/std_dev/min/max load-balance treatment, matching this codebase's established
 # convention (extract_CPU_hotspots.compute_load_imbalance() does the same for
-# self-time, not inclusive time); TOTAL is a plain average -- inclusive time is
+# self-time, not inclusive time); total is a plain average -- inclusive time is
 # dominated by children's own load imbalance, which their own rows already show
 # individually, so a second full breakdown here would mostly restate deeper rows
 # rather than add information.
 REPORT_HEADERS = [
-    ("CALLS", 8, ".1f"),
-    ("SELF-AVG(s)", 12, ".6f"),
-    ("SELF-STD(s)", 12, ".6f"),
-    ("SELF-MIN(s)", 12, ".6f"),
-    ("SELF-MAX(s)", 12, ".6f"),
-    ("TOTAL-AVG(s)", 13, ".6f"),
+    ("calls", 8, ".1f"),
+    ("self-avg(s)", 12, ".6f"),
+    ("self-std(s)", 12, ".6f"),
+    ("self-min(s)", 12, ".6f"),
+    ("self-max(s)", 12, ".6f"),
+    ("total-avg(s)", 13, ".6f"),
 ]
 
 
@@ -270,4 +271,36 @@ def render_calltree_text(merged_roots, flat, max_depth, is_pruned, node_values,
     children_map = build_children_map(flat, collapses_children=collapses_children)
     return format_aligned_rows(
         render_forest(merged_roots, children_map, max_depth, is_pruned, node_values), REPORT_HEADERS,
+    )
+
+
+def aggregation_note():
+    """Bulleted note explaining the per-rank aggregation convention every rendered tree in this
+    codebase shares -- identical for both calltree tools."""
+    return (
+        "  - Every row is aggregated across all ranks (not one call tree per rank): calls and\n"
+        "    total-avg(s) are plain averages; self gets a full avg/std_dev/min/max load-balance\n"
+        "    breakdown, the same convention this codebase's other load-imbalance tables use -- a\n"
+        "    rank that never reached a given node counts as 0 there, not omitted, so real\n"
+        "    imbalance (e.g. a function only some ranks call) isn't hidden by averaging.\n"
+    )
+
+
+def tree_view_note(rank_keys, max_depth, show_gpu_api, show_rocprofsys_internals=None,
+                    show_mpi_internals=None, show_compiler_runtime=None):
+    """Bulleted note summarizing how this specific tree was filtered/truncated. The 3 internals
+    flags default to None (omitted from the summary entirely) for extract_calltree_traced.py,
+    which only has show_gpu_api; extract_calltree.py passes all 4."""
+    tiers = [("GPU-API/runtime noise", show_gpu_api)]
+    if show_rocprofsys_internals is not None:
+        tiers.append(("rocprof-sys internals", show_rocprofsys_internals))
+    if show_mpi_internals is not None:
+        tiers.append(("MPI internals", show_mpi_internals))
+    if show_compiler_runtime is not None:
+        tiers.append(("compiler-runtime helpers", show_compiler_runtime))
+    shown = ", ".join(f"{name} ({'shown' if flag else 'hidden'})" for name, flag in tiers)
+    return (
+        f"  - Ranks aggregated: {', '.join(rank_keys)}\n"
+        f"  - Showing: {shown}\n"
+        f"  - Max depth: {max_depth if max_depth is not None else 'unlimited'}\n"
     )

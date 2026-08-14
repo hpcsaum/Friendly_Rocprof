@@ -57,9 +57,9 @@ class WriteReportTests(unittest.TestCase):
             self.assertIn("showing top 20 of", report)
             self.assertIn("executable: jacobi_hip", report)
             self.assertIn("run date/time: 2026-07-25T09:15:00", report)
-            self.assertIn("total runtime: 5.980000 sec", report)
+            self.assertIn("runtime: 5.980000 sec", report)
             self.assertIn("MPI ranks: 2", report)
-            self.assertIn("GPU kernel execution time only", report)
+            self.assertIn("each kernel's share of total measured GPU time", report)
             self.assertIn("scripts/profile_CPU_hotspots.sh", report)
 
     def test_end_to_end_single_rank_blank_header(self):
@@ -68,14 +68,14 @@ class WriteReportTests(unittest.TestCase):
             report = hotspots.write_report(os.path.join(FIXTURES, "rocprofv3_single_rank"), dest)
             self.assertIn("executable: \n", report)
             self.assertIn("run date/time: \n", report)
-            self.assertIn("total runtime: \n", report)
+            self.assertIn("runtime: \n", report)
             self.assertIn("MPI ranks: 1\n", report)
 
     def test_threshold_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "hotspots.txt")
             report = hotspots.write_report(os.path.join(FIXTURES, "rocprofv3_mpi_2rank"), dest, threshold=90.0)
-            self.assertIn(">= 90% of total runtime", report)
+            self.assertIn(">= 90% of total measured GPU time", report)
             self.assertNotIn("BoundaryKernel", report)
 
     def test_all_end_to_end(self):

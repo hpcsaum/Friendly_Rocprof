@@ -28,14 +28,23 @@ work, not silently dropped).
 
 import argparse
 import os
-from datetime import datetime
+import sys
 
-from stage1_run_dirs import resolve_run_dirs
+import extract_CPU_hotspots as cpu_tool
+import extract_GPU_hotspots as gpu_tool
+from stage1_run_dirs import resolve_two_dirs
 from stage5_calltree_traced_view import build_calltree_view
-from stage6_report_builder import render_report, write_report_file
+from stage5_tree_render import aggregation_note, tree_view_note
+from stage6_report_builder import command_header, help_redirect, render_report, standard_header, write_report_file
+
+SHORT_DESCRIPTION = (
+    "Renders an aggregated call tree (GOTCHA-instrumented, exact timing) across every rank,\n"
+    "optionally with GPU kernel data nested in.\n"
+)
 
 HELP_BLURB = """\
-Reads a rocprof-sys (optionally paired with rocprofv3) output directory and
+Reads a rocprof-sys output directory (optionally paired with rocprofv3, either
+as a nested rocprofv3/ subdir or as a second, separately-run directory) and
 writes an indented call tree -- actual function nesting, not a flat ranked
 list -- aggregated into one global view across every rank (not one tree per
 rank): each line's CALLS/TOTAL-AVG(s) are averaged, and SELF gets a full
@@ -57,7 +66,11 @@ noise filtering and only statistically-approximate timing.
 Filtering matches tool 3's "CPU compute hotspots" bucket: GPU-API/runtime
 noise (hip/hsa/roctx/kfd/rocdecode/rocjpeg/rocr-prefixed calls, plus
 kernel-descriptor sampling artifacts -- labels ending in ".kd") is hidden by
-default, so what's left is your own code plus MPI calls. Pass
+default, so what's left is your own code plus MPI calls. These ".kd" rows
+happen when rocprof-sys's own sampling attributes a GPU kernel launch to its
+compiled kernel-descriptor symbol directly in the CPU call tree, at
+near-zero duration -- duplicating the same kernel's real device time already
+shown separately, hence hidden the same way, for the same reason. Pass
 --show-gpu-api to see the hidden chain too.
 
 When a paired rocprofv3 directory is found, real GPU kernel data is nested
@@ -76,64 +89,49 @@ https://rocm.docs.amd.com/projects/rocprofiler-systems/en/latest/ for details.
 """
 
 
-def write_report(run_dir, dest_path, max_depth=None, show_gpu_api=False):
-    cpu_dir, gpu_dir = resolve_run_dirs(run_dir)
-    view = build_calltree_view(run_dir, cpu_dir, gpu_dir, max_depth=max_depth, show_gpu_api=show_gpu_api)
+def write_report(cpu_dir, gpu_dir, dest_path, max_depth=None, show_gpu_api=False, command_line=""):
+    view = build_calltree_view(cpu_dir, cpu_dir, gpu_dir, max_depth=max_depth, show_gpu_api=show_gpu_api)
     rank_keys = view["rank_keys"]
 
-    header = (
-        "Call tree report (traced/wall_clock-based, aggregated across ranks)\n"
-        f"generated: {datetime.now().isoformat(timespec='seconds')}\n"
-        f"source directory: {os.path.abspath(run_dir)}\n"
-        f"CPU data: {os.path.abspath(cpu_dir)}\n"
-        f"GPU data: {os.path.abspath(gpu_dir) if view['gpu_paired'] else '(none)'}\n"
-        f"ranks aggregated: {len(rank_keys)} (rank keys: {', '.join(rank_keys)})\n"
-        + (
-            "Showing user code + MPI calls only"
-            + (", GPU-API/runtime calls included\n" if show_gpu_api else " (pass --show-gpu-api to also show GPU-API/runtime calls)\n")
-        )
-        + f"max depth: {max_depth if max_depth is not None else 'unlimited'}\n"
-        + "\n"
-    )
-    sections = [(None, view["tree_text"])]
+    # One shared identity for the run being profiled -- CPU's own metadata is preferred; GPU's
+    # (when a GPU directory was actually given) is used only for whichever field CPU didn't have.
+    # MPI ranks comes from the tree merge itself (len(rank_keys)), ground truth rather than a guess.
+    run_info = cpu_tool.gather_run_info(cpu_dir, [])
+    directories = [("CPU run directory", cpu_dir)]
+    if gpu_dir is not None:
+        directories.append(("GPU run directory", gpu_dir))
+        gpu_run_info = gpu_tool.gather_run_info(gpu_dir, [])
+        run_info = {
+            key: run_info[key] if run_info[key] is not None else gpu_run_info[key]
+            for key in ("executable", "run_datetime", "total_runtime")
+        }
+
+    header = standard_header("extract_calltree_traced.py", SHORT_DESCRIPTION, [{
+        "directories": directories, "executable": run_info["executable"],
+        "run_datetime": run_info["run_datetime"], "runtime": run_info["total_runtime"],
+        "num_ranks": len(rank_keys),
+    }])
+    tree_notes = aggregation_note() + tree_view_note(rank_keys, max_depth, show_gpu_api)
+    sections = [(None, view["tree_text"] + "\n" + tree_notes)]
     if view["fallback_text"]:
         sections.append((None, view["fallback_text"]))
 
-    footer = (
-        "Caveats:\n"
-        "  - Every row is aggregated across all ranks (not one call tree per rank): CALLS and\n"
-        "    TOTAL-AVG(s) are plain averages; SELF gets a full avg/std_dev/min/max load-balance\n"
-        "    breakdown, the same convention extract_CPU_hotspots.py's own load-imbalance tables\n"
-        "    use -- a rank that never reached a given node counts as 0 there, not omitted, so\n"
-        "    real imbalance (e.g. a function only some ranks call) isn't hidden by averaging.\n"
-        "  - GPU-API/runtime rows are hidden by default (pass --show-gpu-api to see them) --\n"
-        "    same classification as extract_CPU_hotspots.py's GPU-API/overhead bucket.\n"
-        "  - Kernel-descriptor sampling artifacts (labels ending in \".kd\") are hidden by\n"
-        "    default too -- rocprof-sys's own sampling sometimes attributes a GPU kernel launch\n"
-        "    to its compiled kernel-descriptor symbol directly in the CPU call tree, at\n"
-        "    near-zero duration, duplicating the same kernel's real device time already shown\n"
-        "    under \"[GPU kernels -- rocprofv3]\" below. Pass --show-gpu-api to see them too.\n"
-        "  - GPU kernel placement matches the kernel name's own compiler-embedded owner\n"
-        "    subroutine against the merged tree when possible (precise, not a guess) -- a\n"
-        "    kernel that can't be matched by name falls back to a structural estimate instead\n"
-        "    (nearest launch-call ancestor, proportionally split by launch-call count when\n"
-        "    multiple candidate sites exist). NEITHER approach is per-dispatch-exact --\n"
-        "    this toolchain's text/JSON output has no per-call timestamps to correlate against;\n"
-        "    only the binary Perfetto trace does, and that has no stdlib-friendly Python parser\n"
-        "    (deferred future work, not attempted here).\n"
-        "  - wall_clock-<pid>.txt is used per rank when present (exact for GOTCHA-intercepted\n"
-        "    MPI calls); sampling_wall_clock-<pid>.txt is used only as a whole-file fallback\n"
-        "    for a rank with no wall_clock file at all -- the two are never spliced together.\n"
-        "    This also means the tree is only as deep as rocprof-sys's instrumentation --\n"
-        "    see extract_calltree.py for the sampling-based tool that shows real call depth.\n"
-    )
+    footer = help_redirect(
+        "noise filtering, instrumentation depth, and kernel-placement caveats",
+        script_name="extract_calltree_traced.py",
+    ) + command_line
 
     return write_report_file(dest_path, render_report(header, sections, footer))
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=HELP_BLURB, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("output_dir", help="rocprof-sys (optionally + rocprofv3) output directory to read")
+    parser.add_argument("output_dir", help="rocprof-sys output directory to read, or a combined "
+                                            "run directory containing both a rocprof-sys/ and a "
+                                            "rocprofv3/ subdir")
+    parser.add_argument("gpu_dir", nargs="?", default=None,
+                         help="rocprofv3 output directory (GPU side) -- omit when output_dir "
+                              "already contains both subdirs, or when there's no GPU data to pair")
     parser.add_argument("-o", "--output", dest="dest", default=None,
                          help="path to write the call tree report (default: <output_dir>/calltree_traced.txt)")
     parser.add_argument("--max-depth", dest="max_depth", type=int, default=None,
@@ -145,9 +143,24 @@ def main(argv=None):
 
     if not os.path.isdir(args.output_dir):
         raise SystemExit(f"error: no such directory: {args.output_dir!r}")
+    cpu_dir, gpu_dir = resolve_two_dirs(args.output_dir, args.gpu_dir)
+    if gpu_dir is not None and not os.path.isdir(gpu_dir):
+        raise SystemExit(f"error: no such directory: {gpu_dir!r}")
 
     dest = args.dest or os.path.join(args.output_dir, "calltree_traced.txt")
-    write_report(args.output_dir, dest, max_depth=args.max_depth, show_gpu_api=args.show_gpu_api)
+    tokens = [os.path.abspath(args.output_dir)]
+    if args.gpu_dir:
+        tokens.append(os.path.abspath(args.gpu_dir))
+    if args.dest:
+        tokens += ["-o", os.path.abspath(args.dest)]
+    if args.max_depth is not None:
+        tokens += ["--max-depth", str(args.max_depth)]
+    if args.show_gpu_api:
+        tokens.append("--show-gpu-api")
+    command_line = command_header(sys.argv[0], tokens)
+
+    write_report(cpu_dir, gpu_dir, dest, max_depth=args.max_depth, show_gpu_api=args.show_gpu_api,
+                 command_line=command_line)
     print(f"wrote {dest}")
 
 

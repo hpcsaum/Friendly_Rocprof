@@ -136,5 +136,33 @@ class RenderTableTests(unittest.TestCase):
         self.assertTrue(lines[3].strip().endswith("3"))
 
 
+class PctTotalNoteTests(unittest.TestCase):
+    def test_reuses_the_given_threshold_unit_verbatim(self):
+        note = tr.pct_total_note("function", "of total measured time (summed across all scanned files)")
+        self.assertEqual(
+            note,
+            "  - '%total' is each function's share of total measured time (summed across all scanned files).\n",
+        )
+
+    def test_different_entry_noun(self):
+        note = tr.pct_total_note("kernel", "of the combined pool above")
+        self.assertIn("each kernel's share", note)
+
+
+class RankingNoteTests(unittest.TestCase):
+    def test_self_time_wording(self):
+        note = tr.ranking_note(unfiltered=False)
+        self.assertIn("Ranked by self time", note)
+        self.assertTrue(note.startswith("  - "))
+
+    def test_inclusive_time_wording(self):
+        note = tr.ranking_note(unfiltered=True)
+        self.assertIn("Ranked by inclusive (total) time", note)
+
+    def test_extra_clause_appended(self):
+        note = tr.ranking_note(unfiltered=False, extra_clause=" Extra sentence.")
+        self.assertTrue(note.endswith("Extra sentence.\n"))
+
+
 if __name__ == "__main__":
     unittest.main()

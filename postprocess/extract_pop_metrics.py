@@ -13,13 +13,18 @@ NOT computed here -- see that doc for why.
 
 import argparse
 import os
-from datetime import datetime
+import sys
 
 from stage3_rocprofsys import load_default_patterns
-from stage5_pop_metrics_table import compute_run_metrics, format_metrics_table, run_label
-from stage6_report_builder import render_report, write_report_file
+from stage5_pop_metrics_table import compute_run_metrics, format_metrics_table, metrics_legend, run_label
+from stage6_report_builder import command_header, help_redirect, render_report, standard_header, write_report_file
 
 TAG_DEFS = load_default_patterns()
+
+SHORT_DESCRIPTION = (
+    "Computes POP-inspired parallel efficiency metrics (Load Balance, Communication/Parallel/\n"
+    "Computation/Global Efficiency) from one or more runs.\n"
+)
 
 HELP_BLURB = f"""\
 Reads one or more rocprof-sys (optionally paired with rocprofv3) output
@@ -48,100 +53,28 @@ https://rocm.docs.amd.com/projects/rocprofiler-systems/en/latest/ for details.
 """
 
 
-def write_report(run_dirs, dest_path, scaling=None):
+def write_report(run_dirs, dest_path, scaling=None, command_line=""):
     all_metrics = [compute_run_metrics(d) for d in run_dirs]
     multi_run = len(all_metrics) > 1
 
-    header = (
-        "POP-inspired parallel efficiency metrics report\n"
-        f"generated: {datetime.now().isoformat(timespec='seconds')}\n"
-        f"reference run: {os.path.abspath(run_dirs[0])}\n"
-        + "".join(
-            f"  - {run_label(m['run_dir'])}: {m['num_ranks']} rank(s)"
-            + (", CPU+GPU combined pool" if m["gpu_dir"] else ", CPU-only pool")
-            + "\n"
-            for m in all_metrics
-        )
-        + "\n"
-    )
+    runs = []
+    for i, m in enumerate(all_metrics):
+        label = "reference run" if i == 0 else f"scaling run {i + 1} ({run_label(m['run_dir'])})"
+        pool = "CPU+GPU combined" if m["gpu_dir"] else "CPU-only"
+        runs.append({
+            "directories": [(label, m["run_dir"])], "num_ranks": m["num_ranks"],
+            "extra_lines": [f"  pool: {pool}\n"],
+        })
+    header = standard_header("extract_pop_metrics.py", SHORT_DESCRIPTION, runs)
 
     table_text, show_gpu_cols, show_gpu_eff = format_metrics_table(all_metrics, scaling)
     sections = [(None, table_text)]
 
-    footer = "Metric explanation:\n"
-    footer += "  - LB    = avg / max useful compute time across ranks\n"
-    footer += (
-        "  - CommE = max useful compute time / max total elapsed time across ranks "
-        "(direct formula, not Dimemas's Serialisation x Transfer split -- see docs/pop_metrics_reference.md)\n"
-    )
-    footer += "  - PE    = LB x CommE\n"
-    if show_gpu_cols:
-        footer += (
-            "  - GPU-Util = max GPU busy time / max total elapsed time across ranks -- NOT an official POP "
-            "metric; the GPU's raw share of wall-clock time, INCLUDING any idling caused by growing "
-            "communication overhead -- unlike GPU-Off, this drops when CommE drops too, since a "
-            "comm-starved GPU is genuinely less utilized, whatever the root cause\n"
-        )
-        footer += (
-            "  - GPU-Off = 1 - (max non-offloaded CPU compute time / max total elapsed time) across ranks -- "
-            "NOT an official POP metric; how much of the critical-path rank's time is still CPU-only "
-            "compute (serial, not-yet-ported, or not-worth-porting code) -- deliberately excludes "
-            "communication time, already covered by CommE\n"
-        )
-        footer += (
-            "  - GPU-LB = avg / max GPU busy time across ranks -- NOT an official POP metric; load balance "
-            "between GPUs specifically, separate from LB's whole CPU+GPU pool\n"
-        )
-    if multi_run:
-        if scaling == "weak":
-            footer += (
-                "  - CompE = avg per-rank useful compute time (reference) / avg per-rank useful compute time (this run) "
-                "-- weak scaling's total is expected to grow with rank count even at perfect efficiency, "
-                "so only the average is meaningful\n"
-            )
-        else:
-            footer += (
-                "  - CompE = total useful compute time (reference) / total useful compute time (this run), summed "
-                "across ranks -- strong scaling's ideal keeps this total constant as rank count grows\n"
-            )
-        footer += "  - GE    = PE x CompE\n"
-    else:
-        footer += (
-            "  - CompE, GE need a scaling study (2+ directories, compared against the first as reference) "
-            "-- pass additional directories to see them\n"
-        )
-    if show_gpu_eff:
-        if scaling == "weak":
-            footer += (
-                "  - GPU-Eff = avg per-rank GPU busy time (reference) / avg per-rank GPU busy time (this run) -- "
-                "NOT an official POP metric; isolates whether it's specifically the GPU's own contribution "
-                "that stopped scaling, as opposed to CompE's whole-pool view\n"
-            )
-        else:
-            footer += (
-                "  - GPU-Eff = total GPU busy time (reference) / total GPU busy time (this run), summed across "
-                "ranks -- NOT an official POP metric; a low value in strong scaling flags the per-rank "
-                "problem size shrinking below what keeps the GPU saturated\n"
-            )
-    footer += "\n"
-    footer += (
-        "Not computed (see docs/pop_metrics_reference.md for why):\n"
-        "  - Serialisation Efficiency / Transfer Efficiency: need a Dimemas-style ideal-network\n"
-        "    simulation, not part of this toolchain.\n"
-        "  - Instruction Scaling / IPC Scaling: need PAPI hardware counters, not present in\n"
-        "    rocprof-sys's output unless ROCPROFSYS_PAPI_EVENTS was explicitly configured.\n"
-    )
-    footer += "\n"
-    footer += (
-        "Caveats:\n"
-        "  - Communication time is classified by function-name prefix (case-insensitive: "
-        f"{', '.join(TAG_DEFS['mpi_territory']['prefixes'])}) or Fortran-shim suffix "
-        f"({', '.join(TAG_DEFS['mpi_territory']['suffixes'])}) --\n"
-        "    MPICH/Cray-MPICH prefixes are confirmed from real captured data; the Open MPI\n"
-        "    prefixes (ompi_/opal_/orte_) are a probable addition, not yet confirmed against a\n"
-        "    real Open MPI run, and may need refinement.\n"
-        "  - CPU<->GPU per-rank pairing (when a rocprofv3 dir is present) assumes matching\n"
-        "    sorted-filename order between the two directories -- not cross-checked.\n"
+    footer = (
+        metrics_legend(show_gpu_cols, show_gpu_eff, multi_run, scaling)
+        + "\n"
+        + help_redirect("what's not computed and classification caveats", script_name="extract_pop_metrics.py")
+        + command_line
     )
 
     return write_report_file(dest_path, render_report(header, sections, footer))
@@ -167,7 +100,14 @@ def main(argv=None):
         raise SystemExit("error: --scaling {strong,weak} is required when scaled_dirs are given")
 
     dest = args.dest or os.path.join(args.reference_dir, "pop_metrics.txt")
-    write_report(run_dirs, dest, scaling=args.scaling)
+    tokens = [os.path.abspath(d) for d in run_dirs]
+    if args.scaling:
+        tokens += ["--scaling", args.scaling]
+    if args.dest:
+        tokens += ["-o", os.path.abspath(args.dest)]
+    command_line = command_header(sys.argv[0], tokens)
+
+    write_report(run_dirs, dest, scaling=args.scaling, command_line=command_line)
     print(f"wrote {dest}")
 
 

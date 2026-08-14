@@ -6,11 +6,25 @@ lives in one file rather than being duplicated per domain. compute_load_imbalanc
 consumer of stage4_rank_merge_math's per-rank stats; ranking/filtering/rendering themselves are generic
 (see stage5_table_render.py).
 
-Functions: load_imbalance_columns(), compute_load_imbalance().
+Functions: load_imbalance_columns(), compute_load_imbalance(), imbalance_note().
 """
 
 from stage4_rank_merge_math import stats_across_ranks
 from stage5_table_render import select_entries
+
+_VERB_BY_LABEL = {"function": "called", "kernel": "launched"}
+
+
+def imbalance_note(item_label, time_kind):
+    """Bulleted note explaining this table's per-rank convention -- item_label is "function" or
+    "kernel" (matches load_imbalance_columns()'s own item_label), time_kind is "self"/"inclusive"
+    (CPU tool, selected by --unfiltered) or "total" (GPU tool, no self/inclusive split since a
+    kernel has no callees)."""
+    verb = _VERB_BY_LABEL[item_label]
+    return (
+        f"  - Each {item_label}'s own {time_kind} time on each rank, compared across ranks -- a "
+        f"rank that never {verb} a {item_label} counts as 0.0 for that rank, not omitted.\n"
+    )
 
 
 def load_imbalance_columns(item_label="function"):
