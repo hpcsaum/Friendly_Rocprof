@@ -21,6 +21,7 @@ spec.loader.exec_module(selector)
 
 import extract_GPU_hotspots as gpu_tool  # noqa: E402
 import extract_hotspots as combined_tool  # noqa: E402
+from stage5_table_render import wrap_trailing_label  # noqa: E402
 
 GPU_SINGLE_RANK = os.path.join(FIXTURES, "rocprofv3_single_rank")
 GPU_MPI_2RANK = os.path.join(FIXTURES, "rocprofv3_mpi_2rank")
@@ -120,6 +121,26 @@ class LabelsFromReportTests(unittest.TestCase):
                 f.write(report)
             labels = selector.labels_from_report(dest)
         self.assertEqual(labels, ["void MyKernel<int, float>(int*, float const*) const"])
+
+    def test_pre_wrapped_kernel_name_reconstructs_across_physical_lines(self):
+        # A kernel name long enough that extract_GPU_hotspots.py's real render_table() call
+        # would hard-wrap it across 2+ physical lines -- confirms labels_from_report() (via
+        # iter_table_rows()) rejoins it back into one label, not just its first physical line.
+        long_kernel = "void MyKernel<" + "T" * 100 + ">(int, float const*)"
+        prefix = "    1     1.000000     10.0          50      20.00  "
+        row_text = wrap_trailing_label(prefix, long_kernel, width=90)
+        report = (
+            "rocprofv3 GPU kernel hotspots report\n\n"
+            "GPU kernel hotspots -- showing top 1 of 1 entries\n"
+            "    #      total(s)   %total       calls    avg(us)  kernel\n"
+            + row_text + "\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            with open(dest, "w") as f:
+                f.write(report)
+            labels = selector.labels_from_report(dest)
+        self.assertEqual(labels, [long_kernel])
 
     def test_malformed_text_raises(self):
         with tempfile.TemporaryDirectory() as tmp:

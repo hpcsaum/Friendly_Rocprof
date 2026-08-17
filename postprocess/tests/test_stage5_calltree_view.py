@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import unittest
 
@@ -29,6 +30,17 @@ def _line_for(report, label):
     raise AssertionError(f"no rendered line for {label!r} found")
 
 
+_NUMERIC_SUFFIX_RE = re.compile(r"(?:\s{2,}-?[\d.]+)+\s*$")
+
+
+def _labels_only(report):
+    """Strips each physical line's trailing numeric-cell columns (if any), then joins every line
+    back together with no separator -- reconstructs each row's own label text contiguously, so a
+    test can search for a label substring regardless of exactly where
+    stage5_tree_render.wrap_leading_labels() cut a too-long label across physical lines."""
+    return "".join(_NUMERIC_SUFFIX_RE.sub("", line) for line in report.splitlines())
+
+
 class GpuNoiseTierTests(unittest.TestCase):
     def test_hidden_by_default(self):
         report = render(FILTERS_DIR)
@@ -53,8 +65,12 @@ class GpuNoiseTierTests(unittest.TestCase):
     def test_omp_target_offload_internals_shown_with_flag(self):
         report = render(FILTERS_DIR, show_gpu_api=True)
         self.assertIn("__tgt_target_kernel", report)
-        self.assertIn("llvm::omp::target::plugin::GenericPluginTy::load_binary", report)
-        self.assertIn("clang::CodeGen::mergeDefaultFunctionDefinition", report)
+        # This label is long enough that stage5_tree_render.wrap_leading_labels() hard-wraps it
+        # across 2 physical lines -- reconstruct labels-only text first so the substring search
+        # sees it whole.
+        flat = _labels_only(report)
+        self.assertIn("llvm::omp::target::plugin::GenericPluginTy::load_binary", flat)
+        self.assertIn("clang::CodeGen::mergeDefaultFunctionDefinition", flat)
 
 
 class RocprofsysWrapperSpliceTests(unittest.TestCase):
@@ -173,9 +189,13 @@ class KernelAnchorBroadeningTests(unittest.TestCase):
         report = render(KERNEL_ANCHOR_DIR)
         self.assertIn("[GPU kernels -- rocprofv3", report)
         self.assertNotIn("no owning subroutine or launch call site found", report)
-        # compute_a issued 100/150 launch calls, compute_b issued 50/150.
-        self.assertIn("~67% estimate: this site issued 100/150", report)
-        self.assertIn("~33% estimate: this site issued 50/150", report)
+        # compute_a issued 100/150 launch calls, compute_b issued 50/150. This bracketed label is
+        # long enough that wrap_leading_labels() may hard-wrap it across physical lines --
+        # reconstruct labels-only text first so the substring search sees it whole regardless of
+        # the exact cut point.
+        flat = _labels_only(report)
+        self.assertIn("~67% estimate: this site issued 100/150", flat)
+        self.assertIn("~33% estimate: this site issued 50/150", flat)
         i_a = report.index("compute_a")
         i_b = report.index("compute_b")
         i_kernel_a = report.index("[GPU kernels -- rocprofv3", i_a)

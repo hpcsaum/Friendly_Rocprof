@@ -22,9 +22,9 @@ sampling tool, its wrapper-noise postprocess step) and calls these functions to 
 the rest.
 
 Functions: render_forest(), render_node(), get_children(), count_all_descendants(),
-build_children_map(), format_aligned_rows(), load_rank_trees(), kernel_totals_with_counts(),
-pair_gpu_per_rank(), attach_and_render_gpu_kernels(), render_calltree_text(), aggregation_note(),
-tree_view_note().
+build_children_map(), wrap_leading_labels(), format_aligned_rows(), load_rank_trees(),
+kernel_totals_with_counts(), pair_gpu_per_rank(), attach_and_render_gpu_kernels(),
+render_calltree_text(), aggregation_note(), tree_view_note().
 """
 
 import glob
@@ -126,32 +126,63 @@ def build_children_map(rows, collapses_children=lambda row: False):
     return children
 
 
+def wrap_leading_labels(rows, suffix_width, width=120):
+    """Caps and hard-wraps the leading label column for a block whose numeric columns come AFTER
+    it (suffix_width = the fixed width of everything printed after the label, e.g.
+    sum(2 + col_width for each numeric column)). Returns (label_width, wrapped_rows):
+    label_width is the one column width every row's label is padded to -- the longest real label,
+    capped so label + suffix_width never exceeds `width` columns, which is what stops a single
+    pathologically long label from dragging every other row's alignment wider (the 20-column floor
+    is the same defensive minimum as stage5_table_render.wrap_trailing_label()'s). wrapped_rows is
+    `rows` with each data row's text replaced by a list of 1+ label fragments -- a character-level
+    cut, no word-boundary search, so concatenating every fragment in order reconstructs the
+    original label exactly -- only the first of which carries that row's `values`; marker rows
+    (values is None) pass through with their text untouched (still a plain string, not a list).
+    Reusable as-is by any future tree-style renderer sharing this leading-label-then-numeric-
+    columns layout, not just format_aligned_rows().
+    """
+    data_rows = [r for r in rows if r[1] is not None]
+    available = max(width - suffix_width, 20)
+    label_width = min(max((len(text) for text, _values in data_rows), default=0), available)
+    wrapped = []
+    for text, values in rows:
+        if values is None or len(text) <= available:
+            wrapped.append((text if values is None else [text], values))
+            continue
+        chunks = [text[i:i + available] for i in range(0, len(text), available)]
+        wrapped.append((chunks, values))
+    return label_width, wrapped
+
+
 def format_aligned_rows(rows, headers):
     """Real right-aligned numeric columns under one header, sized to this
-    block's longest label -- not a "[calls=.../self=...]" string repeated on
-    every line. `headers` is a list of (name, width, format_spec) tuples,
-    e.g. [("CALLS", 8, ".1f")]. Each row is (label_text, values) where
-    values is a tuple with one entry per header (a number, or None to render
-    that single cell as "-"), or values is `None` entirely for a marker row
-    with no metrics at all (printed as plain text, e.g. the "N more node(s)
-    hidden" line). Returns "" for an empty block (no header printed with
-    nothing under it)."""
+    block's longest label (capped -- see wrap_leading_labels()) -- not a
+    "[calls=.../self=...]" string repeated on every line. `headers` is a
+    list of (name, width, format_spec) tuples, e.g. [("CALLS", 8, ".1f")].
+    Each row is (label_text, values) where values is a tuple with one entry
+    per header (a number, or None to render that single cell as "-"), or
+    values is `None` entirely for a marker row with no metrics at all
+    (printed as plain text, e.g. the "N more node(s) hidden" line). Returns
+    "" for an empty block (no header printed with nothing under it)."""
     data_rows = [r for r in rows if r[1] is not None]
     if not data_rows:
         return ""
 
-    label_width = max(len(text) for text, _values in data_rows)
+    suffix_width = sum(2 + width for _name, width, _fmt in headers)
+    label_width, wrapped_rows = wrap_leading_labels(rows, suffix_width)
     header_line = f"{'':<{label_width}}" + "".join(f"  {name:>{width}}" for name, width, _fmt in headers)
     lines = [header_line]
-    for text, values in rows:
+    for text_or_chunks, values in wrapped_rows:
         if values is None:
-            lines.append(text)
+            lines.append(text_or_chunks)
             continue
+        chunks = text_or_chunks
         cells = []
         for value, (_name, width, fmt) in zip(values, headers):
             cell = f"{value:{fmt}}" if value is not None else "-"
             cells.append(f"{cell:>{width}}")
-        lines.append(f"{text:<{label_width}}  " + "  ".join(cells))
+        lines.append(f"{chunks[0]:<{label_width}}  " + "  ".join(cells))
+        lines.extend(chunks[1:])
     return "\n".join(lines) + "\n"
 
 

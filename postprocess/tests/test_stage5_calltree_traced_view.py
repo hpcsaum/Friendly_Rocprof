@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import unittest
 
@@ -25,6 +26,17 @@ def render(run_dir, **kwargs):
     cpu_dir, gpu_dir = resolve_run_dirs(run_dir)
     view = build_calltree_view(run_dir, cpu_dir, gpu_dir, **kwargs)
     return view["tree_text"] + view["fallback_text"]
+
+
+_NUMERIC_SUFFIX_RE = re.compile(r"(?:\s{2,}-?[\d.]+)+\s*$")
+
+
+def _labels_only(report):
+    """Strips each physical line's trailing numeric-cell columns (if any), then joins every line
+    back together with no separator -- reconstructs each row's own label text contiguously, so a
+    test can search for a label substring regardless of exactly where
+    stage5_tree_render.wrap_leading_labels() cut a too-long label across physical lines."""
+    return "".join(_NUMERIC_SUFFIX_RE.sub("", line) for line in report.splitlines())
 
 
 class LoadRankTreesTests(unittest.TestCase):
@@ -145,9 +157,13 @@ class KernelIntegrationTests(unittest.TestCase):
 
     def test_multiple_anchors_split_proportionally(self):
         report = render(KERNEL_MULTI_ANCHOR_DIR)
-        # fixture: compute_a issued 300 launch calls, compute_b issued 200 (of 500 total)
-        self.assertIn("~60% estimate: this site issued 300/500", report)
-        self.assertIn("~40% estimate: this site issued 200/500", report)
+        # fixture: compute_a issued 300 launch calls, compute_b issued 200 (of 500 total). This
+        # bracketed label is long enough that wrap_leading_labels() may hard-wrap it across
+        # physical lines -- reconstruct labels-only text first so the substring search sees it
+        # whole regardless of the exact cut point.
+        flat = _labels_only(report)
+        self.assertIn("~60% estimate: this site issued 300/500", flat)
+        self.assertIn("~40% estimate: this site issued 200/500", flat)
         # both anchors get their own nested kernel breakdown, not one shared full total
         self.assertEqual(report.count("JacobiIterationKernel"), 2)
 

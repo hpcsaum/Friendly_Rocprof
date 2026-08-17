@@ -107,6 +107,58 @@ class FormatAlignedRowsTests(unittest.TestCase):
     def test_empty_block_renders_as_empty_string(self):
         self.assertEqual(tr.format_aligned_rows([], DEFAULT_HEADERS), "")
 
+    def test_long_label_wraps_without_dragging_sibling_alignment(self):
+        # End-to-end: format_aligned_rows() actually calls wrap_leading_labels() -- a short
+        # sibling row's numeric columns stay aligned at the capped width, not dragged out to the
+        # long label's full 200 characters.
+        long_label = "z" * 200
+        rows = [("short", (1, 2.0, 3.0)), (long_label, (4, 5.0, 6.0))]
+        suffix_width = sum(2 + width for _name, width, _fmt in DEFAULT_HEADERS)
+        expected_label_width, _ = tr.wrap_leading_labels(rows, suffix_width)
+        text = tr.format_aligned_rows(rows, DEFAULT_HEADERS)
+        lines = text.splitlines()
+
+        self.assertEqual(lines[1][expected_label_width:expected_label_width + 2], "  ")
+        self.assertEqual(lines[2][expected_label_width:expected_label_width + 2], "  ")
+        # header + short row + long row's first line + 2 continuation lines (ceil(200/available) - 1)
+        self.assertEqual(len(lines), 5)
+        for cont in lines[3:]:
+            self.assertEqual(cont, cont.lstrip(" "))  # flush left, not indented
+            self.assertFalse(any(ch.isdigit() for ch in cont))  # no numeric cells
+
+
+class WrapLeadingLabelsTests(unittest.TestCase):
+    def test_labels_under_cap_are_unaffected(self):
+        rows = [("main", (10, 1.5, 3.0)), ("child", (5, 0.5, 1.0))]
+        label_width, wrapped = tr.wrap_leading_labels(rows, suffix_width=38)
+        self.assertEqual(label_width, max(len("main"), len("child")))  # today's exact formula
+        # every data row's text comes back as a 1-element chunk list, ready for the caller to
+        # print its only element -- byte-identical content either way, just always list-shaped
+        self.assertEqual(wrapped, [(["main"], (10, 1.5, 3.0)), (["child"], (5, 0.5, 1.0))])
+
+    def test_short_labels_wrapped_as_single_element_chunk_lists(self):
+        rows = [("main", (10, 1.5, 3.0))]
+        _label_width, wrapped = tr.wrap_leading_labels(rows, suffix_width=1000)
+        # a huge suffix_width forces available down to the 20-column floor, but "main" still
+        # fits comfortably -- still returned as a 1-element chunk list, not wrapped
+        self.assertEqual(wrapped, [(["main"], (10, 1.5, 3.0))])
+
+    def test_long_label_is_capped_and_reconstructs_when_joined(self):
+        long_label = "x" * 200
+        rows = [("short", (1, 2, 3)), (long_label, (4, 5, 6))]
+        label_width, wrapped = tr.wrap_leading_labels(rows, suffix_width=38)  # available == 82
+        self.assertEqual(label_width, 82)  # capped, not dragged to 200 by the one long row
+        self.assertEqual(wrapped[0], (["short"], (1, 2, 3)))
+        chunks, values = wrapped[1]
+        self.assertEqual(values, (4, 5, 6))
+        self.assertEqual(len(chunks), 3)  # ceil(200 / 82)
+        self.assertEqual("".join(chunks), long_label)
+
+    def test_marker_row_passes_through_untouched(self):
+        rows = [("main", (1, 2, 3)), ("... (2 more node(s) hidden)", None)]
+        _label_width, wrapped = tr.wrap_leading_labels(rows, suffix_width=38)
+        self.assertEqual(wrapped[1], ("... (2 more node(s) hidden)", None))
+
 
 class LoadRankTreesTests(unittest.TestCase):
     def test_primary_pattern_file_used_when_present(self):

@@ -22,7 +22,7 @@ import os
 import sys
 
 from stage4_rocprofv3 import aggregate
-from stage5_table_render import select_entries
+from stage5_table_render import iter_table_rows, select_entries
 
 HELP_BLURB = """\
 Turns a profile_hotspot_kernels.sh (or extract_GPU_hotspots.py/extract_hotspots.py) report --
@@ -88,22 +88,19 @@ def labels_from_report(report_path, require_multiple_calls=True):
         )
 
     labels = []
-    for line in lines[header + 1:]:
-        if not line.strip():
-            break
-        # GPU_HOTSPOTS_COLUMNS: # total(s) %total calls avg(us) kernel -- maxsplit=5
-        # keeps the kernel name (which may itself contain spaces, e.g. a templated C++ signature)
-        # intact as the 6th and last piece.
-        parts = line.split(maxsplit=5)
-        if len(parts) < 6:
+    # GPU_HOTSPOTS_COLUMNS: # total(s) %total calls avg(us) kernel -- 6 columns, the kernel name
+    # (which may itself contain spaces, e.g. a templated C++ signature, and may itself span 2+
+    # physical lines if wrap_trailing_label() hard-wrapped it) intact as the 6th and last token.
+    for row in iter_table_rows(lines[header + 1:], num_columns=6):
+        if len(row) < 6:
             continue
         try:
-            calls = int(parts[3])
+            calls = int(row[3])
         except ValueError:
             continue
         if require_multiple_calls and calls < 2:
             continue
-        labels.append(parts[5].strip())
+        labels.append(row[5].strip())
 
     return sorted(set(labels))
 

@@ -9,7 +9,8 @@ column means, only how wide it is and how to read its value out of an entry. Wha
 tables (which columns, which field to rank by, which field means "% of total") is data supplied by
 the caller, not new code here.
 
-Functions: select_entries(), render_table(), pct_total_note(), ranking_note().
+Functions: select_entries(), render_table(), wrap_trailing_label(), iter_table_rows(),
+pct_total_note(), ranking_note().
 """
 
 
@@ -55,11 +56,32 @@ def select_entries(entries, rank_field, threshold_field=None, top=None, threshol
     return entries_sorted[:n], f"top {n} of {total_count} entries{suffix}"
 
 
+def wrap_trailing_label(prefix, label, width=120):
+    """Formats one row whose line already begins with `prefix` (everything printed before the
+    label -- e.g. "  1  12.340000  10.0  ...  ") and ends in an unpadded trailing label. Returns
+    the row as a single string (1+ physical lines joined by "\\n"): unchanged (`prefix + label`)
+    if it already fits in `width` columns; otherwise hard-wrapped -- a raw character-level cut, no
+    word-boundary search, so concatenating every chunk back together reconstructs `label` exactly
+    -- with each continuation line indented by len(prefix) spaces so it lines up exactly under
+    where the label itself started (never flush-left). The 20-column floor on the available width
+    guards against a pathological prefix that alone already exceeds `width` (none do today; a
+    defensive minimum, not a real code path). Reusable as-is by any future stage-5 table module
+    sharing this "fixed columns, then one unpadded trailing label" layout, not just render_table().
+    """
+    if len(prefix) + len(label) <= width:
+        return prefix + label
+    available = max(width - len(prefix), 20)
+    chunks = [label[i:i + available] for i in range(0, len(label), available)]
+    indent = " " * len(prefix)
+    return "\n".join([prefix + chunks[0]] + [indent + c for c in chunks[1:]])
+
+
 def render_table(columns, entries):
     """columns: list of {"header": str, "width": int|None, "align": "left"|"right" (default
     "right"), "value": callable(entry, index) -> str}. width=None means unpadded (used for the
     trailing name/label column, which is never truncated -- its own value is printed as-is,
-    whatever length it is). Renders one header row plus one row per entry, 1-indexed; returns
+    however long it is, hard-wrapped via wrap_trailing_label() if that would exceed a shared
+    120-column target). Renders one header row plus one row per entry, 1-indexed; returns
     "  (none found)\\n" for an empty entries list (no header printed with nothing under it)."""
     if not entries:
         return "  (none found)\n"
@@ -71,10 +93,65 @@ def render_table(columns, entries):
         align = ">" if col.get("align", "right") == "right" else "<"
         return f"{text:{align}{width}}"
 
-    lines = ["  " + "  ".join(_cell(col["header"], col) for col in columns)]
+    # Only the trailing column is ever allowed width=None (an unpadded label, per this function's
+    # own contract) -- every other column is always fixed-width, so only that specific shape needs
+    # wrap_trailing_label()'s hard-wrap; a table with no such trailing column (e.g. a table made
+    # entirely of fixed-width columns) renders exactly as it always has.
+    has_trailing_label = bool(columns) and columns[-1].get("width") is None
+    fixed_cols = columns[:-1] if has_trailing_label else columns
+
+    def _row(fixed_values, label_value):
+        cells = [_cell(text, col) for text, col in zip(fixed_values, fixed_cols)]
+        prefix = "  " + "  ".join(cells)
+        if not has_trailing_label:
+            return prefix
+        return wrap_trailing_label(prefix + ("  " if fixed_cols else ""), label_value)
+
+    lines = [_row([col["header"] for col in fixed_cols], columns[-1]["header"] if has_trailing_label else None)]
     for i, e in enumerate(entries, 1):
-        lines.append("  " + "  ".join(_cell(col["value"](e, i), col) for col in columns))
+        lines.append(_row(
+            [col["value"](e, i) for col in fixed_cols],
+            columns[-1]["value"](e, i) if has_trailing_label else None,
+        ))
     return "\n".join(lines) + "\n"
+
+
+def iter_table_rows(lines, num_columns):
+    """Yields each logical row as a list of num_columns tokens, with a hard-wrapped trailing
+    label already rejoined across any continuation lines wrap_trailing_label() introduced --
+    callers never see the physical line breaks. lines is the table's own row lines (header
+    already skipped by the caller); stops at the first blank line, matching render_table()'s own
+    "blank line ends the table" convention.
+
+    Detection: a line is a continuation of the previous row, not a new row, iff its first
+    whitespace-split token doesn't parse as a plain integer -- every real row's leading '#'
+    column always is one; a continuation line (a raw fragment of a wrapped label) essentially
+    never is. Reconstruction is direct concatenation, no separator inserted -- the wrap is a
+    lossless character-level cut, so undoing it is just gluing the pieces back in order.
+
+    Known, accepted limitations: a wrap point landing exactly on a digit run could leave a
+    continuation line whose own first token is pure digits, misread as a new row -- real
+    C/C++/Fortran identifiers can't start with a digit, so this only bites mid-identifier at an
+    exact cut point. A wrap point landing exactly on a space is lossy: each continuation line is
+    stripped before being appended back, so that one space is dropped rather than preserved --
+    real long labels needing this reader (namespace/template chains) are essentially one long
+    contiguous identifier with no interior whitespace, so this practically never bites. Neither is
+    worth the added complexity of closing here.
+    """
+    current = None
+    for raw_line in lines:
+        line = raw_line.rstrip("\n")
+        if not line.strip():
+            break
+        first = line.split(maxsplit=1)[0] if line.split() else ""
+        if first.lstrip("-").isdigit():
+            if current is not None:
+                yield current
+            current = line.split(maxsplit=num_columns - 1)
+        elif current is not None:
+            current[-1] += line.strip()
+    if current is not None:
+        yield current
 
 
 def pct_total_note(entry_noun, threshold_unit):

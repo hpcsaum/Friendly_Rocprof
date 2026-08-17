@@ -41,6 +41,7 @@
 | 2026-08-14 | Plan 2.8: built `stage6_report_builder.py` (a genuinely generic `render_report(header, sections, footer)` backend, not a thin `write_report_file()`/`section()` pair) and `stage6_run_metadata.py`, and rewrote all 6 report tools' `write_report()` as compute/assemble/write composers over them -- roadmap step 7; fixed `stage5_tree_render.py`'s two render functions self-appending a trailing blank line so both calltree tools could adopt the same generic backend in this same plan instead of being deferred -- see full design/real-data accounting below |
 | 2026-08-14 | Plan 2.9: added `extract_calltree.py`'s and `extract_pop_metrics.py`'s two missing `HELP_BLURB` gaps identified by §10's rule-5 redirect precondition audit -- roadmap step 8, additive only, no report output changed |
 | 2026-08-14 | Plan 2.10: applied §10's report style guide rules 1-5 and 7 across all 6 tools (rule 6, hard-wrap, split to plan 2.11) -- roadmap step 9, the first step allowed to change report output everywhere; also relocated table-owned prose (`%total`/ranking/load-imbalance/aggregation legends) into the owning stage5 module, unified every tool's header into one `stage6_report_builder.standard_header()` function (closing plan 2.8's deferred metadata-presentation item), and unified `extract_hotspots.py`/`extract_calltree.py`/`extract_calltree_traced.py`'s directory handling via a new shared `resolve_two_dirs()` helper -- see full design/real-data accounting below |
+| 2026-08-17 | Plan 2.11: applied §10's rule 6 (120-column hard-wrap for long names) across `stage5_table_render.py`/`stage5_tree_render.py`, plus the `iter_table_rows()` reader both `select_hotspot_*.py` re-parsers need to survive it -- roadmap step 9, part 2 of 2; the wrap/cap logic for each renderer's own geometry landed as its own standalone, reusable function (`wrap_trailing_label()`, `wrap_leading_labels()`) rather than inlined, per explicit request -- see full design/real-data accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -1654,4 +1655,95 @@ across CPU/GPU/combined/calltree/calltree-traced/pop-metrics reports and multipl
 header shape, `tables:` listing, section numbering, bulleted notes, and redirect lines all read
 correctly. Real HPC data's long C++ template names visibly break table alignment in the calltree
 views, exactly the problem plan 2.11's rule 6 exists to fix next.
+
+## 2026-08-17 — Plan 2.11: §10 rule 6, 120-column hard-wrap (roadmap step 9, part 2 of 2)
+
+Closes the half of §10's report style guide plan 2.10 split out: rule 6's 120-column hard-wrap for
+long function/kernel names, plus the `iter_table_rows()` reader `select_hotspot_functions.py`/
+`select_hotspot_kernels.py` need to keep working once a name can span 2+ physical lines. Plan
+2.10's own real-data verification already found the concrete motivating case: a long C++
+template/namespace name either drags every other row's column alignment out of shape (the calltree
+view, where one shared label width applies to the whole block) or runs unbroken past any reasonable
+width (the hotspots tables, where the trailing name column is deliberately unpadded).
+
+**The wrap/cap logic for each renderer's own geometry is its own standalone, reusable function,**
+not inlined into `render_table()`/`format_aligned_rows()` -- an explicit request during planning,
+so a future stage-5 table or tree-style renderer sharing either layout can call the same function
+directly instead of duplicating the cut/indent arithmetic or routing through a whole different
+renderer's column-spec machinery just to get the wrap:
+
+- `stage5_table_render.wrap_trailing_label(prefix, label, width=120)` -- for the "fixed columns,
+  then one unpadded trailing label" shape every hotspots-family table module
+  (`stage5_cpu_hotspots_table.py`, `stage5_gpu_hotspots_table.py`, `stage5_fused_hotspots_table.py`,
+  `stage5_load_imbalance_table.py`) already uses. Takes the row's own already-assembled `prefix`
+  (everything printed before the label) and the label itself; returns the row unchanged if it fits,
+  otherwise hard-wrapped -- a raw character-level cut, no word-boundary search, with each
+  continuation line indented by `len(prefix)` spaces so it lines up under where the label itself
+  started, never flush-left. `render_table()` now calls this per row instead of directly
+  concatenating; a table made entirely of fixed-width columns (no trailing `width=None` column) is
+  routed around it entirely and renders exactly as before.
+- `stage5_tree_render.wrap_leading_labels(rows, suffix_width, width=120)` -- for the inverse
+  geometry, a leading label column followed by numeric columns (`format_aligned_rows()`'s own
+  layout). Capping this width is inherently a whole-block decision, not a per-row one (every row
+  shares one `label_width`), so this function takes the whole row list at once: it returns the one
+  capped `label_width` (the longest real label, bounded so label + `suffix_width` never exceeds the
+  120-column target -- this is what stops a single pathologically long label from dragging every
+  other row's alignment wider, the exact bug real HPC data exposed) and every row with its label
+  replaced by a list of 1+ character-cut fragments, only the first of which carries that row's
+  numeric values; marker rows (e.g. "N more node(s) hidden") pass through untouched.
+
+`stage5_pop_metrics_table.py`'s columns are all explicitly widthed (no trailing `width=None`
+column at all -- confirmed by direct read), so `wrap_trailing_label()` never engages for it;
+real-data regeneration confirms every `pop_metrics.txt` is byte-identical except its own
+timestamp/command-invocation lines.
+
+**`iter_table_rows(lines, num_columns)`** (`stage5_table_render.py`, next to `render_table()`)
+adapts the master roadmap's own addendum sketch, parameterizing the column count the sketch
+hardcoded (this codebase's two real consumers need 7 and 6 respectively). Detection: a line is a
+continuation of the previous row, not a new row, iff its first whitespace-split token doesn't parse
+as a plain integer -- every real row's leading `#` column always is one, a continuation line (a raw
+fragment of a wrapped label) essentially never is. Reconstruction is direct concatenation, matching
+the wrap's own lossless character-level cut. Two known, accepted limitations, both inherited from
+the original design and neither worth the added complexity of closing here: a wrap point landing
+exactly on a digit run could misread a continuation line as a new row (real identifiers can't start
+with a digit, so this only bites mid-identifier at an exact cut point); a wrap point landing exactly
+on a space is lossy, since each continuation line is stripped before being appended back -- the
+real motivating case (long namespace/template chains) is one long contiguous identifier with no
+interior whitespace, so this practically never bites (a test that happened to hit this exact edge,
+a hand-built label with a space near the likely wrap point, was rewritten to a space-free label
+instead of "fixed" -- the lossiness is the accepted design, not a bug). Both `select_hotspot_*.py`
+tools' `labels_from_report()` now iterate `iter_table_rows(lines[header + 1:], num_columns=7 or 6)`
+instead of hand-splitting each physical line directly -- every per-column index use is unchanged,
+since the token layout is identical, just no longer assuming one physical line per row.
+
+Test rework followed the same "run the existing suite first" discipline: of 404 tests, 3 broke, all
+in the calltree view tests (`test_stage5_calltree_view.py`, `test_stage5_calltree_traced_view.py`)
+whose fixtures include a bracketed synthetic GPU-kernel-group label (e.g. "[GPU kernels --
+rocprofv3, ~60% estimate: this site issued 300/500 observed launch calls]") long enough to now wrap
+-- a real, expected output-shape change, not a logic regression. Fixed by adding a small
+`_labels_only()` test helper (strips each physical line's trailing numeric-cell columns via regex,
+then joins with no separator) so the affected assertions search reconstructed label text instead of
+one physical line; a naive `report.replace("\n", "")` was tried first and rejected once it became
+clear it silently spliced a row's own numeric cells into the middle of that row's label instead of
+skipping them. New test coverage added for every new/changed function: `WrapTrailingLabelTests`,
+`WrapLeadingLabelsTests`, `IterTableRowsTests`, plus one end-to-end case each in `RenderTableTests`
+and `FormatAlignedRowsTests` confirming the real renderer actually calls the new standalone function
+(round-tripped back through `iter_table_rows()` for the former, checked against
+`wrap_leading_labels()`'s own directly-computed expected `label_width` for the latter). Both
+`select_hotspot_*.py` test files gained a pre-wrapped-report round-trip case, built with
+`wrap_trailing_label()` directly rather than a hand-typed fixture, confirming `labels_from_report()`
+reconstructs the full label instead of just its first physical line. Final suite: 422 tests, all
+passing.
+
+Real-data verification across all 6 `test_apps/results/` directories: only `hotspots.txt`,
+`calltree.txt`, and `calltree_traced.txt` change (`pop_metrics.txt` confirmed unaffected above). To
+avoid clobbering the `.before` siblings plan 2.10's own review already left in place (explicitly
+kept per prior request, holding the pre-2.10 baseline), this round's pre-change snapshots use a
+distinct `.before-2.11` suffix instead of reusing `.before` -- so all three states (pre-2.10,
+post-2.10/pre-2.11, and post-2.11) stay independently reviewable side by side. Diffing
+`calltree.txt.before-2.11` against the regenerated `calltree.txt` confirms the fix directly: a real
+`run_simulation(std::__cxx11::basic_string<...>...)` signature that used to drag every column on its
+own row (and every sibling row's alignment) out to the right, ending in a truncated `...`, now wraps
+onto its own continuation line(s) with the row's numeric columns staying put at the shared,
+120-column-budget-derived width -- exactly the problem this plan exists to fix.
 

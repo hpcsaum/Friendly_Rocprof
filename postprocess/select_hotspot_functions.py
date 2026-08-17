@@ -27,7 +27,7 @@ import os
 import sys
 
 from stage4_rocprofsys_flat import aggregate
-from stage5_table_render import select_entries
+from stage5_table_render import iter_table_rows, select_entries
 
 HELP_BLURB = """\
 Turns a profile_hotspots.sh (or extract_CPU_hotspots.py) report -- or a
@@ -119,16 +119,13 @@ def labels_from_report(report_path):
         )
 
     labels = []
-    for line in lines[header + 1:]:
-        if not line.strip():
-            break
-        # CPU_HOTSPOTS_COLUMNS: # self(s) %total total(s) calls %self function --
-        # maxsplit=6 keeps the function name (which may itself contain spaces, e.g. a C++
-        # signature) intact as the 7th and last piece.
-        parts = line.split(maxsplit=6)
-        if len(parts) < 7:
+    # CPU_HOTSPOTS_COLUMNS: # self(s) %total total(s) calls %self function -- 7 columns, the
+    # function name (which may itself contain spaces, e.g. a C++ signature, and may itself span
+    # 2+ physical lines if wrap_trailing_label() hard-wrapped it) intact as the 7th and last token.
+    for row in iter_table_rows(lines[header + 1:], num_columns=7):
+        if len(row) < 7:
             continue
-        labels.append(parts[6].strip())
+        labels.append(row[6].strip())
 
     if not labels:
         raise SystemExit(

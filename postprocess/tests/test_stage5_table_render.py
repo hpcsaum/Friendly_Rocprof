@@ -135,6 +135,105 @@ class RenderTableTests(unittest.TestCase):
         self.assertTrue(lines[1].strip().endswith("1"))
         self.assertTrue(lines[3].strip().endswith("3"))
 
+    def test_long_trailing_label_comes_back_hard_wrapped(self):
+        # End-to-end: render_table() actually calls wrap_trailing_label() (not just re-implements
+        # the same idea inline) -- confirmed by parsing the rendered table back with
+        # iter_table_rows(), the same reader the real select_hotspot_*.py consumers use.
+        columns = [
+            {"header": "#", "width": 3, "value": lambda e, i: str(i)},
+            {"header": "function", "width": None, "value": lambda e, i: e["label"]},
+        ]
+        long_name = "MyNamespace::" + "A" * 150 + "::compute(int, double) const"
+        table = tr.render_table(columns, [{"label": long_name}])
+        self.assertGreater(len(table.splitlines()), 2)  # header + 2+ physical lines for one row
+        rows = list(tr.iter_table_rows(table.splitlines()[1:], num_columns=2))
+        self.assertEqual(rows, [["1", long_name]])
+
+
+class WrapTrailingLabelTests(unittest.TestCase):
+    def test_label_that_fits_is_unchanged(self):
+        self.assertEqual(tr.wrap_trailing_label("  1  ", "short_name"), "  1  short_name")
+
+    def test_long_label_wraps_into_expected_chunk_count(self):
+        prefix = "  " * 5  # 10-char prefix -> available = 110
+        label = "x" * 250
+        result = tr.wrap_trailing_label(prefix, label, width=120)
+        lines = result.split("\n")
+        self.assertEqual(len(lines), 3)  # ceil(250 / 110) == 3
+
+    def test_continuation_lines_indented_to_exact_prefix_width(self):
+        prefix = "  1  12.340000  "
+        label = "y" * 200
+        result = tr.wrap_trailing_label(prefix, label, width=100)
+        lines = result.split("\n")
+        self.assertTrue(lines[0].startswith(prefix))
+        for line in lines[1:]:
+            self.assertTrue(line.startswith(" " * len(prefix)))
+            self.assertFalse(line.startswith(" " * (len(prefix) + 1)))  # not over-indented
+
+    def test_wrapped_chunks_reconstruct_the_original_label_byte_for_byte(self):
+        prefix = "  42  9.999999  "
+        label = "MyNamespace::" + "".join(f"Arg{i}, " for i in range(30)) + "Tail() const"
+        result = tr.wrap_trailing_label(prefix, label, width=90)
+        lines = result.split("\n")
+        indent = " " * len(prefix)
+        reconstructed = lines[0][len(prefix):] + "".join(line[len(indent):] for line in lines[1:])
+        self.assertEqual(reconstructed, label)
+
+    def test_pathological_prefix_falls_back_to_20_column_floor(self):
+        prefix = " " * 115  # already exceeds width on its own
+        label = "abcdefghijklmnopqrstuvwxyz"
+        result = tr.wrap_trailing_label(prefix, label, width=120)
+        lines = result.split("\n")
+        self.assertGreater(len(lines), 1)  # still wraps instead of raising/looping forever
+
+
+class IterTableRowsTests(unittest.TestCase):
+    def test_unwrapped_table_round_trips_row_for_row(self):
+        lines = [
+            "    1     1.000000     10.0  a_short_name\n",
+            "    2     2.000000     20.0  another_name\n",
+        ]
+        rows = list(tr.iter_table_rows(lines, num_columns=4))
+        self.assertEqual(rows, [
+            ["1", "1.000000", "10.0", "a_short_name"],
+            ["2", "2.000000", "20.0", "another_name"],
+        ])
+
+    def test_wrapped_label_reconstructs_to_the_original_full_string(self):
+        # No interior spaces in this label, by design: iter_table_rows()'s reconstruction
+        # (like the addendum it's based on) strips each continuation line before appending it,
+        # so a wrap point landing exactly on a space is a known, accepted lossy edge case -- not
+        # what this test is checking. Long C++ namespace/template chains (the motivating real
+        # case) are exactly this shape: one long contiguous identifier, no interior whitespace.
+        prefix = "    1     1.000000     10.0  "
+        label = "MyNamespace::" + "B" * 100 + "::Tail"
+        wrapped = tr.wrap_trailing_label(prefix, label, width=90)
+        rows = list(tr.iter_table_rows(wrapped.split("\n"), num_columns=4))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][3], label)
+
+    def test_two_wrapped_rows_in_sequence_both_reconstruct(self):
+        label_a = "Alpha::" + "X" * 100
+        label_b = "Beta::" + "Y" * 100
+        block = (
+            tr.wrap_trailing_label("    1     1.000000     10.0  ", label_a, width=90) + "\n"
+            + tr.wrap_trailing_label("    2     2.000000     20.0  ", label_b, width=90)
+        )
+        rows = list(tr.iter_table_rows(block.split("\n"), num_columns=4))
+        self.assertEqual([r[3] for r in rows], [label_a, label_b])
+
+    def test_stops_at_first_blank_line(self):
+        lines = ["    1     1.000000     10.0  a\n", "\n", "    2     2.000000     20.0  b\n"]
+        rows = list(tr.iter_table_rows(lines, num_columns=4))
+        self.assertEqual(len(rows), 1)
+
+    def test_malformed_short_line_left_for_caller_to_filter(self):
+        lines = ["    1  too_few_tokens\n"]
+        rows = list(tr.iter_table_rows(lines, num_columns=4))
+        self.assertEqual(len(rows), 1)
+        self.assertLess(len(rows[0]), 4)
+
 
 class PctTotalNoteTests(unittest.TestCase):
     def test_reuses_the_given_threshold_unit_verbatim(self):
