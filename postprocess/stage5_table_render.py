@@ -1,13 +1,20 @@
-"""Generic stage-5 table backend: ranking/filtering entries and rendering them as text.
+"""Generic stage-5 table backend: ranking/filtering entries, rendering them as text, and generating
+the table-owned prose every rendered table needs.
 
-Scope: two domain-agnostic primitives every stage-5 table module builds on. select_entries() ranks,
+Scope: domain-agnostic primitives every stage-5 table module builds on. select_entries() ranks,
 threshold-filters, and truncates a list of entries by whichever fields the caller names -- it has
 no idea whether "entries" are CPU hotspots, GPU kernels, or per-label load-imbalance stats, just
 that each entry is a dict with numeric fields. render_table() turns a list of entries into aligned
 text given a column spec (a list of {"header", "width", "value"} dicts) -- it has no idea what a
-column means, only how wide it is and how to read its value out of an entry. What differs between
-tables (which columns, which field to rank by, which field means "% of total") is data supplied by
-the caller, not new code here.
+column means, only how wide it is and how to read its value out of an entry, hard-wrapping the
+trailing unpadded label column (via wrap_trailing_label()) at a shared column-width target when a
+label is too long to fit. iter_table_rows() is the matching reader, letting a caller re-parse a
+rendered table's rows back out of report text without knowing where render_table() cut a wrapped
+label across physical lines. pct_total_note()/ranking_note() generate a table's own bulleted
+explanatory prose (what "%total" means, which time basis ranked it) from the same parameters that
+already decided the table's shape, so the prose and the table can't drift apart. What differs
+between tables (which columns, which field to rank by, which field means "% of total") is data
+supplied by the caller, not new code here.
 
 Functions: select_entries(), render_table(), wrap_trailing_label(), iter_table_rows(),
 pct_total_note(), ranking_note().
@@ -157,8 +164,7 @@ def iter_table_rows(lines, num_columns):
 def pct_total_note(entry_noun, threshold_unit):
     """Bulleted note explaining what this table's %total column means -- threshold_unit is the
     exact same string already given to select_entries() (its "showing top N ... {threshold_unit}"
-    line and this note now share one source, so they can't drift the way this codebase's %total
-    sentences used to, hand-typed separately once per table)."""
+    line and this note share one source, so they can never say two different things)."""
     return f"  - '%total' is each {entry_noun}'s share {threshold_unit}.\n"
 
 

@@ -11,6 +11,8 @@ Import note: this only works when run directly (`python3
 extract_hotspots.py ...`), since it relies on Python putting this
 script's own directory at the front of sys.path so its sibling stage/tool
 modules import as plain siblings with no path hacking.
+
+Functions: write_report(), main().
 """
 
 import argparse
@@ -213,8 +215,8 @@ def main(argv=None):
                             help="list every entry, no truncation")
     parser.add_argument("--unfiltered", dest="unfiltered", action="store_true",
                          help="rank CPU-side entries by inclusive (total) time instead of self "
-                              "time -- the old behavior, where a function that just calls other "
-                              "functions can still rank high")
+                              "time -- a function that just calls other functions can still rank "
+                              "high this way")
     parser.add_argument("--extra-noise-config", dest="extra_noise_config", default=None,
                          help="path to a JSON file customizing noise-tag patterns (add/remove "
                               "substrings, disable a tag) -- see stage6_noise_config.py's "

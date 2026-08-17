@@ -22,10 +22,9 @@ from stage4_rank_merge_math import stats_across_ranks
 # since real symbols carry namespace qualification and demangled parameter
 # signatures (e.g. "hip::hipModuleLaunchKernel(ihipModuleSymbol_t*, ...)").
 # "__cray_start_acc_kernel" is Cray's compiler-generated OpenACC/offload
-# launch entry point, observed in real sampled data. "__tgt_target_kernel" is
-# LLVM libomptarget's OpenMP-target-offload launch entry point -- confirmed in
-# real test_apps HPC data under BOTH amdclang++ and Cray CCE (both link the
-# same libomptarget entry point for `omp target` in this environment), sitting
+# launch entry point. "__tgt_target_kernel" is LLVM libomptarget's
+# OpenMP-target-offload launch entry point -- the same entry point amdclang++
+# and Cray CCE both link for `omp target` in this environment, sitting
 # directly beneath the real launch_omp_kernel() call site in the sampled tree.
 KERNEL_LAUNCH_LABEL_SUBSTRINGS = (
     "hiplaunchkernel",
@@ -218,11 +217,10 @@ def kernel_owner_label(kernel_name):
     subroutine -- the kernel's real "caller", from the compiler's own
     perspective -- directly in the kernel name:
     "<subroutine>$<module>_mod_$ck_L<line>_<n>[_cce$noloop$form]". The part
-    before "$ck_" is exactly the same "<subroutine>$<module>_mod_" label a
-    real CPU call-tree node for that subroutine carries, confirmed against
-    real data (every kernel's owner subroutine showed up as its own sampled
-    CPU node) -- so it can be matched directly against the CPU tree instead
-    of guessed via nearest launch-call ancestor. A kernel name with no
+    before "$ck_" is exactly the same "<subroutine>$<module>_mod_" label the
+    real CPU call-tree node for that subroutine carries -- so it can be
+    matched directly against the CPU tree instead of guessed via nearest
+    launch-call ancestor. A kernel name with no
     "$ck_" marker (a different naming scheme, or a non-Cray compiler) is
     returned unchanged -- unmatchable by name, falls through to
     find_kernel_anchors()'s structural heuristic instead.
@@ -300,11 +298,10 @@ def attach_kernel_summaries(rows, gpu_kernel_by_rank, is_pruned):
        rank) when more than one shares that label (the same subroutine
        called from multiple sites). This is precise, not a guess: the
        compiler put that name there because that's literally the subroutine
-       whose source the kernel came from, confirmed against real data (every
-       kernel's owner subroutine showed up as its own sampled CPU node,
-       while the OLD nearest-launch-ancestor approach was scattering every
-       kernel across every launch site in proportion to call counts,
-       regardless of which subroutine actually contained it).
+       whose source the kernel came from, unlike a structural guess by
+       nearest launch-call ancestor, which has no way to know which
+       subroutine actually contained the kernel and can only distribute it
+       proportionally across every launch site instead.
     2. Any kernel that doesn't name-match anything in this tree (no "$ck_"
        marker at all, or its owner subroutine wasn't sampled as its own
        distinct frame on any rank) falls back to find_kernel_anchors()'s

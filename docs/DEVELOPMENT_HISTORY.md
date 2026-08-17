@@ -43,6 +43,7 @@
 | 2026-08-14 | Plan 2.10: applied §10's report style guide rules 1-5 and 7 across all 6 tools (rule 6, hard-wrap, split to plan 2.11) -- roadmap step 9, the first step allowed to change report output everywhere; also relocated table-owned prose (`%total`/ranking/load-imbalance/aggregation legends) into the owning stage5 module, unified every tool's header into one `stage6_report_builder.standard_header()` function (closing plan 2.8's deferred metadata-presentation item), and unified `extract_hotspots.py`/`extract_calltree.py`/`extract_calltree_traced.py`'s directory handling via a new shared `resolve_two_dirs()` helper -- see full design/real-data accounting below |
 | 2026-08-17 | Plan 2.11: applied §10's rule 6 (120-column hard-wrap for long names) across `stage5_table_render.py`/`stage5_tree_render.py`, plus the `iter_table_rows()` reader both `select_hotspot_*.py` re-parsers need to survive it -- roadmap step 9, part 2 of 2; the wrap/cap logic for each renderer's own geometry landed as its own standalone, reusable function (`wrap_trailing_label()`, `wrap_leading_labels()`) rather than inlined, per explicit request -- see full design/real-data accounting below |
 | 2026-08-17 | Plan 2.12: user-facing `--extra-noise-config`/`$FRIENDLY_ROCPROF_NOISE_CONFIG` noise-pattern override file -- roadmap step 10; new `stage6_noise_config.py` resolves a process-wide `tag_defs()` global (bundled defaults + add/remove/disable + a reserved `"other"` tag) that `stage3_rocprofsys.tag_rows()` falls back to when a caller omits its own, rather than threading the config through every function between a tool's `main()` and `tag_rows()` -- see full design/real-data accounting below |
+| 2026-08-17 | Plan 2.13: final comment-and-docstring audit -- roadmap step 11, the last item on the original roadmap; comment-only cleanup (no behavior change) rewriting 19 history/investigation-flavored comments (`docs/plans/...` pointers, "confirmed via real data", "the old behavior was...", bare "rule N" references) across 8 files, expanding `stage5_table_render.py`'s thin module-docstring scope, and adding a `Functions:` line to all 8 tool-level files that lacked one -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -1854,4 +1855,73 @@ adding the real `"PMPI_Allreduce"` label (this run's own real MPI wrapper call) 
 correctly splices that exact node out of `extract_calltree.py`'s rendered tree -- both runs against
 `test_apps/results/profile_hotspots_C_amd`'s real captured data, and the second one is what
 surfaced the case-sensitivity fix above.
+
+## 2026-08-17 — Plan 2.13: final comment-and-docstring audit (roadmap step 11)
+
+Closes the last item on the original 11-step roadmap: sweep every `postprocess/*.py` file for any
+comment that wasn't naturally rewritten by plans 1-10, and bring it in line with CLAUDE.md's Code
+Comments rules. Comment-only cleanup -- no behavior change anywhere, confirmed by the full test
+suite staying at 451 passing throughout and every edited module still importing cleanly.
+
+Three parallel read-only audits (tool-level `extract_*.py`/`select_*.py`, `stage1`-`stage4`,
+`stage5`-`stage6`) read all 29 files in full against two standing rules: comments must describe
+current behavior, not the history of how it got that way (no `docs/plans/...` pointers, "confirmed
+via real data", "the old behavior was...", bare "rule N" references); every module needs a
+top-of-file docstring covering scope, exposed functions, and design philosophy. 19 rule-1/2
+violations turned up, spanning every layer of the pipeline:
+
+- **Stale factual claim**: `stage3_rocprofsys.py`'s own docstring still said "This module is NOT
+  wired into any tool yet" -- false since plan 2.6, when 4 modules started importing `tag_rows()`
+  directly. Rewritten to state the actual current scope boundary (classification lives here,
+  tool-specific treatment/wiring lives in each caller).
+- **Investigation-narrative comments**, the most common pattern: "confirmed against real data",
+  "observed in real sampled data", "confirmed from real captured data" scattered across
+  `stage4_rocprofsys_tree.py` (3 instances, one of them -- the kernel-name-matching docstring --
+  also explicitly contrasting itself with "the OLD nearest-launch-ancestor approach", the single
+  most changelog-flavored comment found) and `extract_pop_metrics.py`'s `HELP_BLURB`. Each rewritten
+  to state the standing technical fact or classification rule directly, with no reference to how or
+  when it was verified.
+- **"The old behavior" framing**, byte-identical across 3 tools' `--unfiltered` flag help text
+  (`extract_CPU_hotspots.py`, `extract_hotspots.py`, `select_hotspot_functions.py`) -- all three
+  narrated a before/after comparison to describe what is simply the current alternate ranking mode.
+  Rewritten to state only what `--unfiltered` does and why, dropping "old"/"new" framing entirely.
+- **Direct `docs/plans/...` pointers** in both calltree tools' module docstrings (`extract_calltree.py`,
+  `extract_calltree_traced.py`) -- CLAUDE.md's own named example of what to avoid. Replaced with the
+  standing constraint itself (no per-call timestamps outside the binary Perfetto trace, so
+  per-dispatch-exact kernel placement isn't achievable) stated directly, no pointer needed.
+- **A stale cross-reference**: `stage5_fused_hotspots_table.py` referenced `cpu_tool.select_entries`/
+  `cpu_tool.aggregate()` -- `cpu_tool` is an import alias other top-level scripts use for
+  `extract_CPU_hotspots.py`, but doesn't exist in this file at all (a leftover from before the
+  stage-based module split). Replaced with the actual current module names
+  (`stage5_table_render.select_entries()`, `stage4_rocprofsys_flat.aggregate()`).
+  `extract_calltree.py`'s compiler-runtime-tier comment ("since none have been observed in this
+  project's data so far") and `stage5_fused_hotspots_table.py`'s GPU-API-overhead comment ("made
+  this subtraction clamp cpu_pure_total_sec to 0 even on realistic data") got the same treatment --
+  restated as standing coverage limitations/risks, not investigation narratives.
+- **Bare "rule N" references** with no context in the file itself: `stage5_pop_metrics_table.py`
+  ("rule 2's ... case") and `stage6_report_builder.py` ("One redirect line for rule 5" -- which also
+  said a report "used to repeat" the redirected content). Both rewritten to state the behavior
+  directly, with no numbered-rule pointer to a document the reader doesn't have open.
+- **`stage5_tree_render.py`**'s module docstring said its shared rank-loading/kernel-pairing logic
+  "used to be duplicated" between the two calltree tools, "confirmed identical... by direct
+  comparison" -- rewritten to state the current fact (it's identical between the two tools today)
+  without the refactor-history framing.
+
+Rule-3 docstring gaps, separate from the rule-1/2 language issues above: `stage5_table_render.py`'s
+scope paragraph only ever described 2 of its 6 functions (`select_entries()`/`render_table()`),
+silent on `wrap_trailing_label()`/`iter_table_rows()`/`pct_total_note()`/`ranking_note()` added by
+plans 2.10-2.11 -- expanded to cover all three responsibilities the module actually has today
+(rank/filter, render, wrap/reparse + legend-text generation). Separately, all 8 tool-level files
+(`extract_CPU_hotspots.py`, `extract_GPU_hotspots.py`, `extract_hotspots.py`, `extract_calltree.py`,
+`extract_calltree_traced.py`, `extract_pop_metrics.py`, `select_hotspot_functions.py`,
+`select_hotspot_kernels.py`) lacked the `Functions:` line every `stage1`-`stage6` module already has
+-- added one to each, naming that file's own exposed symbols, closing the one place this codebase's
+docstring convention wasn't applied consistently.
+
+The other 20 of 29 files' docstrings and comments were confirmed accurate and compliant already --
+no changes needed. Verification: full suite stayed at 451 passing throughout; every edited module
+spot-checked with a plain `import` to confirm no syntax errors; `--help` output on the 3
+`--unfiltered`-rewording tools read through to confirm the new wording reads naturally. No real-data
+regeneration needed -- report *output* text is untouched by this plan, only source comments
+changed.
 

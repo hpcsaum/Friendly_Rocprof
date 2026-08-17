@@ -19,11 +19,12 @@ into one aggregated tree -- a global view, not one call tree per rank -- with ea
 node's CALLS/SELF/TOTAL columns averaged (and self-time's load imbalance shown via
 std_dev/min/max) across every rank, the same avg/std_dev/min/max convention
 extract_CPU_hotspots.compute_load_imbalance() already uses elsewhere in this codebase.
-See docs/plans/1.13-calltree-tool.md for the full original design rationale,
-including why per-dispatch-exact kernel placement isn't achievable from this
-toolchain's text/JSON output (only the binary Perfetto trace has per-call
-timestamps, and there's no stdlib-friendly way to parse it -- deferred future
-work, not silently dropped).
+Kernel placement is never per-dispatch-exact: this toolchain's text/JSON output has
+no per-call timestamps to correlate against, only the binary Perfetto trace does,
+and there's no stdlib-friendly way to parse it -- a future capability, not silently
+dropped.
+
+Functions: write_report(), main().
 """
 
 import argparse

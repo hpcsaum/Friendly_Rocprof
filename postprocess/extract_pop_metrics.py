@@ -9,6 +9,8 @@ Computation Efficiency and Global Efficiency need a scaling study (2+ runs,
 compared against the first as reference). Serialisation/Transfer Efficiency
 (need Dimemas) and Instruction/IPC Scaling (need PAPI hardware counters) are
 NOT computed here -- see that doc for why.
+
+Functions: write_report(), main().
 """
 
 import argparse
@@ -42,11 +44,11 @@ See docs/pop_metrics_reference.md for the full picture.
 
 Communication time is classified by function-name prefix (case-insensitive:
 {', '.join(TAG_DEFS['mpi_territory']['prefixes'])}) or Fortran-shim suffix
-({', '.join(TAG_DEFS['mpi_territory']['suffixes'])}) -- MPICH/Cray-MPICH prefixes are confirmed from real
-captured data; the Open MPI prefixes are a probable addition, not yet
-confirmed against a real Open MPI run. CPU<->GPU per-rank pairing (when a
-rocprofv3 directory is given) assumes matching sorted-filename order
-between the two directories -- not cross-checked.
+({', '.join(TAG_DEFS['mpi_territory']['suffixes'])}). MPICH/Cray-MPICH coverage is solid; Open MPI
+coverage is narrower, based on its own naming convention rather than a
+captured Open MPI run. CPU<->GPU per-rank pairing (when a rocprofv3
+directory is given) assumes matching sorted-filename order between the two
+directories -- not cross-checked.
 
 Under the hood, this parses output written by AMD's rocprof-sys (and,
 optionally, rocprofv3) -- see

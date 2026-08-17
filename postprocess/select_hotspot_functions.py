@@ -19,6 +19,9 @@ scripts/instrument_hotspots.sh:
 Only CPU-side function names are handled here. GPU kernel names (from a
 combined report's fused/GPU tables) are a different mechanism entirely and
 are never read by this module.
+
+Functions: escape_for_instrument_regex(), labels_from_output_dir(), labels_from_report(),
+find_lost_functions(), main().
 """
 
 import argparse
@@ -195,9 +198,9 @@ def main(argv=None):
                             help="select every function, no truncation")
     parser.add_argument("--unfiltered", dest="unfiltered", action="store_true",
                          help="with --output-dir, select by inclusive (total) time instead of "
-                              "self time -- the old behavior, which can pick a function that "
-                              "just calls other functions rather than one that does real work; "
-                              "ignored with --report (that just reads whatever's in the file)")
+                              "self time -- can pick a function that just calls other functions "
+                              "rather than one that does real work; ignored with --report (that "
+                              "just reads whatever's in the file)")
     parser.add_argument("--check-instrumented", dest="check_instrumented", default=None,
                          help="switch to lost-function mode: read requested labels from stdin "
                               "(one per line) and warn about any missing from this "

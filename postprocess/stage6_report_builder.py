@@ -92,9 +92,9 @@ def command_header(argv0, tokens, width=100):
 
 
 def help_redirect(topics, script_name=None):
-    """One redirect line for rule 5: general/methodology content a report used to repeat that
-    --help already covers. script_name defaults to os.path.basename(sys.argv[0]) so the line can
-    never point at a stale tool name after a rename."""
+    """One redirect line pointing a reader to --help for general/methodology content, instead of
+    repeating it in every report. script_name defaults to os.path.basename(sys.argv[0]) so the
+    line can never point at a stale tool name after a rename."""
     script_name = script_name or os.path.basename(sys.argv[0])
     return f"For details on {topics}, see {script_name} --help.\n"
 

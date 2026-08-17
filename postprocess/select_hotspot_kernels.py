@@ -15,6 +15,8 @@ profile_hotspot_kernels.sh profiles each selected kernel's *second* call only (s
 unrepresentative first-touch/page-fault-affected first call), so a kernel with no second call
 has nothing for that to target. Pass require_multiple_calls=False (the launcher's
 --all-dispatches) to include those too.
+
+Functions: labels_from_output_dir(), labels_from_report(), main().
 """
 
 import argparse

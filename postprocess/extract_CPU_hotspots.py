@@ -5,6 +5,8 @@ Only reads the well-documented pipe-delimited "timemory" text tables
 (e.g. wall_clock-<pid>.txt) that rocprof-sys writes for CPU-side timing.
 GPU device kernel execution time is NOT present in this data -- see the
 footer note this script writes into its own output.
+
+Functions: find_extra_artifacts(), gather_run_info(), write_report(), main().
 """
 
 import argparse
@@ -169,9 +171,8 @@ def main(argv=None):
     selection.add_argument("--all", dest="show_all", action="store_true",
                             help="list every entry, no truncation")
     parser.add_argument("--unfiltered", dest="unfiltered", action="store_true",
-                         help="rank by inclusive (total) time instead of self time -- the old "
-                              "behavior, where a function that just calls other functions can "
-                              "still rank high")
+                         help="rank by inclusive (total) time instead of self time -- a function "
+                              "that just calls other functions can still rank high this way")
     parser.add_argument("--extra-noise-config", dest="extra_noise_config", default=None,
                          help="path to a JSON file customizing noise-tag patterns (add/remove "
                               "substrings, disable a tag) -- see stage6_noise_config.py's "

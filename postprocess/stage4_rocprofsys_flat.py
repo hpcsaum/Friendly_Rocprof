@@ -34,9 +34,9 @@ def scan_ranks(output_dir):
     """Scan output_dir for timemory text tables and group them by RANK, not by
     file -- rocprof-sys's default config (sampling on) writes multiple per-rank
     metric-type files (wall_clock-<N>.txt, sampling_wall_clock-<N>.txt,
-    sampling_cpu_clock-<N>.txt), and treating each file as its own rank (the
-    bug this replaces) inflates every rank-based number by however many
-    metric-type files exist per rank.
+    sampling_cpu_clock-<N>.txt), and treating each file as its own rank would
+    inflate every rank-based number by however many metric-type files exist
+    per rank.
 
     Rank grouping uses the same numeric filename suffix guess_num_ranks() relies
     on (PID_SUFFIX_RE) -- a file with no recognizable suffix becomes its own
@@ -57,10 +57,10 @@ def scan_ranks(output_dir):
     thread), and merging those by label first (as aggregate()'s per-label
     totals need) can make a leaf label's summed SUM exceed the true root
     scope's own SUM -- the same "outermost scope has the single largest raw
-    SUM" assumption aggregate() always relied on, just computed correctly
-    per rank now instead of per file. root_sum is computed from the FULL,
-    unfiltered row list (see below), so it still reflects the whole run's
-    true wall-clock regardless of what gets dropped next.
+    SUM" assumption aggregate() relies on, computed per rank. root_sum is
+    computed from the FULL, unfiltered row list (see below), so it still
+    reflects the whole run's true wall-clock regardless of what gets dropped
+    next.
 
     Rows tagged wrapper_noise, compiler_runtime_noise, wrapper_branch_noise, other, or
     mpi_territory-via-ancestor-only (a thread-root row whose own label

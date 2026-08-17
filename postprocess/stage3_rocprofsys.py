@@ -5,8 +5,8 @@ shape stage2_rocprofsys.attach_ancestry() produces) into a per-row set of noise 
 small set of generic, tag-driven tree-surgery primitives. Nothing in this module reads a
 particular tool's own filtering rules or writes report output -- it has no opinion on which tags
 a given tool treats as noise or what "noise" should become (drop it, hide its children, merge it
-into its parent, route it to a different table). This module is NOT wired into any tool yet; that
-happens separately, tool by tool, once each tool's own {tag: action} map is decided.
+into its parent, route it to a different table) -- each calling tool supplies its own {tag: action}
+map for that.
 
 Philosophy: classification and treatment are separate. A tag is a fact about a row ("this row's
 label matches wrapper_noise"); an action is a decision about what a tool does with that fact

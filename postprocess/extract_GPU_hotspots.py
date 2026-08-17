@@ -5,6 +5,8 @@ Only reads *_kernel_stats.csv files rocprofv3 writes with --kernel-trace --stats
 --output-format csv. This is REAL device kernel execution time, unlike
 extract_CPU_hotspots.py's host-side timing -- see extract_hotspots.py to combine
 both into one report.
+
+Functions: gather_run_info(), write_report(), main().
 """
 
 import argparse

@@ -23,12 +23,13 @@ stage4_rocprofsys_tree.merge_rank_trees()) into one aggregated tree -- a global 
 not one call tree per rank -- with each node's CALLS/TOTAL-AVG(s) columns
 averaged, and SELF given a full avg/std_dev/min/max load-balance
 breakdown, the same convention extract_CPU_hotspots.compute_load_imbalance()
-already uses elsewhere in this codebase. See docs/plans/1.14-sampling-calltree-tool.md
-for the full original design rationale, including why per-dispatch-exact
-kernel placement isn't achievable from this toolchain's text/JSON output
-(only the binary Perfetto trace has per-call timestamps, and there's no
-stdlib-friendly way to parse it -- deferred future work, not silently
-dropped).
+already uses elsewhere in this codebase. Kernel placement (see stage5_calltree_view.py)
+is never per-dispatch-exact: this toolchain's text/JSON output has no per-call
+timestamps to correlate against, only the binary Perfetto trace does, and
+there's no stdlib-friendly way to parse it -- a future capability, not
+silently dropped.
+
+Functions: write_report(), main().
 """
 
 import argparse
@@ -74,9 +75,8 @@ reveal each of these, hidden by default: --show-gpu-api,
 out (children reparented, not deleted); MPI internals are collapsed (the
 first real MPI frame is shown, its own internals are not); GPU-API and
 compiler-runtime noise are pruned (whole subtree hidden). The compiler-
-runtime tier was built from Cray's Fortran runtime specifically -- not
-necessarily complete for other compilers, since none have been observed in
-this project's data so far.
+runtime tier currently recognizes Cray's Fortran runtime allocator/intrinsic
+helpers only -- other compilers' runtime noise is not filtered.
 
 When a paired rocprofv3 directory is found, real GPU kernel data is nested
 into the tree at the CPU subroutine that actually contains it -- Cray's

@@ -359,12 +359,11 @@ def metrics_legend(show_gpu_cols, show_gpu_eff, multi_run, scaling):
 
 
 def format_metrics_table(all_metrics, scaling=None):
-    """Returns (table_text, show_gpu_cols, show_gpu_eff) for the '=== Metrics ===' block -- never
-    numbered, since this tool's report always has exactly this one section (rule 2's "single
-    table still gets the === style, just no number" case, decided once here since
-    format_metrics_table() is structurally incapable of a 2nd section, so it never goes through
-    render_report()'s own numbering logic at all). The two booleans are returned because
-    metrics_legend() above also branches on them."""
+    """Returns (table_text, show_gpu_cols, show_gpu_eff) for the '=== Metrics ===' block -- a single
+    titled section still gets the "=== Title ===" style without a number, since there's nothing to
+    number it against. Decided once here since format_metrics_table() is structurally incapable of
+    a 2nd section, so it never goes through render_report()'s own numbering logic at all. The two
+    booleans are returned because metrics_legend() above also branches on them."""
     ref_metrics = all_metrics[0]
     multi_run = len(all_metrics) > 1
     columns, show_gpu_cols, show_gpu_eff = pop_metrics_columns(all_metrics, ref_metrics, scaling, multi_run)

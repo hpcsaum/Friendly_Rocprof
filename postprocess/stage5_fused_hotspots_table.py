@@ -54,8 +54,8 @@ def build_combined_view(rocprof_sys_dir, rocprofv3_dir):
     however many concurrent threads call them -- on a real multi-threaded run
     that sum can legitimately exceed a single rank's own wall-clock span
     (several threads can be simultaneously blocked on the GPU at once), which
-    made this subtraction clamp cpu_pure_total_sec to 0 even on realistic
-    data. hipStreamSynchronize/hipDeviceSynchronize are the two calls that
+    would clamp cpu_pure_total_sec to 0 if the wider bucket were used here.
+    hipStreamSynchronize/hipDeviceSynchronize are the two calls that
     actually mean "block the CPU until the GPU catches up" -- a good enough
     beginner-tool approximation of "time spent on the GPU" without that
     multi-thread-sum inflation. Self-time (not inclusive sum) still matters
@@ -71,10 +71,10 @@ def build_combined_view(rocprof_sys_dir, rocprofv3_dir):
     gpu_total_sec = gpu_total_ns / 1e9
     combined_total_sec = cpu_pure_total_sec + gpu_total_sec
 
-    # self_sum drives the fused ranking by default (see cpu_tool.select_entries's
+    # self_sum drives the fused ranking by default (see stage5_table_render.select_entries()'s
     # rank_by) -- for GPU kernel entries there's no self-vs-inclusive distinction
     # (a kernel is already a leaf event), so self_sum == sum there. pct_total here
-    # is self-based, same convention as cpu_tool.aggregate()'s own output --
+    # is self-based, same convention as stage4_rocprofsys_flat.aggregate()'s own output --
     # select_entries() recomputes it against whichever metric it actually ranks by.
     fused_entries = []
     for e in cpu_entries:

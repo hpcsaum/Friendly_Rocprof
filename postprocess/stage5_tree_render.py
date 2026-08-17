@@ -12,10 +12,10 @@ merge_rank_trees()/make_kernel_node()/_attach_kernel_group() that actually popul
 it; a real but indirect (data-shape, not call-graph) coupling worth knowing about
 when changing either side.
 
-Also owns the rank-loading and GPU-kernel-pairing/attachment logic that used to be
-duplicated between extract_calltree.py and extract_calltree_traced.py -- confirmed
-identical (or near-identical, modulo which glob pattern each tool prefers) by direct
-comparison, so it lives here once rather than twice. Each tool's own
+Also owns the rank-loading and GPU-kernel-pairing/attachment logic shared by
+extract_calltree.py and extract_calltree_traced.py -- identical (or near-identical,
+modulo which glob pattern each tool prefers), so it lives here once rather than twice.
+Each tool's own
 stage5_calltree_view.py/stage5_calltree_traced_view.py companion module supplies only
 what's genuinely tool-specific (its own prune/collapse predicates, and, for the
 sampling tool, its wrapper-noise postprocess step) and calls these functions to do
