@@ -20,6 +20,7 @@ from stage4_rocprofsys_flat import aggregate, aggregate_per_rank
 from stage5_cpu_hotspots_table import CPU_HOTSPOTS_COLUMNS
 from stage5_load_imbalance_table import compute_load_imbalance, imbalance_note, load_imbalance_columns
 from stage5_table_render import pct_total_note, ranking_note, render_table, select_entries
+import stage6_cli_common
 import stage6_noise_config
 from stage6_report_builder import command_header, render_report, standard_header, write_report_file
 from stage6_run_metadata import guess_executable, guess_num_ranks, guess_run_datetime, guess_total_runtime, load_json_file
@@ -163,29 +164,18 @@ def main(argv=None):
     parser.add_argument("output_dir", help="rocprof-sys output directory to read")
     parser.add_argument("-o", "--output", dest="dest", default=None,
                          help="path to write the hotspots report (default: <output_dir>/hotspots.txt)")
-    selection = parser.add_mutually_exclusive_group()
-    selection.add_argument("-n", "--top", dest="top", type=int, default=None,
-                            help="number of hotspots to list per section (default: 20)")
-    selection.add_argument("--threshold", dest="threshold", type=float, default=None,
-                            help="only list entries at or above this %% of total runtime")
-    selection.add_argument("--all", dest="show_all", action="store_true",
-                            help="list every entry, no truncation")
+    stage6_cli_common.add_selection_args(parser, "entries", "of total runtime", singular_noun="entry",
+                                          top_noun="hotspots", top_help_suffix=" per section (default: 20)")
     parser.add_argument("--unfiltered", dest="unfiltered", action="store_true",
                          help="rank by inclusive (total) time instead of self time -- a function "
                               "that just calls other functions can still rank high this way")
-    parser.add_argument("--extra-noise-config", dest="extra_noise_config", default=None,
-                         help="path to a JSON file customizing noise-tag patterns (add/remove "
-                              "substrings, disable a tag) -- see stage6_noise_config.py's "
-                              "configure() for the file schema; falls back to "
-                              "$FRIENDLY_ROCPROF_NOISE_CONFIG if not given")
+    stage6_noise_config.add_cli_argument(parser)
     args = parser.parse_args(argv)
 
-    if not os.path.isdir(args.output_dir):
-        raise SystemExit(f"error: no such directory: {args.output_dir!r}")
+    stage6_cli_common.require_directory(args.output_dir)
+    stage6_noise_config.configure_from_args(args)
 
-    stage6_noise_config.configure(args.extra_noise_config or os.environ.get("FRIENDLY_ROCPROF_NOISE_CONFIG"))
-
-    dest = args.dest or os.path.join(args.output_dir, "hotspots.txt")
+    dest = stage6_cli_common.resolve_dest(args.dest, args.output_dir, "hotspots.txt")
     tokens = [os.path.abspath(args.output_dir)]
     if args.dest:
         tokens += ["-o", os.path.abspath(args.dest)]

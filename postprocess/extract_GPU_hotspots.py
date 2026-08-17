@@ -18,6 +18,7 @@ from stage4_rocprofv3 import aggregate, aggregate_per_rank
 from stage5_gpu_hotspots_table import GPU_HOTSPOTS_COLUMNS
 from stage5_load_imbalance_table import compute_load_imbalance, imbalance_note, load_imbalance_columns
 from stage5_table_render import pct_total_note, render_table, select_entries
+import stage6_cli_common
 from stage6_report_builder import command_header, render_report, standard_header, write_report_file
 from stage6_run_metadata import guess_executable, guess_num_ranks, guess_run_datetime, guess_total_runtime, load_json_file
 
@@ -110,19 +111,13 @@ def main(argv=None):
     parser.add_argument("output_dir", help="rocprofv3 output directory to read")
     parser.add_argument("-o", "--output", dest="dest", default=None,
                          help="path to write the hotspots report (default: <output_dir>/hotspots.txt)")
-    selection = parser.add_mutually_exclusive_group()
-    selection.add_argument("-n", "--top", dest="top", type=int, default=None,
-                            help="number of hotspots to list (default: 20)")
-    selection.add_argument("--threshold", dest="threshold", type=float, default=None,
-                            help="only list kernels at or above this %% of total GPU time")
-    selection.add_argument("--all", dest="show_all", action="store_true",
-                            help="list every kernel, no truncation")
+    stage6_cli_common.add_selection_args(parser, "kernels", "of total GPU time",
+                                          top_noun="hotspots", top_help_suffix=" (default: 20)")
     args = parser.parse_args(argv)
 
-    if not os.path.isdir(args.output_dir):
-        raise SystemExit(f"error: no such directory: {args.output_dir!r}")
+    stage6_cli_common.require_directory(args.output_dir)
 
-    dest = args.dest or os.path.join(args.output_dir, "hotspots.txt")
+    dest = stage6_cli_common.resolve_dest(args.dest, args.output_dir, "hotspots.txt")
     tokens = [os.path.abspath(args.output_dir)]
     if args.dest:
         tokens += ["-o", os.path.abspath(args.dest)]

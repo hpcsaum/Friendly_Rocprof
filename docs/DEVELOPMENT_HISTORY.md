@@ -44,6 +44,7 @@
 | 2026-08-17 | Plan 2.11: applied §10's rule 6 (120-column hard-wrap for long names) across `stage5_table_render.py`/`stage5_tree_render.py`, plus the `iter_table_rows()` reader both `select_hotspot_*.py` re-parsers need to survive it -- roadmap step 9, part 2 of 2; the wrap/cap logic for each renderer's own geometry landed as its own standalone, reusable function (`wrap_trailing_label()`, `wrap_leading_labels()`) rather than inlined, per explicit request -- see full design/real-data accounting below |
 | 2026-08-17 | Plan 2.12: user-facing `--extra-noise-config`/`$FRIENDLY_ROCPROF_NOISE_CONFIG` noise-pattern override file -- roadmap step 10; new `stage6_noise_config.py` resolves a process-wide `tag_defs()` global (bundled defaults + add/remove/disable + a reserved `"other"` tag) that `stage3_rocprofsys.tag_rows()` falls back to when a caller omits its own, rather than threading the config through every function between a tool's `main()` and `tag_rows()` -- see full design/real-data accounting below |
 | 2026-08-17 | Plan 2.13: final comment-and-docstring audit -- roadmap step 11, the last item on the original roadmap; comment-only cleanup (no behavior change) rewriting 19 history/investigation-flavored comments (`docs/plans/...` pointers, "confirmed via real data", "the old behavior was...", bare "rule N" references) across 8 files, expanding `stage5_table_render.py`'s thin module-docstring scope, and adding a `Functions:` line to all 8 tool-level files that lacked one -- see full accounting below |
+| 2026-08-17 | Plan 2.14: consolidates `main()`'s repeated argument-handling/setup steps -- new work beyond the original 11-step roadmap; new `stage6_cli_common.py` (directory validation, `-o`/`--output` resolution, the `-n/--top`/`--threshold`/`--all` selection group, `--max-depth`, `--show-*` noise-tier flags) plus `stage6_noise_config.add_cli_argument()`/`configure_from_args()`, replacing copy-pasted argparse blocks across all 8 CLI tools with zero behavior change (confirmed via full `--help` diff and byte-identical real-data regeneration) -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -1924,4 +1925,54 @@ spot-checked with a plain `import` to confirm no syntax errors; `--help` output 
 `--unfiltered`-rewording tools read through to confirm the new wording reads naturally. No real-data
 regeneration needed -- report *output* text is untouched by this plan, only source comments
 changed.
+
+## 2026-08-17 — Plan 2.14: consolidate `main()`'s repeated argument-handling/setup steps
+
+New work beyond the original 11-step roadmap, requested immediately after closing it out, having
+just spent plan 2.12 copy-pasting near-identical `--extra-noise-config` blocks into 6 different
+`main()` functions. A direct grep across all 8 CLI tool files confirmed the duplication wasn't
+limited to that one flag: a byte-identical directory-existence check in 6 of 8 files (the other 2
+had their own hand-rolled multi-directory variants); a `-n/--top`/`--threshold`/`--all`
+mutually-exclusive selection group in 4 files with near-identical wording; `--max-depth`
+byte-identical in both calltree tools; 4 `--show-*` noise-visibility flags, 3 of them
+byte-identical between the two calltree tools and one (`--show-gpu-api`) worded differently between
+them; and the same `-o`/`--output` destination-resolution pattern in ~6 files.
+
+**New module `stage6_cli_common.py`**, a 4th narrowly-scoped stage-6 module alongside
+`stage6_report_builder.py`/`stage6_run_metadata.py`/`stage6_noise_config.py`: `require_directory()`/
+`require_directories()` (the latter treating `None` entries as "not given," not "missing" -- the
+same distinction each tool's own resolved-optional-GPU-directory logic already needed, now shared
+instead of duplicated), `resolve_dest()`, `add_selection_args()`, `add_max_depth_arg()`, and
+`add_noise_tier_args()` (any subset of the 4 `--show-*` tiers, with an optional
+`--show-all-internals` shorthand when 2+ tiers are requested). `--extra-noise-config`'s own
+argparse registration moved to `stage6_noise_config.add_cli_argument()`/`configure_from_args()`
+instead -- co-located with the module that owns that behavior, not folded into the generic grab-bag.
+
+**A real wording inconsistency surfaced while consolidating `add_selection_args()`**: the three
+lines of the selection group (`-n/--top`, `--threshold`, `--all`) don't share one noun across every
+tool today -- `extract_CPU_hotspots.py`'s own three lines say "hotspots" (top), "entries"
+(threshold), "entry" (all) in the *same tool*, and `select_hotspot_functions.py`/
+`select_hotspot_kernels.py` use "select" where the report tools say "list". Rather than force one
+noun (which would have silently changed real help text mid-consolidation), `add_selection_args()`
+takes a `plural_noun` (the `--threshold` line's own noun), an optional `singular_noun` (defaults to
+stripping a trailing "s" -- wrong for "entries", caught by a test using that exact case and fixed by
+passing `singular_noun="entry"` explicitly at its 2 real call sites), an optional `top_noun`
+(defaults to `plural_noun`, overridable for the tools whose `-n/--top` line uses a different,
+often more qualified phrase like "hotspot kernels"), and `verb` (defaults to `"list"`,
+`select_hotspot_*.py` pass `"select"`) -- preserving every tool's exact original wording rather than
+collapsing them into one.
+
+Every one of the 8 tools' `main()` was updated to call the shared helpers instead of repeating the
+inline code. Verification: full `--help` diff, before vs. after, across all 8 tools -- 6 came back
+completely byte-identical; the other 2 differences are both deliberate, expected consolidation
+side-effects, not accidents: `extract_calltree.py`'s `--show-all-internals` line now says "all 4
+--show-* flags" (computed from `len(tiers)`) instead of the hardcoded word "four"; and
+`extract_calltree_traced.py`'s own `--show-gpu-api` help text -- which, it turned out, was never
+actually byte-identical to `extract_calltree.py`'s version to begin with (it separately named the
+hip/hsa/roctx/kfd/rocdecode/rocjpeg/rocr prefix list) -- now shares `extract_calltree.py`'s shorter
+canonical wording, since unifying genuinely-divergent copies of "the same flag" into one text is the
+whole point of this consolidation. Full test suite: 476 tests (451 existing + 25 new
+`test_stage6_cli_common.py` tests), all passing, zero changes needed to any existing test. Real-data
+regeneration across all 6 `test_apps/results/` dirs: fully byte-identical (modulo each report's own
+timestamp line) -- confirmed by diff, a pure internal refactor with no output-visible effect at all.
 

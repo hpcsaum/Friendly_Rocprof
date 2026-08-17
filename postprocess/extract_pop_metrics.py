@@ -18,6 +18,7 @@ import os
 import sys
 
 from stage5_pop_metrics_table import compute_run_metrics, format_metrics_table, metrics_legend, run_label
+import stage6_cli_common
 import stage6_noise_config
 from stage6_noise_config import load_default_patterns
 from stage6_report_builder import command_header, help_redirect, render_report, standard_header, write_report_file
@@ -92,24 +93,18 @@ def main(argv=None):
                               "size) or 'weak' (fixed problem size per rank)")
     parser.add_argument("-o", "--output", dest="dest", default=None,
                          help="path to write the report (default: <reference_dir>/pop_metrics.txt)")
-    parser.add_argument("--extra-noise-config", dest="extra_noise_config", default=None,
-                         help="path to a JSON file customizing noise-tag patterns (add/remove "
-                              "substrings, disable a tag) -- see stage6_noise_config.py's "
-                              "configure() for the file schema; falls back to "
-                              "$FRIENDLY_ROCPROF_NOISE_CONFIG if not given")
+    stage6_noise_config.add_cli_argument(parser)
     args = parser.parse_args(argv)
 
     run_dirs = [args.reference_dir] + args.scaled_dirs
-    for d in run_dirs:
-        if not os.path.isdir(d):
-            raise SystemExit(f"error: no such directory: {d!r}")
+    stage6_cli_common.require_directories(run_dirs)
 
     if args.scaled_dirs and args.scaling is None:
         raise SystemExit("error: --scaling {strong,weak} is required when scaled_dirs are given")
 
-    stage6_noise_config.configure(args.extra_noise_config or os.environ.get("FRIENDLY_ROCPROF_NOISE_CONFIG"))
+    stage6_noise_config.configure_from_args(args)
 
-    dest = args.dest or os.path.join(args.reference_dir, "pop_metrics.txt")
+    dest = stage6_cli_common.resolve_dest(args.dest, args.reference_dir, "pop_metrics.txt")
     tokens = [os.path.abspath(d) for d in run_dirs]
     if args.scaling:
         tokens += ["--scaling", args.scaling]

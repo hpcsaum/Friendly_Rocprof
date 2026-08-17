@@ -31,6 +31,7 @@ import sys
 
 from stage4_rocprofsys_flat import aggregate
 from stage5_table_render import iter_table_rows, select_entries
+import stage6_cli_common
 import stage6_noise_config
 
 HELP_BLURB = """\
@@ -189,13 +190,9 @@ def main(argv=None):
                          help="hotspots.txt report to read CPU hotspot functions from")
     source.add_argument("--output-dir", dest="output_dir", default=None,
                          help="rocprof-sys output directory to read CPU hotspot functions from")
-    selection = parser.add_mutually_exclusive_group()
-    selection.add_argument("-n", "--top", dest="top", type=int, default=None,
-                            help="number of hotspot functions to select (default: 1%% threshold)")
-    selection.add_argument("--threshold", dest="threshold", type=float, default=None,
-                            help="only select functions at or above this %% of total runtime (default: 1.0)")
-    selection.add_argument("--all", dest="show_all", action="store_true", default=False,
-                            help="select every function, no truncation")
+    stage6_cli_common.add_selection_args(parser, "functions", "of total runtime (default: 1.0)",
+                                          top_noun="hotspot functions",
+                                          top_help_suffix=" (default: 1%% threshold)", verb="select")
     parser.add_argument("--unfiltered", dest="unfiltered", action="store_true",
                          help="with --output-dir, select by inclusive (total) time instead of "
                               "self time -- can pick a function that just calls other functions "
@@ -248,9 +245,8 @@ def main(argv=None):
     if args.report:
         labels = labels_from_report(args.report)
     else:
-        if not os.path.isdir(args.output_dir):
-            raise SystemExit(f"error: no such directory: {args.output_dir!r}")
-        stage6_noise_config.configure(args.extra_noise_config or os.environ.get("FRIENDLY_ROCPROF_NOISE_CONFIG"))
+        stage6_cli_common.require_directory(args.output_dir)
+        stage6_noise_config.configure_from_args(args)
         labels = labels_from_output_dir(
             args.output_dir, top=args.top, threshold=args.threshold, show_all=args.show_all,
             unfiltered=args.unfiltered,

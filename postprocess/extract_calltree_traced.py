@@ -36,6 +36,7 @@ import extract_GPU_hotspots as gpu_tool
 from stage1_run_dirs import resolve_two_dirs
 from stage5_calltree_traced_view import build_calltree_view
 from stage5_tree_render import aggregation_note, tree_view_note
+import stage6_cli_common
 import stage6_noise_config
 from stage6_report_builder import command_header, help_redirect, render_report, standard_header, write_report_file
 
@@ -136,27 +137,17 @@ def main(argv=None):
                               "already contains both subdirs, or when there's no GPU data to pair")
     parser.add_argument("-o", "--output", dest="dest", default=None,
                          help="path to write the call tree report (default: <output_dir>/calltree_traced.txt)")
-    parser.add_argument("--max-depth", dest="max_depth", type=int, default=None,
-                         help="truncate the tree at this depth (default: unlimited, print the whole tree)")
-    parser.add_argument("--show-gpu-api", dest="show_gpu_api", action="store_true",
-                         help="also show GPU-API/runtime calls (hip/hsa/roctx/kfd/rocdecode/rocjpeg/rocr-"
-                              "prefixed) instead of hiding them")
-    parser.add_argument("--extra-noise-config", dest="extra_noise_config", default=None,
-                         help="path to a JSON file customizing noise-tag patterns (add/remove "
-                              "substrings, disable a tag) -- see stage6_noise_config.py's "
-                              "configure() for the file schema; falls back to "
-                              "$FRIENDLY_ROCPROF_NOISE_CONFIG if not given")
+    stage6_cli_common.add_max_depth_arg(parser)
+    stage6_cli_common.add_noise_tier_args(parser, ["gpu_api"])
+    stage6_noise_config.add_cli_argument(parser)
     args = parser.parse_args(argv)
 
-    if not os.path.isdir(args.output_dir):
-        raise SystemExit(f"error: no such directory: {args.output_dir!r}")
     cpu_dir, gpu_dir = resolve_two_dirs(args.output_dir, args.gpu_dir)
-    if gpu_dir is not None and not os.path.isdir(gpu_dir):
-        raise SystemExit(f"error: no such directory: {gpu_dir!r}")
+    stage6_cli_common.require_directories([cpu_dir, gpu_dir])
 
-    stage6_noise_config.configure(args.extra_noise_config or os.environ.get("FRIENDLY_ROCPROF_NOISE_CONFIG"))
+    stage6_noise_config.configure_from_args(args)
 
-    dest = args.dest or os.path.join(args.output_dir, "calltree_traced.txt")
+    dest = stage6_cli_common.resolve_dest(args.dest, args.output_dir, "calltree_traced.txt")
     tokens = [os.path.abspath(args.output_dir)]
     if args.gpu_dir:
         tokens.append(os.path.abspath(args.gpu_dir))

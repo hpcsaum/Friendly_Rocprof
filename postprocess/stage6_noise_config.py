@@ -10,7 +10,8 @@ tool's main() and tag_rows() -- every real invocation of this codebase is a sing
 process with exactly one noise-pattern configuration for its whole run, so a module-level singleton
 is simpler and just as correct as parameter-threading.
 
-Functions: load_default_patterns(), configure(), tag_defs().
+Functions: load_default_patterns(), configure(), tag_defs(), add_cli_argument(),
+configure_from_args().
 """
 
 import json
@@ -58,6 +59,23 @@ def tag_defs():
     if _TAG_DEFS is None:
         configure(None)
     return _TAG_DEFS
+
+
+def add_cli_argument(parser):
+    """Adds --extra-noise-config to parser, with the standard help text every noise-tagging tool
+    shares -- pair with configure_from_args() once the tool's own main() has parsed args."""
+    parser.add_argument("--extra-noise-config", dest="extra_noise_config", default=None,
+                         help="path to a JSON file customizing noise-tag patterns (add/remove "
+                              "substrings, disable a tag) -- see stage6_noise_config.py's "
+                              "configure() for the file schema; falls back to "
+                              "$FRIENDLY_ROCPROF_NOISE_CONFIG if not given")
+
+
+def configure_from_args(args):
+    """Resolves --extra-noise-config (falling back to $FRIENDLY_ROCPROF_NOISE_CONFIG) from a
+    parsed argparse Namespace and calls configure() with it -- the one line each tool's main()
+    needs, right after parser.parse_args(), before doing any real work."""
+    configure(args.extra_noise_config or os.environ.get("FRIENDLY_ROCPROF_NOISE_CONFIG"))
 
 
 def _apply_diff(patterns, extra_config_path):

@@ -25,6 +25,7 @@ import sys
 
 from stage4_rocprofv3 import aggregate
 from stage5_table_render import iter_table_rows, select_entries
+import stage6_cli_common
 
 HELP_BLURB = """\
 Turns a profile_hotspot_kernels.sh (or extract_GPU_hotspots.py/extract_hotspots.py) report --
@@ -118,13 +119,9 @@ def main(argv=None):
                          help="hotspots.txt report to read GPU hotspot kernel names from")
     source.add_argument("--output-dir", dest="output_dir", default=None,
                          help="rocprofv3 output directory to read GPU hotspot kernel names from")
-    selection = parser.add_mutually_exclusive_group()
-    selection.add_argument("-n", "--top", dest="top", type=int, default=None,
-                            help="number of hotspot kernels to select (default: 20)")
-    selection.add_argument("--threshold", dest="threshold", type=float, default=None,
-                            help="only select kernels at or above this %% of total device time")
-    selection.add_argument("--all", dest="show_all", action="store_true", default=False,
-                            help="select every kernel, no truncation")
+    stage6_cli_common.add_selection_args(parser, "kernels", "of total device time",
+                                          top_noun="hotspot kernels", top_help_suffix=" (default: 20)",
+                                          verb="select")
     parser.add_argument("--all-dispatches", dest="all_dispatches", action="store_true", default=False,
                          help="also include kernels dispatched only once (excluded by default, "
                               "since the launcher profiles each kernel's 2nd call only)")
@@ -138,8 +135,7 @@ def main(argv=None):
     if args.report:
         labels = labels_from_report(args.report, require_multiple_calls=require_multiple_calls)
     else:
-        if not os.path.isdir(args.output_dir):
-            raise SystemExit(f"error: no such directory: {args.output_dir!r}")
+        stage6_cli_common.require_directory(args.output_dir)
         labels = labels_from_output_dir(
             args.output_dir, top=args.top, threshold=args.threshold, show_all=args.show_all,
             require_multiple_calls=require_multiple_calls,
