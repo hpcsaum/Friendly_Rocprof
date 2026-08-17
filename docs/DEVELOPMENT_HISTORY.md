@@ -48,6 +48,7 @@
 | 2026-08-17 | Plan 2.15 Phase A: new capstone tool `extract_hotspot_callers.py` (top-N CPU hotspots + each one's caller chain(s) back to a real program root) -- an architecture-validation exercise, not a roadmap item; needed exactly one new primitive (`stage4_rocprofsys_tree.caller_chains_for_label()`), everything else reused as-is; real-data testing surfaced and fixed a genuine file-preference bug (see full accounting below) |
 | 2026-08-17 | Plan 2.15 Phase B: `extract_hotspot_callers.py` gains an optional GPU-paired mode -- fuses CPU+GPU ranking (reusing `stage5_fused_hotspots_table.build_combined_view()` as-is) and traces a hot kernel's own caller chain(s) through its launching CPU call site; needed one small, additive gap-fix (a `parent` link on synthetic kernel nodes plus a `collect_into` param), after which `caller_chains_for_label()` handles kernels with zero further changes -- see full accounting below |
 | 2026-08-17 | Plan 2.16: reorganized `postprocess/` into one directory per stage (`stage1/`-`stage6/`) plus a `tools/` directory for the 9 CLI tools, mirrored in `tests/`; pure relocation, zero import-statement changes anywhere (a new shared `_stage_paths.py` sys.path bootstrap keeps every existing flat `from stageN_x import y` working unchanged) -- surfaced and fixed one real, pre-existing test-isolation bug along the way (see full accounting below) |
+| 2026-08-17 | Plan 2.17: split the root `README.md` into a beginner-facing user guide (what each tool does, how to run it) and a new `postprocess/README.md` developer guide (pipeline philosophy, the `stage1`-`stage6` architecture, noise-classification and kernel-attachment mechanisms, how to build a new tool) -- also closed two documentation gaps found along the way: `extract_hotspot_callers.py` had no README coverage at all, and `--extra-noise-config` (used by 7 of the 9 tools) was never mentioned anywhere |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -2165,4 +2166,46 @@ location; real-data regeneration of `test_apps/results/profile_hotspots_C_amd/{h
 calltree}.txt` via their new paths came back byte-identical to the versions already on disk (aside
 from the tool path itself in each report's own "command:" footer), proving the whole cross-stage
 import graph -- not just individual unit tests -- still resolves correctly end to end.
+
+## 2026-08-17 — Plan 2.17: split `README.md` into a user guide and a developer architecture guide
+
+Documentation-only, no code changes. The root `README.md` had grown to mix two audiences in one
+409-line document: simple per-tool usage instructions for a beginner, and deep implementation
+rationale (the CPU+GPU double-counting arithmetic, the exact noise-filtering substring lists, the
+Cray-name-match-vs-structural-fallback kernel-attachment algorithm, the `rocprof-compute` MPI
+safety-check mechanism) that a first-time user doesn't need and a developer extending the tools
+has to dig out from underneath the basic usage text either way.
+
+**`README.md`** (rewritten in place) now stays strictly at the "what does this do and how do I run
+it" level for every script in `scripts/` and every tool in `postprocess/tools/` -- mechanism
+explanations were trimmed to one plain-language sentence each (e.g. "combines CPU and GPU timing
+into one ranking, correcting for the overlap between CPU-side GPU-wait time and GPU-side kernel
+time" instead of the explicit subtraction formula; "kernel data is attached to the CPU code that
+launched it, when it can be determined" instead of the two-tier algorithm's details) and moved to
+the new developer guide instead of being deleted outright.
+
+**`postprocess/README.md`** (new) covers the pipeline philosophy (raw per-rank output -> one
+short, comprehensible report, via a fixed sequence of transformations each stage owns exclusively)
+and the `stage1`-`stage6` architecture one subsection per stage, naming real files and functions
+rather than restating full docstrings. Also covers the `_stage_paths.py` sys.path bootstrap (why
+it exists, described as current mechanism rather than "we moved files here"), the two subsystems
+with real complexity worth a dedicated explanation (noise-tag classification's JSON schema and
+action model; the kernel-to-CPU-launch-site attachment algorithm), a concrete "building a new
+tool" walkthrough naming the actual reusable functions a new tool would compose, and the test
+suite's own conventions (the `tests/fixtures/` sharing rationale, the two module-loading styles,
+and the `stage6_noise_config` singleton-isolation hazard plan 2.16 found and fixed).
+
+**Two real documentation gaps closed along the way**, found while cross-checking tool coverage
+against the actual `tools/` directory listing: `extract_hotspot_callers.py` (added in plan 2.15)
+had no README section at all before this plan, and `--extra-noise-config` (added in plan 2.12,
+now used by 7 of the 9 tools) was never mentioned in either README. Both are now documented in
+both files -- the user-facing "what it does" version in `README.md`'s new "Hotspot caller chains"
+section and "Customizing noise filtering" section respectively, the mechanism version in
+`postprocess/README.md`.
+
+Verification: read both finished documents start to finish for internal consistency; confirmed
+every one of the 9 `tools/*.py` files has a `README.md` section and every `stage1`-`stage6`
+directory has a `postprocess/README.md` subsection (scripted grep check, not just visual
+skimming); confirmed no stale pre-plan-2.16 (`postprocess/extract_*.py` without `tools/`) paths
+remain in either file. No test suite run needed -- no code files touched.
 
