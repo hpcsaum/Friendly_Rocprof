@@ -58,22 +58,22 @@ Communication Efficiency (CommE) = Serialisation Efficiency x Transfer Efficienc
   A real computation tool must tolerate partial per-rank data rather than assume every rank
   produced every file.
 
-- **MPI-call classification**: `postprocess/extract_pop_metrics.py`'s `MPI_PREFIXES = ("MPI_",
+- **MPI-call classification**: `postprocess/tools/extract_pop_metrics.py`'s `MPI_PREFIXES = ("MPI_",
   "PMPI_", "MPIR_", "MPID_")` constant is the first (and, for now, only) place in this codebase
   that classifies a function name as communication rather than compute. It's MPICH/Cray-MPICH
   specific by design decision — an Open MPI run's internal helpers (`ompi_`/`opal_`/`orte_`
   prefixes) aren't recognized and would be misclassified as application compute. Not
   CLI-configurable today; may be extended if a non-MPICH MPI implementation needs support.
 
-## Implemented: `postprocess/extract_pop_metrics.py`
+## Implemented: `postprocess/tools/extract_pop_metrics.py`
 
 This reference doc's Load Balance / Communication Efficiency / Parallel Efficiency /
 Computation Efficiency / Global Efficiency rows are now computed by
-`postprocess/extract_pop_metrics.py` — see [README.md](../README.md#computing-pop-metrics---extract_pop_metricspy)
+`postprocess/tools/extract_pop_metrics.py` — see [README.md](../README.md#computing-pop-metrics---extract_pop_metricspy)
 for usage. The two building blocks below, described as future work when this doc was first
 written, are exactly what that tool builds on:
 
-- `postprocess/extract_CPU_hotspots.py`'s per-function avg/min/max/stddev-across-ranks logic
+- `postprocess/tools/extract_CPU_hotspots.py`'s per-function avg/min/max/stddev-across-ranks logic
   (already used for the CPU load-imbalance table) is the same aggregation Load Balance needs at
   the whole-program level — specifically its self-time `aggregate_per_rank()` output, which
   partitions each rank's total time additively across every call-tree node with no
@@ -128,7 +128,7 @@ offload question cleanly (comm-independent, by construction); `GPU-Util` answers
 actually busy," which legitimately degrades when communication starves it, regardless of root
 cause.
 
-All four are computed in `postprocess/extract_pop_metrics.py` whenever the underlying data
+All four are computed in `postprocess/tools/extract_pop_metrics.py` whenever the underlying data
 supports them (a paired `rocprofv3/` directory for `GPU-Off`/`GPU-Util`/`GPU-LB`; a scaling study
 where both the reference and compared run have paired GPU data for `GPU-Eff`) — no new
 instrumentation or CLI flags needed.

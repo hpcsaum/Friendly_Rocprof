@@ -74,7 +74,7 @@ Skipped (with a one-line note) if fewer than 2 ranks were profiled.
 The extractor also works standalone against any existing `rocprof-sys` output directory:
 
 ```bash
-python3 postprocess/extract_CPU_hotspots.py <rocprof-sys-output-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all] [--unfiltered]
+python3 postprocess/tools/extract_CPU_hotspots.py <rocprof-sys-output-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all] [--unfiltered]
 ```
 
 ### GPU hotspots — `profile_GPU_hotspots.sh`
@@ -102,7 +102,7 @@ there — only the MPI rank count (derived from output filenames) is reliably
 available on 7.0.2.
 
 ```bash
-python3 postprocess/extract_GPU_hotspots.py <rocprofv3-output-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all]
+python3 postprocess/tools/extract_GPU_hotspots.py <rocprofv3-output-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all]
 ```
 
 For MPI runs, the report also includes a **GPU kernel load imbalance**
@@ -154,7 +154,7 @@ check that they came from the same executable or test case — that's on you
 (garbage in, garbage out):
 
 ```bash
-python3 postprocess/extract_hotspots.py <rocprof-sys-output-dir> <rocprofv3-output-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all] [--unfiltered]
+python3 postprocess/tools/extract_hotspots.py <rocprof-sys-output-dir> <rocprofv3-output-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all] [--unfiltered]
 ```
 
 ### Call tree — `extract_calltree.py`
@@ -175,7 +175,7 @@ it, same flag that already skips their hotspots report) — or run standalone ag
 their output directories:
 
 ```bash
-python3 postprocess/extract_calltree.py <output-dir> [-o calltree.txt] [--max-depth N] \
+python3 postprocess/tools/extract_calltree.py <output-dir> [-o calltree.txt] [--max-depth N] \
   [--show-gpu-api] [--show-rocprofsys-internals] [--show-mpi-internals] \
   [--show-compiler-runtime] [--show-all-internals]
 ```
@@ -239,7 +239,7 @@ ancestor than it really does. Same aggregated-across-ranks columns, automatic ge
 and standalone usage as above:
 
 ```bash
-python3 postprocess/extract_calltree_traced.py <output-dir> [-o calltree_traced.txt] [--max-depth N] [--show-gpu-api]
+python3 postprocess/tools/extract_calltree_traced.py <output-dir> [-o calltree_traced.txt] [--max-depth N] [--show-gpu-api]
 ```
 
 Filtering matches the hotspots reports' "CPU compute" bucket: GPU-API/runtime noise
@@ -294,8 +294,8 @@ After the rewrite, this tool checks `rocprof-sys-instrument`'s own
 binary — inlining, optimization, or a name mismatch can all cause that.
 
 ```bash
-python3 postprocess/select_hotspot_functions.py --output-dir <rocprof-sys-output-dir> [-n TOP_N | --threshold PCT | --all] [--unfiltered]
-python3 postprocess/select_hotspot_functions.py --report results/run1/hotspots.txt
+python3 postprocess/tools/select_hotspot_functions.py --output-dir <rocprof-sys-output-dir> [-n TOP_N | --threshold PCT | --all] [--unfiltered]
+python3 postprocess/tools/select_hotspot_functions.py --report results/run1/hotspots.txt
 ```
 
 ### GPU kernel deep-dive — `profile_hotspot_kernels.sh`
@@ -354,8 +354,8 @@ way `instrument_hotspots.sh` checks against `rocprof-sys-instrument`'s own `inst
 for now.
 
 ```bash
-python3 postprocess/select_hotspot_kernels.py --output-dir <rocprofv3-output-dir> [-n TOP_N | --threshold PCT | --all] [--all-dispatches]
-python3 postprocess/select_hotspot_kernels.py --report results/run1/hotspots.txt
+python3 postprocess/tools/select_hotspot_kernels.py --output-dir <rocprofv3-output-dir> [-n TOP_N | --threshold PCT | --all] [--all-dispatches]
+python3 postprocess/tools/select_hotspot_kernels.py --report results/run1/hotspots.txt
 ```
 
 ### Computing POP metrics — `extract_pop_metrics.py`
@@ -369,10 +369,10 @@ compared against the first as reference.
 
 ```bash
 # single run: Load Balance / Communication Efficiency / Parallel Efficiency only
-python3 postprocess/extract_pop_metrics.py results/run1
+python3 postprocess/tools/extract_pop_metrics.py results/run1
 
 # scaling study: also computes Computation Efficiency / Global Efficiency vs. run1
-python3 postprocess/extract_pop_metrics.py results/run1 results/run2 results/run4 --scaling strong
+python3 postprocess/tools/extract_pop_metrics.py results/run1 results/run2 results/run4 --scaling strong
 ```
 
 `--scaling {strong,weak}` is required whenever more than one directory is given: **strong**

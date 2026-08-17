@@ -22,7 +22,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GPU_LAUNCHER="$SCRIPT_DIR/profile_GPU_hotspots.sh"
-SELECTOR="$SCRIPT_DIR/../postprocess/select_hotspot_kernels.py"
+SELECTOR="$SCRIPT_DIR/../postprocess/tools/select_hotspot_kernels.py"
 
 RUN_TS="$(date +%F_%H.%M.%S)"
 OUTPUT_DIR="profile_hotspot_kernels-scan-$RUN_TS"

@@ -22,7 +22,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOTSPOTS_LAUNCHER="$SCRIPT_DIR/profile_hotspots.sh"
-SELECTOR="$SCRIPT_DIR/../postprocess/select_hotspot_functions.py"
+SELECTOR="$SCRIPT_DIR/../postprocess/tools/select_hotspot_functions.py"
 
 usage_top() {
   cat <<'EOF'

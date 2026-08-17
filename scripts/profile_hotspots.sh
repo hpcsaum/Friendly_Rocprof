@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Run rocprof-sys and rocprofv3 against the same command, one after the other,
 # then merge both into one combined hotspots.txt via
-# postprocess/extract_hotspots.py, and a calltree.txt via
-# postprocess/extract_calltree.py (GPU kernels nested in at their CPU call
+# postprocess/tools/extract_hotspots.py, and a calltree.txt via
+# postprocess/tools/extract_calltree.py (GPU kernels nested in at their CPU call
 # site(s), when found). Reuses scripts/profile_CPU_hotspots.sh
 # and scripts/profile_GPU_hotspots.sh directly instead of re-implementing their
 # dependency checks / flag handling here.
@@ -20,8 +20,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EXTRACTOR="$SCRIPT_DIR/../postprocess/extract_hotspots.py"
-CALLTREE_EXTRACTOR="$SCRIPT_DIR/../postprocess/extract_calltree.py"
+EXTRACTOR="$SCRIPT_DIR/../postprocess/tools/extract_hotspots.py"
+CALLTREE_EXTRACTOR="$SCRIPT_DIR/../postprocess/tools/extract_calltree.py"
 CPU_LAUNCHER="$SCRIPT_DIR/profile_CPU_hotspots.sh"
 GPU_LAUNCHER="$SCRIPT_DIR/profile_GPU_hotspots.sh"
 

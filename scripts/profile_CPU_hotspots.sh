@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Launch a lightweight rocprof-sys CPU-sampling profile of a single command, then
-# (by default) generate a short hotspots.txt via postprocess/extract_CPU_hotspots.py
-# and a calltree.txt via postprocess/extract_calltree.py.
+# (by default) generate a short hotspots.txt via postprocess/tools/extract_CPU_hotspots.py
+# and a calltree.txt via postprocess/tools/extract_calltree.py.
 #
 # rocprof-sys-sample wraps exactly one process. For MPI runs, this script is still
 # called exactly once -- pass the MPI launch command as data via --mpi "<launch cmd>"
@@ -16,8 +16,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EXTRACTOR="$SCRIPT_DIR/../postprocess/extract_CPU_hotspots.py"
-CALLTREE_EXTRACTOR="$SCRIPT_DIR/../postprocess/extract_calltree.py"
+EXTRACTOR="$SCRIPT_DIR/../postprocess/tools/extract_CPU_hotspots.py"
+CALLTREE_EXTRACTOR="$SCRIPT_DIR/../postprocess/tools/extract_calltree.py"
 
 OUTPUT_DIR="profile_CPU_hotspots-output-$(date +%F_%H.%M.%S)"
 FREQ_HZ=100

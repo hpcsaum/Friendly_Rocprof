@@ -47,6 +47,7 @@
 | 2026-08-17 | Plan 2.14: consolidates `main()`'s repeated argument-handling/setup steps -- new work beyond the original 11-step roadmap; new `stage6_cli_common.py` (directory validation, `-o`/`--output` resolution, the `-n/--top`/`--threshold`/`--all` selection group, `--max-depth`, `--show-*` noise-tier flags) plus `stage6_noise_config.add_cli_argument()`/`configure_from_args()`, replacing copy-pasted argparse blocks across all 8 CLI tools with zero behavior change (confirmed via full `--help` diff and byte-identical real-data regeneration) -- see full accounting below |
 | 2026-08-17 | Plan 2.15 Phase A: new capstone tool `extract_hotspot_callers.py` (top-N CPU hotspots + each one's caller chain(s) back to a real program root) -- an architecture-validation exercise, not a roadmap item; needed exactly one new primitive (`stage4_rocprofsys_tree.caller_chains_for_label()`), everything else reused as-is; real-data testing surfaced and fixed a genuine file-preference bug (see full accounting below) |
 | 2026-08-17 | Plan 2.15 Phase B: `extract_hotspot_callers.py` gains an optional GPU-paired mode -- fuses CPU+GPU ranking (reusing `stage5_fused_hotspots_table.build_combined_view()` as-is) and traces a hot kernel's own caller chain(s) through its launching CPU call site; needed one small, additive gap-fix (a `parent` link on synthetic kernel nodes plus a `collect_into` param), after which `caller_chains_for_label()` handles kernels with zero further changes -- see full accounting below |
+| 2026-08-17 | Plan 2.16: reorganized `postprocess/` into one directory per stage (`stage1/`-`stage6/`) plus a `tools/` directory for the 9 CLI tools, mirrored in `tests/`; pure relocation, zero import-statement changes anywhere (a new shared `_stage_paths.py` sys.path bootstrap keeps every existing flat `from stageN_x import y` working unchanged) -- surfaced and fixed one real, pre-existing test-isolation bug along the way (see full accounting below) |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -2104,4 +2105,64 @@ code). 6 new `extract_hotspot_callers.py` tests (the three fixture scenarios abo
 operation unaffected by the new `gpu_dir` param, a missing-GPU-data error when `gpu_dir` is
 explicitly given but empty, and CLI-level auto-resolution from a combined parent directory). Full
 suite: 509 tests, all passing.
+
+## 2026-08-17 — Plan 2.16: reorganize `postprocess/` into one directory per stage + `tools/`
+
+Pure directory reorganization, not a roadmap item: `postprocess/` had grown to 29 flat Python files
+(plus `default_noise_patterns.json`) with the stage-based architecture built up over plans 2.1-2.15
+invisible from the file listing itself. Every `stageN_*.py` now lives in its own `stage1/`-`stage6/`
+subdirectory; the 9 CLI tools (`extract_*.py`/`select_*.py`) live in `tools/`; `tests/` mirrors the
+same layout. Chosen approach: relocate files only, keep every filename exactly as it was (e.g.
+`stage1/stage1_rocprofsys.py`, not `stage1/rocprofsys.py`) -- confirmed by inspecting every
+cross-module import in the codebase that the import graph is genuinely cross-cutting (stage5 imports
+from stage1-4, stage4 from stage1-3, stage3 from stage6, every tool from most stages and from other
+tools), so the only new code needed is a shared `postprocess/_stage_paths.py` that puts every
+`stageN/`/`tools/` directory on `sys.path` once -- every existing `from stage1_rocprofsys import X`
+keeps resolving completely unchanged, in every source and test file, since Python resolves a plain
+import by module name against `sys.path`, not by directory. Each of the 9 tool files gained a 2-line
+bootstrap (`sys.path.insert(...)` + `import _stage_paths`) before their first stage import; each of
+the 31 test files got the same mechanical treatment (one more `".."` in its `POSTPROCESS_DIR`/
+`FIXTURES` path arithmetic, the relevant stage/tools subdirectory inserted into any `MODULE_PATH`
+join, plus the same `import _stage_paths` line) -- applied via a small one-off script rather than by
+hand, given the volume, then verified file-by-file via the diff report it printed.
+
+`python3 -m unittest discover`'s recursion into subdirectories required an `__init__.py` in `tests/`
+and every one of its 7 new subdirectories -- confirmed by a throwaway spike in `/tmp` *before*
+touching the real tree: bare namespace-package subdirectories (no `__init__.py` at all) returned 0
+tests from `discover`, even though dotted invocation (`python3 -m unittest tests.stage1.test_x`)
+worked fine either way. `default_noise_patterns.json` moved alongside `stage6_noise_config.py` into
+`stage6/` for free, since its own path is already computed relative to `os.path.dirname(__file__)`.
+
+**A real, pre-existing test-isolation bug surfaced by the reorg, not caused by it**: the full suite
+came back with exactly 8 failures after the move, every single one an `--extra-noise-config`
+end-to-end test, across every tool that has one. Root cause: `test_stage6_noise_config.py` loads its
+own fresh copy of `stage6_noise_config.py` via `importlib.util.spec_from_file_location` and
+registers it under the shared `sys.modules["stage6_noise_config"]` key -- permanently overwriting
+it, since that line runs at module-import time, not inside a test method. `stage3_rocprofsys.py`
+captures a direct reference to `tag_defs` from whichever instance is current on `sys.modules` at
+*its own* import time (`from stage6_noise_config import tag_defs as _stage6_tag_defs`) -- a real
+process-wide singleton, per that module's own docstring. Whichever test module happens to import
+`stage3_rocprofsys` (transitively, via any tool) *before* `test_stage6_noise_config.py`'s own
+override runs ends up permanently bound to the pre-override instance; every `configure()` call made
+afterward (e.g. every tool's own `--extra-noise-config` handling) mutates the *other*, now-detached
+instance instead, so the custom config silently never takes effect. This was already true before the
+reorg -- only masked by old flat alphabetical discovery order happening to run every tool's
+`--extra-noise-config` test *before* `test_stage6_noise_config.py` (`'select'`/`'extract'` sorts
+before `'stage'`); the new per-directory layout runs `stage6/` before `tools/`, exposing it. Fixed by
+having `test_stage6_noise_config.py` save and restore the previous `sys.modules["stage6_noise_config"]`
+entry around its own isolated load, so its own test isolation no longer leaks into the shared
+singleton everything else depends on -- verified stable across repeated full-suite runs afterward.
+
+Non-Python references updated to match: all 5 `scripts/*.sh` launcher scripts' `EXTRACTOR=`/
+`SELECTOR=` paths, ~10 copy-pasteable command examples in `README.md`, and ~4 prose references in
+`docs/pop_metrics_reference.md` -- all gained the `tools/` path segment. `docs/plans/*.md`'s own
+historical references to the old flat paths were deliberately left untouched, matching this
+project's existing convention of never rewriting a past plan's text after the fact.
+
+Verification: full suite stayed at 509 passing (identical count and behavior, confirmed stable
+across repeated runs); `--help` output for all 9 tools confirmed unchanged from their new `tools/`
+location; real-data regeneration of `test_apps/results/profile_hotspots_C_amd/{hotspot_callers,
+calltree}.txt` via their new paths came back byte-identical to the versions already on disk (aside
+from the tool path itself in each report's own "command:" footer), proving the whole cross-stage
+import graph -- not just individual unit tests -- still resolves correctly end to end.
 

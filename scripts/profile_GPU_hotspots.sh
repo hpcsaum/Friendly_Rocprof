@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Launch a rocprofv3 GPU-kernel profile of a single command, then (by default)
-# generate a short hotspots.txt via postprocess/extract_GPU_hotspots.py.
+# generate a short hotspots.txt via postprocess/tools/extract_GPU_hotspots.py.
 #
 # rocprofv3 wraps exactly one process, transparently (no rebuild/instrumentation
 # needed). For MPI runs, this script is still called exactly once -- pass the MPI
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EXTRACTOR="$SCRIPT_DIR/../postprocess/extract_GPU_hotspots.py"
+EXTRACTOR="$SCRIPT_DIR/../postprocess/tools/extract_GPU_hotspots.py"
 
 OUTPUT_DIR="profile_GPU_hotspots-output-$(date +%F_%H.%M.%S)"
 RUN_SUMMARY=1
