@@ -27,6 +27,7 @@ from stage5_fused_hotspots_table import FUSED_HOTSPOTS_COLUMNS, build_combined_v
 from stage5_gpu_hotspots_table import GPU_HOTSPOTS_COLUMNS
 from stage5_load_imbalance_table import compute_load_imbalance, imbalance_note, load_imbalance_columns
 from stage5_table_render import pct_total_note, ranking_note, render_table, select_entries
+import stage6_noise_config
 from stage6_report_builder import command_header, render_report, standard_header, write_report_file
 
 SHORT_DESCRIPTION = (
@@ -214,6 +215,11 @@ def main(argv=None):
                          help="rank CPU-side entries by inclusive (total) time instead of self "
                               "time -- the old behavior, where a function that just calls other "
                               "functions can still rank high")
+    parser.add_argument("--extra-noise-config", dest="extra_noise_config", default=None,
+                         help="path to a JSON file customizing noise-tag patterns (add/remove "
+                              "substrings, disable a tag) -- see stage6_noise_config.py's "
+                              "configure() for the file schema; falls back to "
+                              "$FRIENDLY_ROCPROF_NOISE_CONFIG if not given")
     args = parser.parse_args(argv)
 
     cpu_dir, gpu_dir = resolve_two_dirs(args.rocprof_sys_dir, args.rocprofv3_dir)
@@ -226,6 +232,8 @@ def main(argv=None):
         )
     if not os.path.isdir(gpu_dir):
         raise SystemExit(f"error: no such directory: {gpu_dir!r}")
+
+    stage6_noise_config.configure(args.extra_noise_config or os.environ.get("FRIENDLY_ROCPROF_NOISE_CONFIG"))
 
     dest = args.dest or os.path.join(args.rocprof_sys_dir, "hotspots.txt")
     tokens = [os.path.abspath(args.rocprof_sys_dir)]
@@ -241,6 +249,8 @@ def main(argv=None):
         tokens += ["--all"]
     if args.unfiltered:
         tokens += ["--unfiltered"]
+    if args.extra_noise_config:
+        tokens += ["--extra-noise-config", os.path.abspath(args.extra_noise_config)]
     command_line = command_header(sys.argv[0], tokens)
 
     write_report(cpu_dir, gpu_dir, dest, top=args.top, threshold=args.threshold,

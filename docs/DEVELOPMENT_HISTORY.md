@@ -42,6 +42,7 @@
 | 2026-08-14 | Plan 2.9: added `extract_calltree.py`'s and `extract_pop_metrics.py`'s two missing `HELP_BLURB` gaps identified by §10's rule-5 redirect precondition audit -- roadmap step 8, additive only, no report output changed |
 | 2026-08-14 | Plan 2.10: applied §10's report style guide rules 1-5 and 7 across all 6 tools (rule 6, hard-wrap, split to plan 2.11) -- roadmap step 9, the first step allowed to change report output everywhere; also relocated table-owned prose (`%total`/ranking/load-imbalance/aggregation legends) into the owning stage5 module, unified every tool's header into one `stage6_report_builder.standard_header()` function (closing plan 2.8's deferred metadata-presentation item), and unified `extract_hotspots.py`/`extract_calltree.py`/`extract_calltree_traced.py`'s directory handling via a new shared `resolve_two_dirs()` helper -- see full design/real-data accounting below |
 | 2026-08-17 | Plan 2.11: applied §10's rule 6 (120-column hard-wrap for long names) across `stage5_table_render.py`/`stage5_tree_render.py`, plus the `iter_table_rows()` reader both `select_hotspot_*.py` re-parsers need to survive it -- roadmap step 9, part 2 of 2; the wrap/cap logic for each renderer's own geometry landed as its own standalone, reusable function (`wrap_trailing_label()`, `wrap_leading_labels()`) rather than inlined, per explicit request -- see full design/real-data accounting below |
+| 2026-08-17 | Plan 2.12: user-facing `--extra-noise-config`/`$FRIENDLY_ROCPROF_NOISE_CONFIG` noise-pattern override file -- roadmap step 10; new `stage6_noise_config.py` resolves a process-wide `tag_defs()` global (bundled defaults + add/remove/disable + a reserved `"other"` tag) that `stage3_rocprofsys.tag_rows()` falls back to when a caller omits its own, rather than threading the config through every function between a tool's `main()` and `tag_rows()` -- see full design/real-data accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -1746,4 +1747,111 @@ post-2.10/pre-2.11, and post-2.11) stay independently reviewable side by side. D
 own row (and every sibling row's alignment) out to the right, ending in a truncated `...`, now wraps
 onto its own continuation line(s) with the row's numeric columns staying put at the shared,
 120-column-budget-derived width -- exactly the problem this plan exists to fix.
+
+## 2026-08-17 — Plan 2.12: user-facing noise-config file (roadmap step 10)
+
+Closes roadmap step 10, a design already sketched out in the master plan's stage-3 engine section
+when the engine itself was first planned: `--extra-noise-config PATH` /
+`$FRIENDLY_ROCPROF_NOISE_CONFIG` lets a user add/remove substring patterns on the engine's 5
+built-in noise tags, disable a tag entirely, and populate a reserved `"other"` tag for their own
+app's noise that doesn't fit any built-in category -- without editing Python.
+
+**Design pivoted twice during planning, away from parameter-threading, toward a process-wide
+global.** The first draft threaded an optional `tag_defs` parameter through every function between
+a tool's `main()` and `tag_rows()` (`scan_ranks()` -> `aggregate()`/`aggregate_per_rank()`,
+`load_rank_trees()` -> `build_calltree_view()` x2, `compute_run_metrics()`'s 3 direct calls) --
+rejected as unsustainable signature churn for a single process-wide setting, since every real
+invocation of this codebase is a one-shot CLI process with exactly one noise-pattern configuration
+for its whole run. The resolved patterns became a **process-wide global** instead, held by a new
+small module, `stage6_noise_config.py`. Second pivot: `stage3_rocprofsys.load_default_patterns()`
+itself **moved out of stage3 into that same new module**, rather than staying in stage3 with the
+new module importing it -- makes the dependency strictly one-directional (stage3 reads from
+stage6; stage6 reads from nothing else in this package) instead of each needing something from the
+other. This is a deliberate exception to the usual stage-N-depends-only-on-lower-N layering:
+`stage3_rocprofsys.tag_rows(rows, tag_defs=None, filename=None)` now falls back to
+`stage6_noise_config.tag_defs()`'s current resolved value whenever a caller omits `tag_defs`
+explicitly -- every existing test (all of which pass a hand-built `tag_defs` dict) is completely
+unaffected, and **no other function signature changed at all**: `scan_ranks()`, `aggregate()`,
+`aggregate_per_rank()`, `load_rank_trees()`, both tools' `build_calltree_view()`,
+`compute_run_metrics()` and its 2 helpers stay exactly as they were.
+
+`stage6_noise_config.py` owns both `load_default_patterns()` (the bundled
+`default_noise_patterns.json` loader) and `configure(extra_config_path=None)`/`tag_defs()`: the
+former resolves and stores the final patterns for the process (bundled defaults, always with an
+empty `"other"` tag guaranteed present, optionally customized by a diff file); the latter returns
+the current value, lazily configuring with no override on first use so any caller that never
+touches `configure()` sees exactly the bundled defaults, unchanged. The diff file's schema --
+`{"add": {tag: [substring, ...]}, "remove": {tag: [substring, ...]}, "disable": [tag, ...]}` --
+always adds onto the bundled file, never replaces it: every tag not mentioned stays exactly as
+shipped, `remove` strips only the named substrings (the rest of that tag's own patterns survive),
+and `disable` is the only way to lose a whole tag, and only that one. `disable` is resolved first
+and always wins: any `add`/`remove` naming an already-disabled tag is silently ignored, not an
+error. `add`/`remove` only ever touch a tag's own `"substrings"` list (not prefixes/suffixes/
+ancestor rules -- those govern more structural matching behavior than a simple "does this text
+appear" tweak needs), and only apply to *patterned* tags (self-scope matching) plus `"other"` --
+targeting a purely derived tag like `wrapper_branch_noise` (no patterns of its own, only a
+`sibling_group_source_tag`) with `add`/`remove` raises `SystemExit`, though `disable` on it still
+works. An unknown tag name anywhere raises `SystemExit` too.
+
+**A real, pre-existing case-sensitivity gap surfaced while smoke-testing on real data, not
+something this plan introduced.** `stage3_rocprofsys._label_matches()` lowercases a row's own
+label before comparing, but never lowercases the pattern side -- harmless as long as every pattern
+in `default_noise_patterns.json` happens to already be lowercase (true today, by unstated
+convention), but a real footgun the moment a user types a mixed-case substring into their own
+`--extra-noise-config` file (confirmed directly: adding `"PMPI_Allreduce"` to `"other"` silently
+matched nothing against real test_apps data, since the row's own label lowercases to
+`"pmpi_allreduce"` first). Fixed in `stage6_noise_config._apply_diff()`: every `add`/`remove`
+substring is lowercased before being stored, matching the bundled file's own existing convention
+rather than relying on the user to know about it.
+
+`"other"`'s own default treatment -- "splice (with fold) everywhere unless a tool overrides it,"
+per the original design -- follows the same per-tool split `wrapper_noise` already has, since both
+tags flow through the exact same `tag_rows()`/`splice_by_tag()` machinery with no new parameter
+needed anywhere: `stage4_rocprofsys_flat.scan_ranks()` (flat merge-by-label; feeds CPU hotspots,
+combined hotspots, pop_metrics, `select_hotspot_functions.py`) drops `other`-tagged rows entirely,
+the same as `wrapper_noise`/`compiler_runtime_noise` already are, since there's no tree left to
+splice into by this point. `stage5_calltree_view.strip_wrapper_noise()` (sampling calltree's
+postprocess hook) gained one more line, splicing `other` with `fold=True` right after its existing
+`wrapper_noise` splice (`fold=False`) -- `other`'s own default is fold, distinct from
+`wrapper_noise`'s discard. `stage5_calltree_traced_view.py` had no postprocess hook of any kind
+before this (no wrapper-noise handling exists there, out of scope to add) -- gained a minimal new
+`_splice_other()` doing exactly the one `splice_by_tag(rows, "other", fold=True)` call, so `"other"`
+support lands "everywhere" as the design states without introducing unrelated handling this tool
+never had.
+
+**CLI wiring**: every tool whose output depends on CPU-side tagging gained `--extra-noise-config`
+(falling back to `$FRIENDLY_ROCPROF_NOISE_CONFIG`) -- `extract_CPU_hotspots.py`,
+`extract_hotspots.py`, `extract_calltree.py`, `extract_calltree_traced.py`,
+`extract_pop_metrics.py`, and `select_hotspot_functions.py`'s `--output-dir` mode (its `--report`
+mode reads an already-rendered, already-tagged report file, so combining it with
+`--extra-noise-config` now raises a clear error, the same mutually-exclusive-group convention this
+tool already used for `--report`/`--output-dir` itself). `select_hotspot_kernels.py` and
+`extract_GPU_hotspots.py` are untouched -- neither ever imported `stage3_rocprofsys` (GPU kernel
+data has no CPU-side noise classification to tune). Each `main()`'s integration is exactly two
+lines: parse the flag, then call `stage6_noise_config.configure(...)` once before doing any real
+work -- `write_report()`/`labels_from_output_dir()` and everything they call needed zero changes.
+
+Test rework: of 449 existing tests, zero broke (the parameter-threading pivot meant every existing
+signature was untouched) -- purely additive coverage: new `test_stage6_noise_config.py`
+(`configure()`/`tag_defs()`'s full add/remove/disable/unknown-tag/derived-tag-rejection/
+re-configure-replaces-not-merges matrix, plus the case-lowercasing fix), one new
+`tag_rows()`-fallback test in `test_stage3_rocprofsys.py`, one `"other"`-tag end-to-end test each
+in `stage4_rocprofsys_flat.py`'s and both calltree view modules' test files (a configured pattern
+reaches that tool's own treatment, dropped or spliced+folded as appropriate), and
+`--extra-noise-config` end-to-end coverage (plus one `$FRIENDLY_ROCPROF_NOISE_CONFIG` env-var-
+fallback test and `select_hotspot_functions.py`'s `--report`+`--extra-noise-config` conflict check)
+across all 6 CLI-facing tools' own test files. Every test that calls `configure()` resets it via
+`tearDown()`/`addCleanup()` so the process-wide global never leaks into an unrelated test running
+afterward in the same suite. Final suite: 451 tests, all passing.
+
+Real-data verification across all 6 `test_apps/results/` directories: fully byte-identical (modulo
+each report's own timestamp line), confirmed by diff rather than by eye, exactly as expected since
+none of them pass `--extra-noise-config` -- `tag_defs()` always resolves to the untouched bundled
+defaults when never explicitly configured. One real-data smoke test (scratch file, not committed):
+a hand-written config adding `"other": ["c_app"]` correctly excludes that real label from
+`extract_CPU_hotspots.py`'s report (2 occurrences by default, 0 once configured); a second config
+adding the real `"PMPI_Allreduce"` label (this run's own real MPI wrapper call) to `"other"`
+correctly splices that exact node out of `extract_calltree.py`'s rendered tree -- both runs against
+`test_apps/results/profile_hotspots_C_amd`'s real captured data, and the second one is what
+surfaced the case-sensitivity fix above.
 

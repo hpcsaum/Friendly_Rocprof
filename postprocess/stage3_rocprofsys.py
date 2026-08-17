@@ -14,8 +14,11 @@ label matches wrapper_noise"); an action is a decision about what a tool does wi
 can get a different action in a different tool, without re-deriving the classification.
 
 Tag definitions (scope: which rows a pattern is allowed to look at) come from a JSON file --
-usually default_noise_patterns.json, see load_default_patterns() -- not from Python constants, so
-new noise patterns don't require a code change. Each tag definition may combine:
+usually default_noise_patterns.json, see stage6_noise_config.load_default_patterns() -- not from
+Python constants, so new noise patterns don't require a code change. tag_rows() itself falls back
+to stage6_noise_config.tag_defs() (the process-wide resolved patterns, bundled defaults optionally
+customized by a user's --extra-noise-config/$FRIENDLY_ROCPROF_NOISE_CONFIG file) whenever a caller
+doesn't pass its own tag_defs explicitly. Each tag definition may combine:
   - "prefixes"/"substrings"/"suffixes": label-matching rules (all case-insensitive, checked
     against the row's own label only).
   - "filename_substrings": matched case-insensitively against the basename of the file a whole
@@ -37,19 +40,12 @@ new noise patterns don't require a code change. Each tag definition may combine:
     case is already covered by the source tag's own self-match).
 
 Functions: tag_rows(), remove_tagged_subtrees(), splice_by_tag(), make_collapses_children(),
-make_is_pruned(), load_default_patterns().
+make_is_pruned().
 """
 
-import json
 import os
 
-DEFAULT_PATTERNS_PATH = os.path.join(os.path.dirname(__file__), "default_noise_patterns.json")
-
-
-def load_default_patterns(path=None):
-    """The bundled tag -> pattern-definition mapping (see module docstring for the schema)."""
-    with open(path or DEFAULT_PATTERNS_PATH) as f:
-        return json.load(f)
+from stage6_noise_config import tag_defs as _stage6_tag_defs
 
 
 def _label_matches(label, tag_def):
@@ -72,7 +68,7 @@ def _build_children_map(rows):
     return children_map
 
 
-def tag_rows(rows, tag_defs, filename=None):
+def tag_rows(rows, tag_defs=None, filename=None):
     """Mutates every row in place: row["tags"] becomes a set of every tag whose pattern matched
     this row's own label, or the file it came from (see `filename` below), or (for a thread-root
     row) any ancestor's label, or (for an untethered root, parent=None) the first real descendant's
@@ -88,13 +84,18 @@ def tag_rows(rows, tag_defs, filename=None):
     remove_tagged_subtrees() first to actually drop the whole subtree; checking
     row["structural_drop_tags"] directly, one row at a time, only catches the top row itself.
 
-    tag_defs is a dict as returned by load_default_patterns() (or an equivalent hand-built dict
-    for tests) -- pattern-bearing tags and sibling-group-derived tags may be mixed freely.
+    tag_defs is a dict as returned by stage6_noise_config.load_default_patterns() (or an
+    equivalent hand-built dict for tests) -- pattern-bearing tags and sibling-group-derived tags
+    may be mixed freely. Omit it (or pass None) to use this process's current
+    stage6_noise_config.tag_defs() instead -- the bundled defaults, optionally customized by
+    whichever --extra-noise-config a tool's main() configured for this run.
 
     filename, when given, is the single source file every row in `rows` was parsed from -- matched
     against each tag's own "filename_substrings" once for the whole batch, since a file-level fact
     is equally true for every row in it.
     """
+    if tag_defs is None:
+        tag_defs = _stage6_tag_defs()
     children_map = _build_children_map(rows)
     top_level = [row for row in rows if row["parent"] is None]
 

@@ -27,6 +27,7 @@ import extract_CPU_hotspots as cpu_tool  # noqa: E402
 import extract_GPU_hotspots as gpu_tool  # noqa: E402
 import extract_hotspots as combined_tool  # noqa: E402
 from stage5_table_render import wrap_trailing_label  # noqa: E402
+import stage6_noise_config  # noqa: E402
 
 SINGLE_RANK = os.path.join(FIXTURES, "single_rank")
 MPI_2RANK = os.path.join(FIXTURES, "mpi_2rank")
@@ -241,6 +242,22 @@ class MainResolveModeTests(unittest.TestCase):
     def test_output_dir_must_exist(self):
         with self.assertRaises(SystemExit):
             selector.main(["--output-dir", "/nonexistent/dir"])
+
+    def test_extra_noise_config_flag_excludes_a_configured_row(self):
+        self.addCleanup(stage6_noise_config.configure, None)
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = os.path.join(tmp, "noise_config.json")
+            with open(config_path, "w") as f:
+                json.dump({"add": {"other": ["apply_boundary"]}}, f)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                selector.main(["--output-dir", SINGLE_RANK, "--all", "--extra-noise-config", config_path])
+        self.assertNotIn("apply_boundary", buf.getvalue())
+        self.assertIn("compute_stencil", buf.getvalue())
+
+    def test_extra_noise_config_conflicts_with_report(self):
+        with self.assertRaises(SystemExit):
+            selector.main(["--report", "a.txt", "--extra-noise-config", "b.json"])
 
 
 class MainCheckInstrumentedModeTests(unittest.TestCase):

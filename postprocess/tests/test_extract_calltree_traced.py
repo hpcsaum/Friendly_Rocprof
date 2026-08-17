@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -18,6 +19,8 @@ spec = importlib.util.spec_from_file_location("extract_calltree_traced", MODULE_
 ct_tool = importlib.util.module_from_spec(spec)
 sys.modules["extract_calltree_traced"] = ct_tool
 spec.loader.exec_module(ct_tool)
+
+import stage6_noise_config  # noqa: E402  (needs sys.path insert above first)
 
 MPI_2RANK_DIR = os.path.join(FIXTURES, "mpi_2rank")
 KERNEL_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_kernel_anchor")
@@ -69,6 +72,18 @@ class MainCliTests(unittest.TestCase):
                 report = f.read()
             self.assertIn("CPU run directory:", report)
             self.assertIn("GPU run directory:", report)
+
+    def test_extra_noise_config_flag_excludes_a_configured_row(self):
+        self.addCleanup(stage6_noise_config.configure, None)
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "out.txt")
+            config_path = os.path.join(tmp, "noise_config.json")
+            with open(config_path, "w") as f:
+                json.dump({"add": {"other": ["compute_stencil"]}}, f)
+            ct_tool.main([MPI_2RANK_DIR, "-o", dest, "--extra-noise-config", config_path])
+            with open(dest) as f:
+                report = f.read()
+        self.assertNotIn("compute_stencil", report)
 
 
 if __name__ == "__main__":

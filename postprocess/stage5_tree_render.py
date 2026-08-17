@@ -33,11 +33,9 @@ import os
 from stage1_rocprofsys import PID_SUFFIX_RE, parse_table_file
 from stage1_rocprofv3 import parse_kernel_stats_csv
 from stage2_rocprofsys import attach_ancestry
-from stage3_rocprofsys import load_default_patterns, tag_rows
+from stage3_rocprofsys import tag_rows
 from stage4_rocprofsys_tree import attach_kernel_summaries, make_kernel_node, unattached_kernel_per_rank
 from stage4_rocprofv3 import aggregate_per_rank
-
-TAG_DEFS = load_default_patterns()
 
 # Real right-aligned columns for both calltree tools' rendered trees -- one row per
 # stage4_rocprofsys_tree.merge_rank_trees() node, averaged/load-balance-summarized
@@ -224,7 +222,7 @@ def load_rank_trees(cpu_dir, primary_pattern, fallback_pattern, postprocess=None
         if not rows:
             continue
         attach_ancestry(rows)
-        tag_rows(rows, TAG_DEFS, filename=path)
+        tag_rows(rows, filename=path)
         if postprocess is not None:
             rows = postprocess(rows)
         roots = [r for r in rows if r["parent"] is None]

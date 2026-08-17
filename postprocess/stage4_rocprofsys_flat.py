@@ -16,9 +16,7 @@ import os
 
 from stage1_rocprofsys import PID_SUFFIX_RE, parse_table_file
 from stage2_rocprofsys import attach_ancestry
-from stage3_rocprofsys import load_default_patterns, remove_tagged_subtrees, tag_rows
-
-TAG_DEFS = load_default_patterns()
+from stage3_rocprofsys import remove_tagged_subtrees, tag_rows
 
 NON_TIMING_FILES = {"available.txt", "instrumented.txt", "excluded.txt", "overlapping.txt"}
 # rocprof-sys's default config (ROCPROFSYS_FLAT_PROFILE=0, sampling on) writes THREE
@@ -64,8 +62,8 @@ def scan_ranks(output_dir):
     unfiltered row list (see below), so it still reflects the whole run's
     true wall-clock regardless of what gets dropped next.
 
-    Rows tagged wrapper_noise, compiler_runtime_noise, wrapper_branch_noise,
-    or mpi_territory-via-ancestor-only (a thread-root row whose own label
+    Rows tagged wrapper_noise, compiler_runtime_noise, wrapper_branch_noise, other, or
+    mpi_territory-via-ancestor-only (a thread-root row whose own label
     isn't itself an MPI call -- see stage3_rocprofsys.tag_rows()'s
     self_tags/tags distinction) are dropped entirely here, before either
     cpu/gpu classification or merging -- every consumer of this function
@@ -88,7 +86,7 @@ def scan_ranks(output_dir):
         if rows is None:
             continue
         attach_ancestry(rows)
-        tag_rows(rows, TAG_DEFS, filename=path)
+        tag_rows(rows, filename=path)
 
         m = PID_SUFFIX_RE.search(base)
         rank_key = m.group(1) if m else path
@@ -112,6 +110,7 @@ def scan_ranks(output_dir):
                 "wrapper_noise" in row["tags"]
                 or ("mpi_territory" in row["tags"] and "mpi_territory" not in row["self_tags"])
                 or "compiler_runtime_noise" in row["tags"]
+                or "other" in row["tags"]
             ):
                 continue
             gpu = "gpu_api" in row["tags"]

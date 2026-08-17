@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -18,6 +19,8 @@ spec = importlib.util.spec_from_file_location("extract_hotspots", MODULE_PATH)
 combined = importlib.util.module_from_spec(spec)
 sys.modules["extract_hotspots"] = combined
 spec.loader.exec_module(combined)
+
+import stage6_noise_config  # noqa: E402  (needs sys.path insert above first)
 
 CPU_DIR = os.path.join(FIXTURES, "mpi_2rank")
 GPU_DIR = os.path.join(FIXTURES, "rocprofv3_mpi_2rank")
@@ -201,6 +204,18 @@ class MainCliTests(unittest.TestCase):
     def test_single_directory_with_no_gpu_subdir_raises_clear_error(self):
         with self.assertRaises(SystemExit):
             combined.main([CPU_DIR])
+
+    def test_extra_noise_config_flag_excludes_a_configured_row(self):
+        self.addCleanup(stage6_noise_config.configure, None)
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "out.txt")
+            config_path = os.path.join(tmp, "noise_config.json")
+            with open(config_path, "w") as f:
+                json.dump({"add": {"other": ["compute_stencil"]}}, f)
+            combined.main([CPU_DIR, GPU_DIR, "-o", dest, "--extra-noise-config", config_path])
+            with open(dest) as f:
+                report = f.read()
+        self.assertNotIn("compute_stencil", report)
 
 
 if __name__ == "__main__":

@@ -35,6 +35,7 @@ import extract_GPU_hotspots as gpu_tool
 from stage1_run_dirs import resolve_two_dirs
 from stage5_calltree_traced_view import build_calltree_view
 from stage5_tree_render import aggregation_note, tree_view_note
+import stage6_noise_config
 from stage6_report_builder import command_header, help_redirect, render_report, standard_header, write_report_file
 
 SHORT_DESCRIPTION = (
@@ -139,6 +140,11 @@ def main(argv=None):
     parser.add_argument("--show-gpu-api", dest="show_gpu_api", action="store_true",
                          help="also show GPU-API/runtime calls (hip/hsa/roctx/kfd/rocdecode/rocjpeg/rocr-"
                               "prefixed) instead of hiding them")
+    parser.add_argument("--extra-noise-config", dest="extra_noise_config", default=None,
+                         help="path to a JSON file customizing noise-tag patterns (add/remove "
+                              "substrings, disable a tag) -- see stage6_noise_config.py's "
+                              "configure() for the file schema; falls back to "
+                              "$FRIENDLY_ROCPROF_NOISE_CONFIG if not given")
     args = parser.parse_args(argv)
 
     if not os.path.isdir(args.output_dir):
@@ -146,6 +152,8 @@ def main(argv=None):
     cpu_dir, gpu_dir = resolve_two_dirs(args.output_dir, args.gpu_dir)
     if gpu_dir is not None and not os.path.isdir(gpu_dir):
         raise SystemExit(f"error: no such directory: {gpu_dir!r}")
+
+    stage6_noise_config.configure(args.extra_noise_config or os.environ.get("FRIENDLY_ROCPROF_NOISE_CONFIG"))
 
     dest = args.dest or os.path.join(args.output_dir, "calltree_traced.txt")
     tokens = [os.path.abspath(args.output_dir)]
@@ -157,6 +165,8 @@ def main(argv=None):
         tokens += ["--max-depth", str(args.max_depth)]
     if args.show_gpu_api:
         tokens.append("--show-gpu-api")
+    if args.extra_noise_config:
+        tokens += ["--extra-noise-config", os.path.abspath(args.extra_noise_config)]
     command_line = command_header(sys.argv[0], tokens)
 
     write_report(cpu_dir, gpu_dir, dest, max_depth=args.max_depth, show_gpu_api=args.show_gpu_api,

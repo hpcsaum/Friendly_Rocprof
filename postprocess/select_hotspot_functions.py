@@ -28,6 +28,7 @@ import sys
 
 from stage4_rocprofsys_flat import aggregate
 from stage5_table_render import iter_table_rows, select_entries
+import stage6_noise_config
 
 HELP_BLURB = """\
 Turns a profile_hotspots.sh (or extract_CPU_hotspots.py) report -- or a
@@ -201,11 +202,21 @@ def main(argv=None):
                          help="switch to lost-function mode: read requested labels from stdin "
                               "(one per line) and warn about any missing from this "
                               "rocprof-sys-instrument instrumented.json file")
+    parser.add_argument("--extra-noise-config", dest="extra_noise_config", default=None,
+                         help="with --output-dir, path to a JSON file customizing noise-tag "
+                              "patterns (add/remove substrings, disable a tag) -- see "
+                              "stage6_noise_config.py's configure() for the file schema; falls "
+                              "back to $FRIENDLY_ROCPROF_NOISE_CONFIG if not given; can't be "
+                              "combined with --report (that just reads whatever's in the file, "
+                              "already tagged)")
     args = parser.parse_args(argv)
+
+    if args.report and args.extra_noise_config:
+        raise SystemExit("error: --extra-noise-config can't be combined with --report")
 
     if args.check_instrumented:
         if (args.report or args.output_dir or args.top is not None or args.threshold is not None
-                or args.show_all or args.unfiltered):
+                or args.show_all or args.unfiltered or args.extra_noise_config):
             raise SystemExit("error: --check-instrumented can't be combined with --report/--output-dir/selection flags")
         labels = [line.strip() for line in sys.stdin if line.strip()]
         try:
@@ -236,6 +247,7 @@ def main(argv=None):
     else:
         if not os.path.isdir(args.output_dir):
             raise SystemExit(f"error: no such directory: {args.output_dir!r}")
+        stage6_noise_config.configure(args.extra_noise_config or os.environ.get("FRIENDLY_ROCPROF_NOISE_CONFIG"))
         labels = labels_from_output_dir(
             args.output_dir, top=args.top, threshold=args.threshold, show_all=args.show_all,
             unfiltered=args.unfiltered,

@@ -7,7 +7,7 @@ own companion module -- see stage5_tree_render.py.
 Functions: build_calltree_view().
 """
 
-from stage3_rocprofsys import make_is_pruned
+from stage3_rocprofsys import make_is_pruned, splice_by_tag
 from stage4_rocprofsys_tree import flatten_tree, make_node_values, merge_rank_trees
 from stage5_tree_render import (
     attach_and_render_gpu_kernels,
@@ -17,15 +17,23 @@ from stage5_tree_render import (
 )
 
 
+def _splice_other(rows):
+    """The postprocess step passed to load_rank_trees() -- this tool has no wrapper-noise
+    handling of its own (out of scope here), but other-tagged rows still get their default
+    treatment everywhere: splice them out, folding their self-time into the new parent instead of
+    discarding it."""
+    return splice_by_tag(rows, "other", fold=True)
+
+
 def build_calltree_view(run_dir, cpu_dir, gpu_dir, max_depth=None, show_gpu_api=False):
     """Same role as extract_calltree.py's own build_calltree_view(), narrower parameter set
     matching this tool's single --show-gpu-api flag: calls the shared load_rank_trees() preferring
-    wall_clock-<pid>.txt over sampling_wall_clock-<pid>.txt, with no postprocess step (this tool
-    has nothing extra to do after tagging), and calls render_calltree_text() with no
-    collapses_children (default no-op). Returns the same dict shape as the sampling tool's
-    version: rank_keys, gpu_paired, tree_text, fallback_text.
+    wall_clock-<pid>.txt over sampling_wall_clock-<pid>.txt, with _splice_other() as its only
+    postprocess step (this tool has nothing else extra to do after tagging), and calls
+    render_calltree_text() with no collapses_children (default no-op). Returns the same dict shape
+    as the sampling tool's version: rank_keys, gpu_paired, tree_text, fallback_text.
     """
-    ranks = load_rank_trees(cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt")
+    ranks = load_rank_trees(cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt", postprocess=_splice_other)
     if not ranks:
         raise SystemExit(
             f"error: no rocprof-sys timemory text table found under {cpu_dir!r} "

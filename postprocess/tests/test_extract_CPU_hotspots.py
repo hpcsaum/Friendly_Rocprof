@@ -1,8 +1,10 @@
 import importlib.util
+import json
 import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..")
@@ -20,6 +22,7 @@ sys.modules["extract_CPU_hotspots"] = hotspots
 spec.loader.exec_module(hotspots)
 
 import stage4_rocprofsys_flat as flat  # noqa: E402  (needs sys.path insert above first)
+import stage6_noise_config  # noqa: E402
 
 
 class MetadataGuessingTests(unittest.TestCase):
@@ -177,6 +180,41 @@ class NestedDatedSubdirectoryTests(unittest.TestCase):
             self.assertIn("compute_stencil", report)
             self.assertIn("run date/time: 2026-08-03_09.24", report)
             self.assertIn("MPI ranks: 2", report)
+
+
+class MainCliTests(unittest.TestCase):
+    def tearDown(self):
+        stage6_noise_config.configure(None)
+
+    def test_extra_noise_config_flag_excludes_a_configured_row(self):
+        # apply_boundary is a real, otherwise-untagged row in single_rank -- configuring it as
+        # "other" and confirming it disappears from the written report proves --extra-noise-config
+        # actually reaches stage3's tagging, end to end through main().
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            config_path = os.path.join(tmp, "noise_config.json")
+            with open(config_path, "w") as f:
+                json.dump({"add": {"other": ["apply_boundary"]}}, f)
+            hotspots.main([
+                os.path.join(FIXTURES, "single_rank"), "-o", dest,
+                "--extra-noise-config", config_path,
+            ])
+            with open(dest) as f:
+                report = f.read()
+        self.assertNotIn("apply_boundary", report)
+        self.assertIn("compute_stencil", report)
+
+    def test_friendly_rocprof_noise_config_env_var_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            config_path = os.path.join(tmp, "noise_config.json")
+            with open(config_path, "w") as f:
+                json.dump({"add": {"other": ["apply_boundary"]}}, f)
+            with unittest.mock.patch.dict(os.environ, {"FRIENDLY_ROCPROF_NOISE_CONFIG": config_path}):
+                hotspots.main([os.path.join(FIXTURES, "single_rank"), "-o", dest])
+            with open(dest) as f:
+                report = f.read()
+        self.assertNotIn("apply_boundary", report)
 
 
 if __name__ == "__main__":

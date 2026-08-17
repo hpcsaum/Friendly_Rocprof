@@ -15,8 +15,9 @@ import argparse
 import os
 import sys
 
-from stage3_rocprofsys import load_default_patterns
 from stage5_pop_metrics_table import compute_run_metrics, format_metrics_table, metrics_legend, run_label
+import stage6_noise_config
+from stage6_noise_config import load_default_patterns
 from stage6_report_builder import command_header, help_redirect, render_report, standard_header, write_report_file
 
 TAG_DEFS = load_default_patterns()
@@ -89,6 +90,11 @@ def main(argv=None):
                               "size) or 'weak' (fixed problem size per rank)")
     parser.add_argument("-o", "--output", dest="dest", default=None,
                          help="path to write the report (default: <reference_dir>/pop_metrics.txt)")
+    parser.add_argument("--extra-noise-config", dest="extra_noise_config", default=None,
+                         help="path to a JSON file customizing noise-tag patterns (add/remove "
+                              "substrings, disable a tag) -- see stage6_noise_config.py's "
+                              "configure() for the file schema; falls back to "
+                              "$FRIENDLY_ROCPROF_NOISE_CONFIG if not given")
     args = parser.parse_args(argv)
 
     run_dirs = [args.reference_dir] + args.scaled_dirs
@@ -99,12 +105,16 @@ def main(argv=None):
     if args.scaled_dirs and args.scaling is None:
         raise SystemExit("error: --scaling {strong,weak} is required when scaled_dirs are given")
 
+    stage6_noise_config.configure(args.extra_noise_config or os.environ.get("FRIENDLY_ROCPROF_NOISE_CONFIG"))
+
     dest = args.dest or os.path.join(args.reference_dir, "pop_metrics.txt")
     tokens = [os.path.abspath(d) for d in run_dirs]
     if args.scaling:
         tokens += ["--scaling", args.scaling]
     if args.dest:
         tokens += ["-o", os.path.abspath(args.dest)]
+    if args.extra_noise_config:
+        tokens += ["--extra-noise-config", os.path.abspath(args.extra_noise_config)]
     command_line = command_header(sys.argv[0], tokens)
 
     write_report(run_dirs, dest, scaling=args.scaling, command_line=command_line)

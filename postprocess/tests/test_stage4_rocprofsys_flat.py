@@ -1,6 +1,8 @@
 import importlib.util
+import json
 import os
 import sys
+import tempfile
 import unittest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
@@ -13,6 +15,8 @@ spec = importlib.util.spec_from_file_location("stage4_rocprofsys_flat", MODULE_P
 flat = importlib.util.module_from_spec(spec)
 sys.modules["stage4_rocprofsys_flat"] = flat
 spec.loader.exec_module(flat)
+
+import stage6_noise_config  # noqa: E402  (needs sys.path insert above first)
 
 
 class AggregateTests(unittest.TestCase):
@@ -91,6 +95,26 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual(cpu, [])
         self.assertEqual(gpu, [])
         self.assertEqual(total_runtime, 0)
+
+
+class OtherTagConfigTests(unittest.TestCase):
+    def tearDown(self):
+        stage6_noise_config.configure(None)
+
+    def test_other_tagged_row_excluded_same_as_a_built_in_noise_tag(self):
+        # single_rank fixture: main/compute_stencil/apply_boundary are real CPU rows -- configure
+        # a custom "other" pattern matching apply_boundary and confirm scan_ranks()'s drop
+        # condition treats it exactly like wrapper_noise/compiler_runtime_noise already are.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "noise_config.json")
+            with open(path, "w") as f:
+                json.dump({"add": {"other": ["apply_boundary"]}}, f)
+            stage6_noise_config.configure(path)
+
+            cpu, _gpu, _scanned, _total = flat.aggregate(os.path.join(FIXTURES, "single_rank"))
+        cpu_labels = {e["label"] for e in cpu}
+        self.assertNotIn("apply_boundary", cpu_labels)
+        self.assertIn("compute_stencil", cpu_labels)  # unrelated row unaffected
 
 
 class ScanRanksMultiMetricFileTests(unittest.TestCase):

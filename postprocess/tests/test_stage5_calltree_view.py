@@ -1,6 +1,8 @@
+import json
 import os
 import re
 import sys
+import tempfile
 import unittest
 
 POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..")
@@ -9,6 +11,7 @@ sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
 from stage1_run_dirs import resolve_run_dirs  # noqa: E402  (needs sys.path insert above first)
 from stage5_calltree_view import build_calltree_view, strip_wrapper_noise  # noqa: E402
 from stage5_tree_render import load_rank_trees  # noqa: E402
+import stage6_noise_config  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 FILTERS_DIR = os.path.join(FIXTURES, "calltree_sampling_filters")
@@ -123,6 +126,26 @@ class WrapperContaminatedBranchTests(unittest.TestCase):
     def test_real_sibling_branches_unaffected(self):
         report = render(FILTERS_DIR)
         self.assertIn("foo_normal_call", report)
+
+
+class OtherTagConfigTests(unittest.TestCase):
+    def tearDown(self):
+        stage6_noise_config.configure(None)
+
+    def test_other_tagged_node_spliced_out_with_fold(self):
+        # foo_normal_call is a real, otherwise-untagged sibling branch (see
+        # test_real_sibling_branches_unaffected above) -- confirms "other"'s own default
+        # treatment (splice, fold=True) actually reaches this tool via strip_wrapper_noise().
+        report_default = render(FILTERS_DIR)
+        self.assertIn("foo_normal_call", report_default)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "noise_config.json")
+            with open(path, "w") as f:
+                json.dump({"add": {"other": ["foo_normal_call"]}}, f)
+            stage6_noise_config.configure(path)
+            report_configured = render(FILTERS_DIR)
+        self.assertNotIn("foo_normal_call", report_configured)
 
 
 class UntetheredThreadRootGpuPropagationTests(unittest.TestCase):

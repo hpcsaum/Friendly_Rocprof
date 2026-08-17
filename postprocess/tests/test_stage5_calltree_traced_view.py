@@ -1,6 +1,8 @@
+import json
 import os
 import re
 import sys
+import tempfile
 import unittest
 
 POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..")
@@ -9,6 +11,7 @@ sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
 from stage1_run_dirs import resolve_run_dirs  # noqa: E402  (needs sys.path insert above first)
 from stage5_calltree_traced_view import build_calltree_view  # noqa: E402
 from stage5_tree_render import load_rank_trees  # noqa: E402
+import stage6_noise_config  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 MPI_2RANK_DIR = os.path.join(FIXTURES, "mpi_2rank")
@@ -188,6 +191,27 @@ class AggregationTests(unittest.TestCase):
     def test_single_merged_main_node_not_duplicated_per_rank(self):
         report = render(MPI_2RANK_DIR)
         self.assertEqual(report.count("\nmain "), 1)
+
+
+class OtherTagConfigTests(unittest.TestCase):
+    def tearDown(self):
+        stage6_noise_config.configure(None)
+
+    def test_other_tagged_node_spliced_out_with_fold(self):
+        # This tool has no wrapper-noise handling of its own -- confirms "other"'s default
+        # treatment (splice, fold=True) still lands here via _splice_other().
+        # compute_stencil is main's real, otherwise-untagged child (see
+        # LoadRankTreesTests.test_basic_two_rank_tree above).
+        report_default = render(MPI_2RANK_DIR)
+        self.assertIn("compute_stencil", report_default)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "noise_config.json")
+            with open(path, "w") as f:
+                json.dump({"add": {"other": ["compute_stencil"]}}, f)
+            stage6_noise_config.configure(path)
+            report_configured = render(MPI_2RANK_DIR)
+        self.assertNotIn("compute_stencil", report_configured)
 
 
 if __name__ == "__main__":

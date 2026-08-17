@@ -1,14 +1,26 @@
 import importlib.util
+import json
 import os
 import sys
+import tempfile
 import unittest
 
-MODULE_PATH = os.path.join(os.path.dirname(__file__), "..", "stage3_rocprofsys.py")
+POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..")
+MODULE_PATH = os.path.join(POSTPROCESS_DIR, "stage3_rocprofsys.py")
+
+# stage3_rocprofsys.py does a plain top-level "from stage6_noise_config import ...", relying on
+# its own directory being on sys.path -- true automatically when it's run directly, but not when
+# loaded here by explicit file path, so replicate that manually (same technique as other test
+# files in this suite).
+sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
 
 spec = importlib.util.spec_from_file_location("stage3_rocprofsys", MODULE_PATH)
 s3 = importlib.util.module_from_spec(spec)
 sys.modules["stage3_rocprofsys"] = s3
 spec.loader.exec_module(s3)
+
+import stage6_noise_config  # noqa: E402  (needs sys.path insert above first)
+from stage6_noise_config import load_default_patterns  # noqa: E402
 
 # A minimal synthetic tag vocabulary, independent of the real shipped
 # default_noise_patterns.json (covered separately by LoadDefaultPatternsTests) -- keeps these
@@ -323,7 +335,7 @@ class ClosureTests(unittest.TestCase):
 
 class LoadDefaultPatternsTests(unittest.TestCase):
     def test_loads_expected_tag_names(self):
-        patterns = s3.load_default_patterns()
+        patterns = load_default_patterns()
         self.assertEqual(
             set(patterns.keys()),
             {"gpu_api", "wrapper_noise", "mpi_territory", "compiler_runtime_noise", "wrapper_branch_noise"},
@@ -336,7 +348,7 @@ class OpenMpiPrefixTests(unittest.TestCase):
     # shipped patterns (not the synthetic TAG_DEFS above), since this is specifically
     # about default_noise_patterns.json's own mpi_territory prefix list.
     def test_matches_open_mpi_prefixes(self):
-        real_defs = s3.load_default_patterns()
+        real_defs = load_default_patterns()
         mpi_def = real_defs["mpi_territory"]
         self.assertTrue(s3._label_matches("ompi_request_complete", mpi_def))
         self.assertTrue(s3._label_matches("opal_progress", mpi_def))
@@ -346,11 +358,35 @@ class OpenMpiPrefixTests(unittest.TestCase):
         # startswith-based, so this must NOT match an Open-MPI opaque-handle typename
         # appearing mid-string inside rocprof-sys's own generic GOTCHA-wrapper template
         # signature.
-        real_defs = s3.load_default_patterns()
+        real_defs = load_default_patterns()
         mpi_def = real_defs["mpi_territory"]
         self.assertFalse(s3._label_matches(
             "tim::component::gotcha<101ul, int, ompi_group_t**>::construct", mpi_def
         ))
+
+
+class TagRowsFallbackTests(unittest.TestCase):
+    # tag_rows()'s own fallback to stage6_noise_config.tag_defs() -- every other test in this
+    # file passes an explicit hand-built tag_defs and is unaffected by any of this.
+    def tearDown(self):
+        stage6_noise_config.configure(None)
+
+    def test_omitting_tag_defs_falls_back_to_the_process_wide_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "noise_config.json")
+            with open(path, "w") as f:
+                json.dump({"add": {"other": ["my_custom_noise_"]}}, f)
+            stage6_noise_config.configure(path)
+
+        row = make_row("my_custom_noise_helper")
+        s3.tag_rows([row], filename=None)  # no tag_defs given
+        self.assertIn("other", row["tags"])
+
+    def test_explicit_tag_defs_still_overrides_the_process_wide_config(self):
+        stage6_noise_config.configure(None)
+        row = make_row("my_custom_noise_helper")
+        s3.tag_rows([row], TAG_DEFS)  # this file's own synthetic dict, has no "other" tag at all
+        self.assertEqual(row["tags"], set())
 
 
 if __name__ == "__main__":

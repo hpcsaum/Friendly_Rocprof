@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -18,6 +19,8 @@ spec = importlib.util.spec_from_file_location("extract_pop_metrics", MODULE_PATH
 pop_tool = importlib.util.module_from_spec(spec)
 sys.modules["extract_pop_metrics"] = pop_tool
 spec.loader.exec_module(pop_tool)
+
+import stage6_noise_config  # noqa: E402  (needs sys.path insert above first)
 
 REF_DIR = os.path.join(FIXTURES, "pop_ref_2rank")
 SCALED_DIR = os.path.join(FIXTURES, "pop_scaled_4rank")
@@ -124,6 +127,24 @@ class MainCliTests(unittest.TestCase):
             dest = os.path.join(tmp, "out.txt")
             pop_tool.main([REF_DIR, SCALED_DIR, "--scaling", "weak", "-o", dest])
             self.assertTrue(os.path.isfile(dest))
+
+    def test_extra_noise_config_flag_changes_communication_efficiency(self):
+        # Disabling mpi_territory means no self-time anywhere is classified as communication, so
+        # CommE (max useful compute / max total elapsed) becomes exactly 1.000 -- a clean,
+        # deterministic way to prove --extra-noise-config actually reaches compute_run_metrics().
+        self.addCleanup(stage6_noise_config.configure, None)
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "out.txt")
+            config_path = os.path.join(tmp, "noise_config.json")
+            with open(config_path, "w") as f:
+                json.dump({"disable": ["mpi_territory"]}, f)
+            pop_tool.main([REF_DIR, "-o", dest, "--extra-noise-config", config_path])
+            with open(dest) as f:
+                report = f.read()
+        metrics_line = next(
+            line for line in report.splitlines() if line.strip().startswith(pop_tool.run_label(REF_DIR))
+        )
+        self.assertIn("1.000", metrics_line)
 
 
 if __name__ == "__main__":

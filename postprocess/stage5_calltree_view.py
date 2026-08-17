@@ -22,9 +22,13 @@ def strip_wrapper_noise(rows):
     """The postprocess step passed to load_rank_trees() unless show_rocprofsys_internals:
     drops any whole wrapper_branch_noise-contaminated sibling subtree, then splices out
     wrapper_noise-tagged rows themselves (reparenting their children, discarding their own
-    self-time -- fold=False preserves that discard-self-time behavior)."""
+    self-time -- fold=False preserves that discard-self-time behavior), then splices out
+    other-tagged rows the same way but folding their self-time into the new parent instead of
+    discarding it (other's own default treatment -- a user's --extra-noise-config-defined noise
+    is real work that happened somewhere, just not worth its own row)."""
     rows = remove_tagged_subtrees(rows, {"wrapper_branch_noise"})
-    return splice_by_tag(rows, "wrapper_noise", fold=False)
+    rows = splice_by_tag(rows, "wrapper_noise", fold=False)
+    return splice_by_tag(rows, "other", fold=True)
 
 
 def build_calltree_view(run_dir, cpu_dir, gpu_dir, max_depth=None, show_gpu_api=False,

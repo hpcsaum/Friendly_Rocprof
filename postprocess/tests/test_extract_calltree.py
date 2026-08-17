@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -18,6 +19,8 @@ spec = importlib.util.spec_from_file_location("extract_calltree", MODULE_PATH)
 ct_tool = importlib.util.module_from_spec(spec)
 sys.modules["extract_calltree"] = ct_tool
 spec.loader.exec_module(ct_tool)
+
+import stage6_noise_config  # noqa: E402  (needs sys.path insert above first)
 
 FILTERS_DIR = os.path.join(FIXTURES, "calltree_sampling_filters")
 MULTI_RANK_DIR = os.path.join(FIXTURES, "calltree_sampling_multi_rank")
@@ -68,6 +71,18 @@ class MainCliTests(unittest.TestCase):
                 report = f.read()
             self.assertIn("CPU run directory:", report)
             self.assertIn("GPU run directory:", report)
+
+    def test_extra_noise_config_flag_excludes_a_configured_row(self):
+        self.addCleanup(stage6_noise_config.configure, None)
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "out.txt")
+            config_path = os.path.join(tmp, "noise_config.json")
+            with open(config_path, "w") as f:
+                json.dump({"add": {"other": ["foo_normal_call"]}}, f)
+            ct_tool.main([FILTERS_DIR, "-o", dest, "--extra-noise-config", config_path])
+            with open(dest) as f:
+                report = f.read()
+        self.assertNotIn("foo_normal_call", report)
 
 
 if __name__ == "__main__":
