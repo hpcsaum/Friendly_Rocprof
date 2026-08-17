@@ -9,7 +9,7 @@ launched it. Has no opinion on which nodes get rendered or how, or on any one to
 own pruning/collapsing rules -- each tool injects its own is_pruned()/
 collapses_children() callables; see tree_render.py for the rendering side.
 
-Functions: merge_rank_trees(), flatten_tree(), aggregate_node_stats(),
+Functions: merge_rank_trees(), flatten_tree(), caller_chains_for_label(), aggregate_node_stats(),
 make_node_values(), attach_kernel_summaries(), kernel_owner_label(),
 find_kernel_anchors(), unattached_kernel_per_rank(), make_kernel_node(),
 nearest_visible_ancestor(), is_kernel_launch().
@@ -145,6 +145,29 @@ def flatten_tree(roots):
     for root in roots:
         visit(root)
     return flat
+
+
+def caller_chains_for_label(rows, target_label):
+    """Every distinct root-to-target ancestor chain for rows matching target_label -- the
+    inverse walk of flatten_tree()/render_forest() (both go root-to-descendants): a function
+    called from N different call sites returns N chains, each a list of rows from the real root
+    down to (and including) the matching row itself, walked via "parent" links alone (rows is any
+    flat list where each entry's "parent" is another row in the same list, or None -- normally
+    flatten_tree()'s output). A label with no matching row anywhere (never sampled/instrumented,
+    or spliced away as noise before merging) returns an empty list, not an error -- absence is a
+    real, reportable fact for the caller, not a bug here."""
+    chains = []
+    for row in rows:
+        if row["label"] != target_label:
+            continue
+        chain = [row]
+        node = row["parent"]
+        while node is not None:
+            chain.append(node)
+            node = node["parent"]
+        chain.reverse()
+        chains.append(chain)
+    return chains
 
 
 def aggregate_node_stats(per_rank, rank_keys):

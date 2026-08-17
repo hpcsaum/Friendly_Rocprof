@@ -244,5 +244,46 @@ class AggregateNodeStatsTests(unittest.TestCase):
         self.assertAlmostEqual(stats["self_max"], 5.0)
 
 
+class CallerChainsForLabelTests(unittest.TestCase):
+    def test_single_call_site_returns_one_root_to_target_chain(self):
+        main = make_row("main")
+        compute = make_row("compute", parent=main)
+        target = make_row("hot_function", parent=compute)
+        rows = [main, compute, target]
+
+        chains = s4t.caller_chains_for_label(rows, "hot_function")
+        self.assertEqual(len(chains), 1)
+        self.assertEqual([n["label"] for n in chains[0]], ["main", "compute", "hot_function"])
+
+    def test_two_distinct_call_sites_return_two_chains(self):
+        main = make_row("main")
+        compute_a = make_row("compute_a", parent=main)
+        compute_b = make_row("compute_b", parent=main)
+        target_a = make_row("hot_function", parent=compute_a)
+        target_b = make_row("hot_function", parent=compute_b)
+        rows = [main, compute_a, compute_b, target_a, target_b]
+
+        chains = s4t.caller_chains_for_label(rows, "hot_function")
+        self.assertEqual(len(chains), 2)
+        labels = {tuple(n["label"] for n in chain) for chain in chains}
+        self.assertEqual(labels, {
+            ("main", "compute_a", "hot_function"),
+            ("main", "compute_b", "hot_function"),
+        })
+
+    def test_no_match_returns_empty_list(self):
+        main = make_row("main")
+        rows = [main]
+        self.assertEqual(s4t.caller_chains_for_label(rows, "never_called"), [])
+
+    def test_target_is_a_root_returns_single_node_chain(self):
+        main = make_row("main")
+        rows = [main]
+        chains = s4t.caller_chains_for_label(rows, "main")
+        self.assertEqual(len(chains), 1)
+        self.assertEqual([n["label"] for n in chains[0]], ["main"])
+        self.assertIsNone(chains[0][0]["parent"])
+
+
 if __name__ == "__main__":
     unittest.main()

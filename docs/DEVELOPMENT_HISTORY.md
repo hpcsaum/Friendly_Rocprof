@@ -45,6 +45,7 @@
 | 2026-08-17 | Plan 2.12: user-facing `--extra-noise-config`/`$FRIENDLY_ROCPROF_NOISE_CONFIG` noise-pattern override file -- roadmap step 10; new `stage6_noise_config.py` resolves a process-wide `tag_defs()` global (bundled defaults + add/remove/disable + a reserved `"other"` tag) that `stage3_rocprofsys.tag_rows()` falls back to when a caller omits its own, rather than threading the config through every function between a tool's `main()` and `tag_rows()` -- see full design/real-data accounting below |
 | 2026-08-17 | Plan 2.13: final comment-and-docstring audit -- roadmap step 11, the last item on the original roadmap; comment-only cleanup (no behavior change) rewriting 19 history/investigation-flavored comments (`docs/plans/...` pointers, "confirmed via real data", "the old behavior was...", bare "rule N" references) across 8 files, expanding `stage5_table_render.py`'s thin module-docstring scope, and adding a `Functions:` line to all 8 tool-level files that lacked one -- see full accounting below |
 | 2026-08-17 | Plan 2.14: consolidates `main()`'s repeated argument-handling/setup steps -- new work beyond the original 11-step roadmap; new `stage6_cli_common.py` (directory validation, `-o`/`--output` resolution, the `-n/--top`/`--threshold`/`--all` selection group, `--max-depth`, `--show-*` noise-tier flags) plus `stage6_noise_config.add_cli_argument()`/`configure_from_args()`, replacing copy-pasted argparse blocks across all 8 CLI tools with zero behavior change (confirmed via full `--help` diff and byte-identical real-data regeneration) -- see full accounting below |
+| 2026-08-17 | Plan 2.15 Phase A: new capstone tool `extract_hotspot_callers.py` (top-N CPU hotspots + each one's caller chain(s) back to a real program root) -- an architecture-validation exercise, not a roadmap item; needed exactly one new primitive (`stage4_rocprofsys_tree.caller_chains_for_label()`), everything else reused as-is; real-data testing surfaced and fixed a genuine file-preference bug (see full accounting below) |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -1975,4 +1976,73 @@ whole point of this consolidation. Full test suite: 476 tests (451 existing + 25
 `test_stage6_cli_common.py` tests), all passing, zero changes needed to any existing test. Real-data
 regeneration across all 6 `test_apps/results/` dirs: fully byte-identical (modulo each report's own
 timestamp line) -- confirmed by diff, a pure internal refactor with no output-visible effect at all.
+
+## 2026-08-17 — Plan 2.15 Phase A: `extract_hotspot_callers.py`, an architecture-validation capstone
+
+New work beyond the original roadmap, requested as an explicit test: can a genuinely new report be
+built almost entirely out of stage1-6 primitives that already exist, and if not, what's actually
+missing? The tool shows the top N (default 10) CPU hotspots, then, for each one, its caller
+chain(s) -- the ancestor path(s) from a real program root down to every distinct call site that
+reached it. This is the architectural inverse of the calltree tools (which walk DOWN from roots,
+rendering descendants): nothing in stage4/stage5 answered "who called this, all the way up to the
+root" before this plan.
+
+**The one new primitive needed**: `stage4_rocprofsys_tree.caller_chains_for_label(rows,
+target_label)` -- walks each matching row's own `parent` chain up to its root, returning one chain
+per distinct occurrence. Everything else came from existing code unchanged: `stage4_rocprofsys_flat
+.aggregate()` for the ranked hotspot selection (same as `extract_CPU_hotspots.py`),
+`stage5_tree_render.load_rank_trees()`/`stage4_rocprofsys_tree.merge_rank_trees()` for the same
+merged call tree the calltree tools build, `stage5_tree_render.format_aligned_rows()` for rendering
+each chain as a flat list of rows (no new tree-rendering primitive needed -- a caller chain is
+linear, not branching, so `render_forest()`/`build_children_map()` don't apply), and the full
+`stage6_report_builder`/`stage6_run_metadata`/`stage6_noise_config`/`stage6_cli_common` stack. The
+tool also reuses `extract_CPU_hotspots.gather_run_info()` and
+`stage5_calltree_view.strip_wrapper_noise()` directly across tool-module boundaries -- the same
+cross-tool reuse `extract_calltree.py` itself already relies on for `gather_run_info()`, not a new
+pattern.
+
+**A real bug found during real-data testing, not a hypothetical**: the first implementation
+preferred `sampling_wall_clock-*.txt` as the tree's primary file source per rank (matching
+`extract_calltree.py`'s own "true call depth" default). Against the real `test_apps/results/
+profile_hotspots_C_amd` data, this produced "no caller chain found" for the run's own top 2
+hotspots (`MPI_Init`, `c_app`) -- both are exactly instrumented (present in `wall_clock-*.txt`) but
+apparently too short/rare for the fixed-interval sampler to ever catch as their own distinct sampled
+frame. Since this tool's hotspot ranking already comes from `aggregate()`'s own wall_clock-wins-
+per-label merge, the fix was switching the tree's file preference to match: `wall_clock-*.txt`
+primary, `sampling_wall_clock-*.txt` fallback (the same preference `extract_calltree_traced.py`
+already uses, for the same reason). Confirmed against real data both before and after the fix.
+
+**`--max-depth` semantics needed to be direction-aware, not reused blindly.** The calltree tools'
+own `--max-depth` truncates root-relative (how deep from the top). A caller chain is walked in the
+opposite direction (target-to-root), so the useful truncation is upward from the target -- "show me
+the N nearest callers," not "show me the first N levels from a root that isn't the point." Rather
+than give `stage6_cli_common.add_max_depth_arg()` a second, differently-worded sibling function,
+it gained an optional `help_text` override (defaulting to the existing root-relative wording,
+verified byte-identical for both existing calltree tools) -- one shared flag name/dest/type, two
+possible meanings depending on which direction a given renderer walks. A truncated chain shows one
+marker line ("N more ancestor(s) hidden above this point"), the same convention as the calltree
+tools' own "N more node(s) hidden below this point" marker, just pointed the other way.
+
+**What Phase A's accounting actually shows**: one new function needed (`caller_chains_for_label()`,
+~15 lines), one existing shared helper extended for a second use case (`add_max_depth_arg()`'s
+`help_text` param, fully backward compatible), and one real data-source preference bug found and
+fixed by testing against actual profiling output rather than synthetic fixtures alone. No new
+rendering primitive, no new report-assembly primitive, no new noise-classification code. The
+architecture held up for a genuinely new report shape.
+
+Tests: 4 new `caller_chains_for_label()` unit tests (single call site, multiple call sites, no
+match, target-is-a-root) in `test_stage4_rocprofsys_tree.py`; 2 new `add_max_depth_arg()`
+`help_text` tests in `test_stage6_cli_common.py`; 14 new tests in `test_extract_hotspot_callers.py`
+(`_render_chain()`'s own truncation math in isolation, plus end-to-end `write_report()`/`main()`
+coverage against real fixtures: a 2-level chain, a root-only function, a real 3-level chain with and
+without `--max-depth` truncation, `--unfiltered`, missing/empty directories, and
+`--extra-noise-config` threading). Full suite: 496 tests, all passing. Verification: `--help` diff
+confirms zero behavior change to both existing calltree tools (the `add_max_depth_arg()` signature
+change is additive-only); real-data regeneration confirms `extract_calltree.py`'s own output stays
+fully byte-identical across all 6 `test_apps/results/` dirs (this plan touches no code either tool's
+own report generation depends on beyond the one backward-compatible helper signature change).
+
+Phase B (GPU-aware extension: fusing in GPU kernels as top-N entries and resolving their caller
+chains through their launching CPU node) is deferred to its own plan -- see
+`docs/plans/2.15-hotspot-callers-capstone.md`.
 

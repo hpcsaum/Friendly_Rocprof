@@ -129,6 +129,18 @@ class AddMaxDepthArgTests(unittest.TestCase):
         args = parser.parse_args([])
         self.assertIsNone(args.max_depth)
 
+    def test_default_help_text_is_root_relative(self):
+        parser = argparse.ArgumentParser()
+        cc.add_max_depth_arg(parser)
+        action = next(a for a in parser._actions if a.dest == "max_depth")
+        self.assertIn("truncate the tree at this depth", action.help)
+
+    def test_custom_help_text_overrides_default(self):
+        parser = argparse.ArgumentParser()
+        cc.add_max_depth_arg(parser, help_text="truncate upward from a known target instead")
+        action = next(a for a in parser._actions if a.dest == "max_depth")
+        self.assertEqual(action.help, "truncate upward from a known target instead")
+
 
 class AddNoiseTierArgsTests(unittest.TestCase):
     def test_subset_adds_only_those_flags(self):

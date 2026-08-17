@@ -78,10 +78,13 @@ def add_selection_args(parser, plural_noun, threshold_unit_help, singular_noun=N
     return selection
 
 
-def add_max_depth_arg(parser):
-    """Adds --max-depth, the tree-truncation flag every tree-rendering tool shares."""
-    parser.add_argument("--max-depth", dest="max_depth", type=int, default=None,
-                         help="truncate the tree at this depth (default: unlimited, print the whole tree)")
+def add_max_depth_arg(parser, help_text=None):
+    """Adds --max-depth, the tree-truncation flag every tree-rendering tool shares. help_text
+    defaults to the calltree tools' own root-relative wording; override it for a renderer that
+    counts depth some other way (e.g. a caller-chain tool truncating upward from a known target
+    instead of downward from a root -- "depth" isn't always root-relative)."""
+    help_text = help_text or "truncate the tree at this depth (default: unlimited, print the whole tree)"
+    parser.add_argument("--max-depth", dest="max_depth", type=int, default=None, help=help_text)
 
 
 def add_noise_tier_args(parser, tiers, all_shorthand=False):
