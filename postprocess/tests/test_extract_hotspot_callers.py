@@ -28,6 +28,12 @@ SINGLE_RANK_DIR = os.path.join(FIXTURES, "single_rank")
 # API overhead, not a CPU hotspot, so it can never be this tool's own top-N target.
 POP_REF_2RANK_DIR = os.path.join(FIXTURES, "pop_ref_2rank")
 EMPTY_DIR = os.path.join(FIXTURES, "no_timing_data")
+# Phase B fixtures, already used by the calltree tools' own kernel-attachment tests -- none use
+# Cray's "$ck_" owner-label naming, so all three exercise find_kernel_anchors()'s structural
+# fallback, not kernel_owner_label()'s name match.
+KERNEL_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_kernel_anchor")
+KERNEL_MULTI_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_kernel_multi_anchor")
+KERNEL_NO_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_kernel_no_anchor")
 
 
 def _stub_node_values(node):
@@ -70,7 +76,7 @@ class WriteReportTests(unittest.TestCase):
     def test_end_to_end_on_mpi_fixture(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "out.txt")
-            report = hc_tool.write_report(MPI_2RANK_DIR, dest, top=3)
+            report = hc_tool.write_report(MPI_2RANK_DIR, None, dest, top=3)
             self.assertTrue(os.path.isfile(dest))
             self.assertIn("Top CPU hotspots", report)
             self.assertIn("Caller chain(s) for 'compute_stencil'", report)
@@ -83,7 +89,7 @@ class WriteReportTests(unittest.TestCase):
         # own root, so its "caller chain" is just itself, not an error.
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "out.txt")
-            report = hc_tool.write_report(SINGLE_RANK_DIR, dest, top=1)
+            report = hc_tool.write_report(SINGLE_RANK_DIR, None, dest, top=1)
             self.assertIn("Caller chain(s) for 'compute_stencil'", report)
             chain_section = report[report.index("Caller chain(s) for 'compute_stencil'"):]
             self.assertIn("compute_stencil", chain_section)
@@ -92,7 +98,7 @@ class WriteReportTests(unittest.TestCase):
     def test_max_depth_truncates_a_real_three_level_chain(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "out.txt")
-            report = hc_tool.write_report(POP_REF_2RANK_DIR, dest, show_all=True, max_depth=1)
+            report = hc_tool.write_report(POP_REF_2RANK_DIR, None, dest, show_all=True, max_depth=1)
             start = report.index("=== 4. Caller chain(s) for 'MPIR_Typerep_icopy'")
             chain_section = report[start:report.index("=== 5.")]
             self.assertIn("more ancestor(s) hidden above this point", chain_section)
@@ -103,7 +109,7 @@ class WriteReportTests(unittest.TestCase):
     def test_no_max_depth_shows_the_whole_three_level_chain(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "out.txt")
-            report = hc_tool.write_report(POP_REF_2RANK_DIR, dest, show_all=True)
+            report = hc_tool.write_report(POP_REF_2RANK_DIR, None, dest, show_all=True)
             chain_section = report[report.index("Caller chain(s) for 'MPIR_Typerep_icopy'"):]
             self.assertNotIn("hidden above this point", chain_section)
             self.assertIn("main", chain_section)
@@ -113,15 +119,74 @@ class WriteReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "out.txt")
             with self.assertRaises(SystemExit):
-                hc_tool.write_report(EMPTY_DIR, dest)
+                hc_tool.write_report(EMPTY_DIR, None, dest)
 
     def test_unfiltered_ranks_by_inclusive_time(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "out.txt")
-            report = hc_tool.write_report(MPI_2RANK_DIR, dest, show_all=True, unfiltered=True)
+            report = hc_tool.write_report(MPI_2RANK_DIR, None, dest, show_all=True, unfiltered=True)
             self.assertIn("Ranked by inclusive (total) time", report)
             hotspots_section = report[report.index("=== 1."):report.index("=== 2.")]
             self.assertLess(hotspots_section.index("main"), hotspots_section.index("compute_stencil"))
+
+
+class GpuAwareWriteReportTests(unittest.TestCase):
+    """Phase B: passing a gpu_dir fuses CPU+GPU ranking and traces a hot kernel's own caller
+    chain(s) back through whichever CPU call site launched it -- exercising the real point of
+    Phase B (attach_kernel_summaries()'s collect_into + parent-linking) end to end."""
+
+    def test_single_anchor_kernel_gets_caller_chain_through_its_launch_site(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "out.txt")
+            report = hc_tool.write_report(
+                os.path.join(KERNEL_ANCHOR_DIR, "rocprof-sys"), os.path.join(KERNEL_ANCHOR_DIR, "rocprofv3"),
+                dest, show_all=True,
+            )
+        self.assertIn("Top hotspots (fused CPU+GPU)", report)
+        self.assertIn("Caller chain(s) for 'JacobiIterationKernel'", report)
+        chain_section = report[report.index("Caller chain(s) for 'JacobiIterationKernel'"):]
+        self.assertIn("main", chain_section)
+        self.assertIn("compute_stencil", chain_section)
+        self.assertIn("[GPU kernels", chain_section)
+        self.assertIn("JacobiIterationKernel", chain_section)
+
+    def test_multi_anchor_kernel_gets_one_chain_per_launch_site(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "out.txt")
+            report = hc_tool.write_report(
+                os.path.join(KERNEL_MULTI_ANCHOR_DIR, "rocprof-sys"),
+                os.path.join(KERNEL_MULTI_ANCHOR_DIR, "rocprofv3"),
+                dest, show_all=True,
+            )
+        chain_section = report[report.index("Caller chain(s) for 'JacobiIterationKernel'"):]
+        self.assertIn("call site 1 of 2", chain_section)
+        self.assertIn("call site 2 of 2", chain_section)
+        self.assertIn("compute_a", chain_section)
+        self.assertIn("compute_b", chain_section)
+
+    def test_unplaceable_kernel_shows_no_caller_chain_found_plus_fallback_section(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "out.txt")
+            report = hc_tool.write_report(
+                os.path.join(KERNEL_NO_ANCHOR_DIR, "rocprof-sys"), os.path.join(KERNEL_NO_ANCHOR_DIR, "rocprofv3"),
+                dest, show_all=True,
+            )
+        self.assertIn("no owning subroutine or launch call site found in CPU tree", report)
+        chain_section = report[report.index("Caller chain(s) for 'JacobiIterationKernel'"):]
+        self.assertIn("no caller chain found", chain_section)
+
+    def test_cpu_only_path_still_works_with_explicit_none_gpu_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "out.txt")
+            report = hc_tool.write_report(MPI_2RANK_DIR, None, dest, top=3)
+        self.assertIn("Top CPU hotspots", report)
+        self.assertNotIn("Top hotspots (fused CPU+GPU)", report)
+
+    def test_missing_gpu_data_raises_when_gpu_dir_explicitly_given(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "out.txt")
+            with self.assertRaises(SystemExit):
+                hc_tool.write_report(MPI_2RANK_DIR, os.path.join(FIXTURES, "no_timing_data"), dest)
 
 
 class MainCliTests(unittest.TestCase):
@@ -161,6 +226,15 @@ class MainCliTests(unittest.TestCase):
                 report = f.read()
         self.assertNotIn("apply_boundary", report)
         self.assertIn("compute_stencil", report)
+
+    def test_gpu_dir_auto_resolved_from_combined_parent_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "out.txt")
+            hc_tool.main([KERNEL_ANCHOR_DIR, "-o", dest, "--all"])
+            with open(dest) as f:
+                report = f.read()
+        self.assertIn("Top hotspots (fused CPU+GPU)", report)
+        self.assertIn("GPU run directory", report)
 
 
 if __name__ == "__main__":

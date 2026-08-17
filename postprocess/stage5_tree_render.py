@@ -262,20 +262,26 @@ def pair_gpu_per_rank(gpu_dir, run_dir, rank_keys):
     return None
 
 
-def attach_and_render_gpu_kernels(flat, gpu_per_rank, gpu_dir, rank_keys, is_pruned, node_values):
+def attach_and_render_gpu_kernels(flat, gpu_per_rank, gpu_dir, rank_keys, is_pruned, node_values,
+                                   collect_into=None):
     """If gpu_per_rank is given, re-derives per-rank call counts from each rank's own
     kernel_stats.csv (kernel_totals_with_counts()), mutates flat in place to attach matched
     kernels onto the tree (stage4_rocprofsys_tree.attach_kernel_summaries()), and renders the
     '=== GPU kernels ... ===' fallback table for anything that couldn't be attached. Returns
     fallback text (empty string if gpu_per_rank is None or nothing was left unattached), ending in
-    exactly its own content's newline and no more -- the caller supplies any blank line."""
+    exactly its own content's newline and no more -- the caller supplies any blank line.
+
+    collect_into is passed straight through to attach_kernel_summaries() -- omit it (the default)
+    for a caller that only renders downward via static_children; pass a list for a caller that
+    also needs to find an attached kernel's own node later by label (e.g. via
+    stage4_rocprofsys_tree.caller_chains_for_label(), which searches a flat row list)."""
     if gpu_per_rank is None:
         return ""
 
     gpu_kernel_by_rank = {
         rank_key: kernel_totals_with_counts(gpu_dir, i) for i, rank_key in enumerate(rank_keys)
     }
-    unattached = attach_kernel_summaries(flat, gpu_kernel_by_rank, is_pruned)
+    unattached = attach_kernel_summaries(flat, gpu_kernel_by_rank, is_pruned, collect_into=collect_into)
     if not unattached:
         return ""
 

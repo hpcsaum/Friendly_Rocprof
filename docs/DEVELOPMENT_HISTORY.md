@@ -46,6 +46,7 @@
 | 2026-08-17 | Plan 2.13: final comment-and-docstring audit -- roadmap step 11, the last item on the original roadmap; comment-only cleanup (no behavior change) rewriting 19 history/investigation-flavored comments (`docs/plans/...` pointers, "confirmed via real data", "the old behavior was...", bare "rule N" references) across 8 files, expanding `stage5_table_render.py`'s thin module-docstring scope, and adding a `Functions:` line to all 8 tool-level files that lacked one -- see full accounting below |
 | 2026-08-17 | Plan 2.14: consolidates `main()`'s repeated argument-handling/setup steps -- new work beyond the original 11-step roadmap; new `stage6_cli_common.py` (directory validation, `-o`/`--output` resolution, the `-n/--top`/`--threshold`/`--all` selection group, `--max-depth`, `--show-*` noise-tier flags) plus `stage6_noise_config.add_cli_argument()`/`configure_from_args()`, replacing copy-pasted argparse blocks across all 8 CLI tools with zero behavior change (confirmed via full `--help` diff and byte-identical real-data regeneration) -- see full accounting below |
 | 2026-08-17 | Plan 2.15 Phase A: new capstone tool `extract_hotspot_callers.py` (top-N CPU hotspots + each one's caller chain(s) back to a real program root) -- an architecture-validation exercise, not a roadmap item; needed exactly one new primitive (`stage4_rocprofsys_tree.caller_chains_for_label()`), everything else reused as-is; real-data testing surfaced and fixed a genuine file-preference bug (see full accounting below) |
+| 2026-08-17 | Plan 2.15 Phase B: `extract_hotspot_callers.py` gains an optional GPU-paired mode -- fuses CPU+GPU ranking (reusing `stage5_fused_hotspots_table.build_combined_view()` as-is) and traces a hot kernel's own caller chain(s) through its launching CPU call site; needed one small, additive gap-fix (a `parent` link on synthetic kernel nodes plus a `collect_into` param), after which `caller_chains_for_label()` handles kernels with zero further changes -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -2045,4 +2046,62 @@ own report generation depends on beyond the one backward-compatible helper signa
 Phase B (GPU-aware extension: fusing in GPU kernels as top-N entries and resolving their caller
 chains through their launching CPU node) is deferred to its own plan -- see
 `docs/plans/2.15-hotspot-callers-capstone.md`.
+
+## 2026-08-17 — Plan 2.15 Phase B: GPU-aware `extract_hotspot_callers.py`
+
+Detailed plan written and implemented in the same session, informed by Phase A's actual code
+(see `docs/plans/2.15-hotspot-callers-capstone.md`'s "Phase B" section) rather than the original
+sketch. The real test here was narrower than Phase A's: can the *existing* kernel-attachment
+machinery -- built entirely for rendering a kernel as a descendant in the calltree tools -- be
+reused for the opposite direction, walking a kernel's caller chain upward?
+
+**The gap, found by reading the code, not guessing**: `stage4_rocprofsys_tree.make_kernel_node()`
+built synthetic kernel nodes with no `parent` key at all -- every other row shape in this codebase
+carries one (that's what `caller_chains_for_label()` walks), but a synthetic node never needed one,
+since `render_forest()` only ever walks down through `static_children`. The fix was two small,
+fully backward-compatible additions: `make_kernel_node(label, per_rank, parent=None)` and
+`attach_kernel_summaries(rows, gpu_kernel_by_rank, is_pruned, collect_into=None)` (threaded through
+`stage5_tree_render.attach_and_render_gpu_kernels()` too) -- when `collect_into` is a list, every
+newly attached kernel node (the group wrapper and each per-kernel-name leaf) is appended to it, now
+carrying a real `parent` chain up through its anchor to the root. Every existing call site passes
+neither param, so nothing about either calltree tool's own rendered output could change -- confirmed
+by the full suite staying green, `--help` staying byte-identical for both tools, and real-data
+regeneration across all 6 `test_apps/results/` dirs staying byte-identical for both.
+
+**With that fix alone, zero new tree-walking code was needed.** Once a kernel is attached with
+`collect_into=flat`, `caller_chains_for_label(flat, kernel_name)` -- Phase A's own function,
+unmodified -- finds and walks it exactly like any CPU function: a kernel attached at multiple
+anchors (the proportional-split case) naturally yields multiple matching leaf nodes, so it already
+returns one chain per launch site; a kernel `attach_kernel_summaries()` couldn't place anywhere
+never gets added to `flat`, so the lookup naturally returns `[]` -- the same "no caller chain found"
+message Phase A already prints, no kernel-specific fallback text needed either.
+
+**Tool-level changes**: an optional second `gpu_dir` positional argument, resolved via
+`stage1_run_dirs.resolve_two_dirs()` (the same optional-GPU-pairing shape the calltree tools already
+use -- GPU-less operation stays a first-class mode, not a required pairing like
+`extract_hotspots.py`). When it resolves, the hotspot pool switches from
+`stage4_rocprofsys_flat.aggregate()`'s bare CPU entries to
+`stage5_fused_hotspots_table.build_combined_view()`'s fused CPU+GPU pool and
+`FUSED_HOTSPOTS_COLUMNS` -- both reused as literally the same objects `extract_hotspots.py` already
+renders with; when it's absent, every code path is exactly Phase A's, unchanged. `gpu_api` noise is
+hidden by default from kernel-anchor resolution (matching every other tool's default), with no new
+`--show-gpu-api` flag in this first cut -- an open question left for later, not silently decided
+against.
+
+Verified against three of the calltree tools' own existing kernel-attachment fixtures
+(`calltree_kernel_anchor`, `calltree_kernel_multi_anchor`, `calltree_kernel_no_anchor` -- none use
+Cray's `$ck_` owner-naming, so all three exercise `find_kernel_anchors()`'s structural fallback, not
+`kernel_owner_label()`'s name match): a single-anchor kernel's caller chain resolves through its one
+launch site; a multi-anchor kernel gets one chain per launch site (`compute_a`/`compute_b`, matching
+the existing proportional-split fixture); an unplaceable kernel shows "no caller chain found" plus
+the calltree tools' own "no owning subroutine or launch call site found" fallback section.
+
+Tests: 7 new `stage4_rocprofsys_tree.py` tests (`make_kernel_node()`'s `parent` default/override,
+`attach_kernel_summaries()`'s `collect_into` gathering the right nodes across single- and
+multi-anchor cases, and the integration test that actually proves the point --
+`caller_chains_for_label()` walking straight through an attached kernel with no kernel-specific
+code). 6 new `extract_hotspot_callers.py` tests (the three fixture scenarios above, CPU-only
+operation unaffected by the new `gpu_dir` param, a missing-GPU-data error when `gpu_dir` is
+explicitly given but empty, and CLI-level auto-resolution from a combined parent directory). Full
+suite: 509 tests, all passing.
 

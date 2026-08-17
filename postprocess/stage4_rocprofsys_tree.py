@@ -43,7 +43,7 @@ def is_kernel_launch(label):
     return any(s in lname for s in KERNEL_LAUNCH_LABEL_SUBSTRINGS)
 
 
-def make_kernel_node(label, per_rank):
+def make_kernel_node(label, per_rank, parent=None):
     """A synthetic (not from parse_table_file()/merge_rank_trees()) tree
     node -- same "per_rank"-keyed shape as a merged real node (see
     merge_rank_trees()) so tree_render.render_node()/aggregate_node_stats() can treat
@@ -51,8 +51,14 @@ def make_kernel_node(label, per_rank):
     (a merged real node never has populated static_children until
     attach_kernel_summaries() adds one). Empty "tags"/"structural_drop_tags" --
     a synthetic kernel-summary node is never itself subject to stage3_rocprofsys
-    noise tagging, so it's never pruned/collapsed."""
-    return {"label": label, "per_rank": per_rank, "tags": set(), "structural_drop_tags": set(), "static_children": []}
+    noise tagging, so it's never pruned/collapsed. "parent" defaults to None (the
+    shape every downward-only renderer has used until now); passing the real
+    attachment point lets caller_chains_for_label() walk up through this node like
+    any other row, which downward rendering itself never needed and still ignores."""
+    return {
+        "label": label, "parent": parent, "per_rank": per_rank,
+        "tags": set(), "structural_drop_tags": set(), "static_children": [],
+    }
 
 
 def nearest_visible_ancestor(row, is_pruned):
@@ -251,7 +257,7 @@ def kernel_owner_label(kernel_name):
     return kernel_name.split("$ck_", 1)[0]
 
 
-def _attach_kernel_group(anchor_weights, kernel_names, gpu_kernel_by_rank):
+def _attach_kernel_group(anchor_weights, kernel_names, gpu_kernel_by_rank, collect_into=None):
     """Shared attachment step for both placement strategies below: mutates
     each anchor in anchor_weights ({id(anchor): [anchor_row, weight]}) with a
     synthetic "[GPU kernels -- rocprofv3]" static_children entry, scoped to
@@ -263,7 +269,10 @@ def _attach_kernel_group(anchor_weights, kernel_names, gpu_kernel_by_rank):
     granularity so the resulting synthetic nodes get real load-balance
     columns too, not just a single combined number. Falls back to an even
     split only if every site's weight is zero (shouldn't normally happen,
-    avoids dividing by zero).
+    avoids dividing by zero). If collect_into is given (a list), every newly
+    created node (the group wrapper plus each per-kernel-name leaf) is appended
+    to it, in addition to being wired into the tree via static_children -- see
+    attach_kernel_summaries()'s own collect_into for why.
     """
     total_weight = sum(w for _a, w in anchor_weights.values())
 
@@ -281,6 +290,7 @@ def _attach_kernel_group(anchor_weights, kernel_names, gpu_kernel_by_rank):
 
         group_per_rank = {}
         kernel_nodes = []
+        group_node = make_kernel_node(label, group_per_rank, parent=anchor)
         for kernel_name in kernel_names:
             kernel_per_rank = {}
             for rank_key, totals in gpu_kernel_by_rank.items():
@@ -294,15 +304,17 @@ def _attach_kernel_group(anchor_weights, kernel_names, gpu_kernel_by_rank):
                 group_entry["count"] += scaled_count
                 group_entry["self_sum"] += scaled_total
                 group_entry["sum"] += scaled_total
-            kernel_nodes.append(make_kernel_node(kernel_name, kernel_per_rank))
+            kernel_nodes.append(make_kernel_node(kernel_name, kernel_per_rank, parent=group_node))
 
         kernel_nodes.sort(key=lambda n: -sum(v["sum"] for v in n["per_rank"].values()))
-        group_node = make_kernel_node(label, group_per_rank)
         group_node["static_children"] = kernel_nodes
         anchor.setdefault("static_children", []).append(group_node)
+        if collect_into is not None:
+            collect_into.append(group_node)
+            collect_into.extend(kernel_nodes)
 
 
-def attach_kernel_summaries(rows, gpu_kernel_by_rank, is_pruned):
+def attach_kernel_summaries(rows, gpu_kernel_by_rank, is_pruned, collect_into=None):
     """Mutates rows in place: inserts synthetic "[GPU kernels -- rocprofv3]"
     node(s) at the right place(s) in the (merged) tree. gpu_kernel_by_rank is
     {rank_key: {kernel_name: (count, total_seconds)}} -- per-rank, so the
@@ -312,6 +324,14 @@ def attach_kernel_summaries(rows, gpu_kernel_by_rank, is_pruned):
     empty set means everything was attached) -- the caller shows this
     remainder in its own top-level "no anchor" fallback section, instead of
     an all-or-nothing boolean.
+
+    collect_into, if given (a list), receives every synthetic node created this
+    call (each group wrapper plus each per-kernel-name leaf) -- these nodes are
+    otherwise reachable only via static_children, never members of `rows` itself,
+    so a caller wanting to find one later by label (e.g.
+    caller_chains_for_label(), which searches a flat row list) needs them added to
+    its own pool explicitly. Omit it (the default) for every existing use, which
+    only ever renders downward via static_children and never needs to.
 
     Two-tier placement, name match preferred over structural guessing:
     1. kernel_owner_label() extracts the enclosing subroutine the compiler
@@ -361,14 +381,14 @@ def attach_kernel_summaries(rows, gpu_kernel_by_rank, is_pruned):
             anchors[key][1] += weight
 
         if anchors:
-            _attach_kernel_group(anchors, kernel_names, gpu_kernel_by_rank)
+            _attach_kernel_group(anchors, kernel_names, gpu_kernel_by_rank, collect_into=collect_into)
         else:
             still_unattached.update(kernel_names)
 
     if still_unattached:
         anchors = find_kernel_anchors(rows, is_pruned)
         if anchors:
-            _attach_kernel_group(anchors, still_unattached, gpu_kernel_by_rank)
+            _attach_kernel_group(anchors, still_unattached, gpu_kernel_by_rank, collect_into=collect_into)
             still_unattached = set()
 
     return still_unattached

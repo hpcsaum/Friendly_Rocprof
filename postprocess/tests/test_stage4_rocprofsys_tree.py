@@ -189,6 +189,84 @@ class KernelAnchorAttributionTests(unittest.TestCase):
         self.assertEqual(noisy_wrapper["static_children"], [])
 
 
+class MakeKernelNodeParentTests(unittest.TestCase):
+    def test_parent_defaults_to_none(self):
+        node = s4t.make_kernel_node("K", {})
+        self.assertIsNone(node["parent"])
+
+    def test_parent_is_set_when_given(self):
+        anchor = make_row("compute")
+        node = s4t.make_kernel_node("K", {}, parent=anchor)
+        self.assertIs(node["parent"], anchor)
+
+
+class AttachKernelSummariesCollectIntoTests(unittest.TestCase):
+    def test_omitting_collect_into_changes_nothing(self):
+        main = make_row("main")
+        compute = make_row("compute", parent=main)
+        launch = make_row("hipLaunchKernel", parent=compute, count=1)
+        rows = [main, compute, launch]
+        unattached = s4t.attach_kernel_summaries(rows, {RANK: {"K": (1, 1.0)}}, NEVER_PRUNED)
+        self.assertEqual(unattached, set())
+        self.assertNotEqual(compute["static_children"], [])
+
+    def test_collect_into_gathers_group_and_kernel_leaf_single_anchor(self):
+        main = make_row("main")
+        compute = make_row("compute", parent=main)
+        launch = make_row("hipLaunchKernel", parent=compute, count=1)
+        rows = [main, compute, launch]
+        collected = []
+        s4t.attach_kernel_summaries(rows, {RANK: {"K": (1, 1.0)}}, NEVER_PRUNED, collect_into=collected)
+        self.assertEqual(len(collected), 2)
+        group_node, kernel_node = collected
+        self.assertEqual(group_node["label"], "[GPU kernels -- rocprofv3]")
+        self.assertIs(group_node["parent"], compute)
+        self.assertEqual(kernel_node["label"], "K")
+        self.assertIs(kernel_node["parent"], group_node)
+
+    def test_collect_into_gathers_every_group_across_multiple_anchors(self):
+        main = make_row("main")
+        compute_a = make_row("compute_a", parent=main)
+        compute_b = make_row("compute_b", parent=main)
+        launch_a = make_row("hipLaunchKernel", parent=compute_a, count=1)
+        launch_b = make_row("hipLaunchKernel", parent=compute_b, count=1)
+        rows = [main, compute_a, compute_b, launch_a, launch_b]
+        collected = []
+        s4t.attach_kernel_summaries(rows, {RANK: {"K": (2, 2.0)}}, NEVER_PRUNED, collect_into=collected)
+        # two anchors -> two (group, kernel) pairs -- equal weight gives both groups identical
+        # label text, so identity (not the label string) is what distinguishes them here.
+        self.assertEqual(len(collected), 4)
+        group_nodes = [n for n in collected if n["label"].startswith("[GPU kernels")]
+        self.assertEqual(len(group_nodes), 2)
+        self.assertIsNot(group_nodes[0], group_nodes[1])
+        self.assertNotEqual(id(group_nodes[0]["parent"]), id(group_nodes[1]["parent"]))
+
+    def test_caller_chains_for_label_walks_through_an_attached_kernel(self):
+        # The actual point of Phase B: once a kernel is attached with collect_into, its own
+        # synthetic leaf node is walkable by caller_chains_for_label() exactly like any real
+        # CPU function -- no new tree-walking code needed for this to work.
+        main = make_row("main")
+        compute = make_row("compute", parent=main)
+        launch = make_row("hipLaunchKernel", parent=compute, count=1)
+        rows = [main, compute, launch]
+        collected = []
+        s4t.attach_kernel_summaries(rows, {RANK: {"MyKernel": (1, 5.0)}}, NEVER_PRUNED, collect_into=collected)
+        rows.extend(collected)
+
+        chains = s4t.caller_chains_for_label(rows, "MyKernel")
+        self.assertEqual(len(chains), 1)
+        labels = [n["label"] for n in chains[0]]
+        self.assertEqual(labels, ["main", "compute", "[GPU kernels -- rocprofv3]", "MyKernel"])
+
+    def test_unattached_kernel_never_collected(self):
+        main = make_row("main")
+        rows = [main]
+        collected = []
+        unattached = s4t.attach_kernel_summaries(rows, {RANK: {"K": (1, 1.0)}}, NEVER_PRUNED, collect_into=collected)
+        self.assertEqual(unattached, {"K"})
+        self.assertEqual(collected, [])
+
+
 class MergeRankTreesTests(unittest.TestCase):
     def test_merges_same_label_across_ranks_by_structural_position(self):
         # Two independent single-rank trees (distinct row objects, as if
