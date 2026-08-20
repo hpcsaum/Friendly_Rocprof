@@ -8,14 +8,8 @@ Functions: build_calltree_view().
 """
 
 from stage3_rocprofsys_common import make_is_pruned, splice_by_tag
-from stage4_rocprofsys_sample_tree import (
-    attach_gpu_kernels,
-    flatten_tree,
-    load_rank_trees,
-    make_node_values,
-    merge_rank_trees,
-    pair_gpu_per_rank,
-)
+from stage4_rocprofsys_common import flatten_tree, make_node_values, merge_rank_trees
+from stage4_rocprofsys_sample_tree import attach_gpu_kernels, load_rank_trees, pair_gpu_per_rank
 from stage5_tree_render import render_calltree_text, render_gpu_kernel_fallback
 
 

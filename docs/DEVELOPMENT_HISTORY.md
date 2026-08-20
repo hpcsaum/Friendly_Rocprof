@@ -53,6 +53,7 @@
 | 2026-08-20 | Plan 3.2: renamed every `*_rocprofsys*` module to `*_rocprofsys_sample_*` (and `extract_calltree_traced.py` to `extract_wallclock_calltree.py`) to make room for the new `*_rocprofsys_trace_*` family; fixed both stage4/5 boundary gaps found in plan 3.1; documented the stage4→5 entry contract in `postprocess/README.md` -- roadmap step 1 of the plan-3.1 sequence -- see full accounting below |
 | 2026-08-20 | Plan 3.3: new `stage1_rocprofsys_trace.py` (`parse_trace_csv()`/`attach_ancestry()`) -- roadmap step 2 of the plan-3.1 sequence; a mid-review correction moved all label/count/self_sum shaping out of stage1+2 and into a later stage4 module, so this stage preserves every trace-CSV column untouched and only resolves `parent_slice_id` links -- see full accounting below |
 | 2026-08-20 | Plan 3.4: renamed `stage3_rocprofsys_sample.py` to `stage3_rocprofsys_common.py` (it turned out to have no sample-specific logic at all) and gave `tag_rows()` a `label_key` parameter instead of hardcoding `"label"`; new `stage3_rocprofsys_trace.py` -- an exact `{category: tag}` lookup (`gpu_api`/`gpu_kernel`/`gpu_memcpy`/`mpi_territory`/`other`) built from AMD's `categories.h` enum, plus a delegated, unmodified reuse of `wrapper_noise`/`compiler_runtime_noise`/`wrapper_branch_noise` for trace rows' CPU-side names -- roadmap step 3 of the plan-3.1 sequence -- see full accounting below |
+| 2026-08-20 | Plan 3.5+3.6 (merged): split `stage4_rocprofsys_common.py` out of `stage4_rocprofsys_sample_tree.py` (`merge_rank_trees`/`flatten_tree`/`caller_chains_for_label`/`aggregate_node_stats`/`make_node_values`, all format-agnostic); new `stage4_rocprofsys_trace_aggregate.py` builds and on-disk-caches one rank's canonical, tool-independent aggregate (self_sum synthesis, an exact `corr_id` kernel-to-launch-site join, intra-rank dedup via a single-rank `merge_rank_trees()` call); new thin `stage4_rocprofsys_trace_tree.py`/`stage4_rocprofsys_trace_flat.py` derive every stage5 view from that same aggregate, never re-parsing -- roadmap steps 3.5+3.6 of the plan-3.1 sequence, merged into one plan after a design correction -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -2410,4 +2411,63 @@ display name or category, so they work on tagged trace rows with zero modificati
 Verification: 23 new tests for `stage3_rocprofsys_trace.py` plus 1 for `LABEL_KEY`, full suite
 528 → 552 passing, every renamed/updated file's existing tests unaffected. See
 `docs/plans/3.4-stage3-category-tagger.md` for the full accounting, written before implementation.
+
+## 2026-08-20 — Plan 3.5+3.6: the canonical per-rank trace aggregate, its cache, and thin flat/tree consumers
+
+Roadmap steps 3.5 and 3.6 of plan 3.1's sequence, merged into one plan by direct instruction: the
+module breakdown's independent flat/tree accumulators and the caching design's "both views read
+the same cache file" claim in plan 3.1 didn't actually agree with each other, and sequencing
+caching *after* building flat+tree would have bolted it onto whatever those modules happened to
+produce, rather than designing the cached shape first. Directed correction: the aggregated table
+must be tool-independent (no filtering, no dropped rows, no tool-specific renaming), and every
+later derivation must read it directly, never re-parsing the raw trace. A second directed
+correction, folded into the same plan: every generic function the new pipeline calls from
+`stage4_rocprofsys_sample_tree.py` moves to a shared common module first, mirroring plan 3.4's
+stage3 split.
+
+**Prerequisite split**: `merge_rank_trees()`, `flatten_tree()`, `caller_chains_for_label()`,
+`aggregate_node_stats()`, `make_node_values()` moved out of `stage4_rocprofsys_sample_tree.py` into
+new `stage4_rocprofsys_common.py` -- verified directly against the source, none of them were
+sample-format-specific. The heuristic kernel-to-launch-site attachment machinery
+(`attach_gpu_kernels()`/`attach_kernel_summaries()`/`kernel_owner_label()`/`find_kernel_anchors()`/
+etc.) stayed put -- the trace pipeline's exact `corr_id` join replaces it entirely, nothing to
+share. Every real import site (`stage5_calltree_view.py`, `stage5_wallclock_calltree_view.py`,
+`extract_hotspot_callers.py`, plus `test_stage5_tree_render.py`'s own module-loading fixture, found
+only by running the suite -- it loads `stage4_rocprofsys_sample_tree.py` by file path and calls
+`s4t.make_node_values()` directly, a usage the initial import-site grep for `from ... import`
+statements couldn't see) updated to import the moved functions from the new module instead.
+
+**A real gap found mid-implementation, not anticipated by the approved plan**: the plan said
+`merge_rank_trees()` would be "imported unchanged," but it hardcodes `row["label"]` -- trace rows
+are keyed by `"name"` (plan 3.4 deliberately chose not to alias/mutate trace rows into a `label`
+key). Resolved exactly the way plan 3.4 resolved the identical tension for `tag_rows()`:
+`merge_rank_trees()` gained a `label_key="label"` parameter (default preserves every existing
+caller; the trace aggregate builder passes `label_key=stage1_rocprofsys_trace.LABEL_KEY`) instead
+of mutating rows to fit the function's assumption.
+
+**As built**: `stage4_rocprofsys_trace_aggregate.py`'s `build_rank_aggregate(csv_paths, rank_key)`
+is the one expensive path for one rank -- parse+ancestry+tag (unchanged), self_sum/count/sum
+synthesis from each row's own structural children (before any reparenting, since a GPU dispatch
+typically runs concurrently with, not nested inside, its host launch call), an exact `corr_id`
+join reparenting each kernel-dispatch row onto its `gpu_api`-tagged launch row (no match -> stays a
+root; more than one match -> warns once and stays unattached, rather than guess), and a single-rank
+`merge_rank_trees()` call that collapses repeated same-position calls (confirmed directly: nothing
+in its loop requires more than one rank) followed by a new ~15-line reshape function pulling the
+merged tree's nested `per_rank` entry back out to flat, parent-linked rows -- the "new glue
+function" plan 3.1 flagged as the one real gap in "stage4 is reusable as-is," now concretely
+designed rather than left as a to-do. `get_rank_aggregate()` wraps this in an on-disk cache
+(`<rank_key>.agg.json`, mtime-checked, best-effort fallback to a fresh build on any read failure --
+no existing cache or set-to-JSON convention existed anywhere in this codebase to follow, confirmed
+by direct search). `stage4_rocprofsys_trace_tree.py` and `stage4_rocprofsys_trace_flat.py` are
+genuinely thin: both call `get_rank_aggregate()` per rank and derive their view (cross-rank merged
+tree; global flat entries; per-rank label->value; per-rank timing summary) purely from its output --
+confirmed end-to-end that `stage5_load_imbalance_table.compute_load_imbalance()` and
+`stage5_pop_metrics_table.compute_metrics_from_per_rank()` accept the flat module's output with
+zero modification.
+
+Verification: 5 new fixtures (repeated-same-position-call dedup, corr_id exact/no-match/ambiguous,
+a two-rank pair), 24 new tests across the common-module split, the aggregate builder/cache, and the
+two thin consumers, full suite 552 → 578 passing. See
+`docs/plans/3.5-trace-aggregate-and-cache.md` for the full accounting, written before
+implementation (with one header-note divergence recorded there, per `CLAUDE.md`'s convention).
 

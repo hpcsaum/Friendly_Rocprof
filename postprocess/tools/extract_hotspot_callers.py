@@ -35,16 +35,9 @@ import extract_CPU_hotspots as cpu_tool
 import extract_GPU_hotspots as gpu_tool
 from stage1_run_dirs import resolve_two_dirs
 from stage3_rocprofsys_common import make_is_pruned
+from stage4_rocprofsys_common import caller_chains_for_label, flatten_tree, make_node_values, merge_rank_trees
 from stage4_rocprofsys_sample_flat import aggregate
-from stage4_rocprofsys_sample_tree import (
-    attach_gpu_kernels,
-    caller_chains_for_label,
-    flatten_tree,
-    load_rank_trees,
-    make_node_values,
-    merge_rank_trees,
-    pair_gpu_per_rank,
-)
+from stage4_rocprofsys_sample_tree import attach_gpu_kernels, load_rank_trees, pair_gpu_per_rank
 from stage5_calltree_view import strip_wrapper_noise
 from stage5_cpu_hotspots_table import CPU_HOTSPOTS_COLUMNS
 from stage5_fused_hotspots_table import FUSED_HOTSPOTS_COLUMNS, build_combined_view

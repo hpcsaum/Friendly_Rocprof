@@ -1,19 +1,21 @@
-"""Stage 4 (merge ranks / load-balance) for the tree-shaped calltree tools, plus rank loading,
-GPU-kernel-data pairing, and GPU kernel attachment.
+"""Stage 4 (rank loading / load-balance) for the tree-shaped calltree tools, plus GPU-kernel-data
+pairing and GPU kernel attachment specific to the sample (timemory text-table) pipeline.
 
-Scope: everything that assembles a per-rank or merged tree before it's rendered -- per-rank
-loading (parse + ancestry + noise-tagging, load_rank_trees()), merging N per-rank call trees into
-one by tree position (not by label -- see stage4_rank_merge_math.py, used here and by the flat,
-by-label merge the hotspots tools use instead), computing avg/std_dev/min/max/calls statistics per
-node across ranks, and attaching real GPU kernel data (from rocprofv3) onto the CPU subroutine
-that actually launched it. Has no opinion on which nodes get rendered or how, or on any one tool's
-own pruning/collapsing rules -- each tool injects its own is_pruned()/collapses_children()
-callables; see stage5_tree_render.py for the rendering side (including
-render_gpu_kernel_fallback(), the rendering half of what used to be one mixed
+Scope: per-rank loading (parse + ancestry + noise-tagging, load_rank_trees()) and attaching real
+GPU kernel data (from rocprofv3) onto the CPU subroutine that actually launched it, via a
+name-match-then-structural-proximity heuristic -- rocprofv3's kernel_stats.csv carries no tree
+position of its own, so this has to guess. (The trace-CSV pipeline's own build_rank_aggregate() in
+stage4_rocprofsys_trace_aggregate.py does the equivalent attachment via an exact `corr_id` join
+instead -- no heuristic needed there.) The generic tree-merge/flatten/stats engine this file used
+to also hold (merge_rank_trees(), flatten_tree(), caller_chains_for_label(),
+aggregate_node_stats(), make_node_values()) moved to stage4_rocprofsys_common.py, since none of it
+was actually sample-format-specific and the trace pipeline needs it too. Has no opinion on which
+nodes get rendered or how, or on any one tool's own pruning/collapsing rules -- each tool injects
+its own is_pruned()/collapses_children() callables; see stage5_tree_render.py for the rendering
+side (including render_gpu_kernel_fallback(), the rendering half of what used to be one mixed
 attach-and-render function here).
 
-Functions: load_rank_trees(), kernel_totals_with_counts(), pair_gpu_per_rank(), merge_rank_trees(),
-flatten_tree(), caller_chains_for_label(), aggregate_node_stats(), make_node_values(),
+Functions: load_rank_trees(), kernel_totals_with_counts(), pair_gpu_per_rank(),
 attach_gpu_kernels(), attach_kernel_summaries(), kernel_owner_label(), find_kernel_anchors(),
 unattached_kernel_per_rank(), make_kernel_node(), nearest_visible_ancestor(), is_kernel_launch().
 """
@@ -25,7 +27,6 @@ from stage1_rocprofsys_sample import PID_SUFFIX_RE, parse_table_file
 from stage1_rocprofv3 import parse_kernel_stats_csv
 from stage2_rocprofsys_sample import attach_ancestry
 from stage3_rocprofsys_common import tag_rows
-from stage4_rank_merge_math import stats_across_ranks
 from stage4_rocprofv3 import aggregate_per_rank
 
 
@@ -158,147 +159,6 @@ def nearest_visible_ancestor(row, is_pruned):
     while node is not None and is_pruned(node):
         node = node["parent"]
     return node
-
-
-def merge_rank_trees(ranks):
-    """Merges N per-rank call trees (as returned by a tool's own
-    load_rank_trees(): a list of (rank_key, rows, roots) tuples, each rows
-    entry carrying "parent"/"label"/"count"/"self_sum"/"sum"/"tags"/etc.) into
-    ONE call tree -- a global view instead of one tree per rank.
-
-    Matching is purely structural, by label at each tree level, walked
-    top-down per rank: the same binary produces the same call structure on
-    every rank, so "the node with this label under this already-matched
-    parent" is a reliable identity across ranks, even though each rank's row
-    objects are completely independent (parsed from separate files, never
-    the same Python object). A rank missing a subtree entirely (e.g. an
-    error path only one rank hit) simply contributes no per_rank entry
-    there -- aggregate_node_stats() then correctly treats that rank as 0 for
-    every metric at that node, the same "missing is real, not skipped" rule
-    extract_CPU_hotspots.compute_load_imbalance() already uses elsewhere in
-    this codebase, not reinvented here.
-
-    Returns a list of merged root nodes. Each merged node has: "label",
-    "parent" (a merged node or None -- same shape real rows use, so
-    nearest_visible_ancestor() works unchanged), "children" ({label: merged
-    child}, insertion-ordered by first-seen rank), "tags"/"structural_drop_tags"
-    (the union of every contributing rank's own stage3_rocprofsys_common tag sets for
-    this code location -- these are properties of a code location, not really
-    rank-dependent, so union is a safe, conservative merge), and "per_rank"
-    ({rank_key: {"count", "self_sum", "sum"}}, one entry per rank that had a
-    row at this exact tree position).
-    """
-    merged_roots = {}
-
-    for rank_key, rows, roots in ranks:
-        children_by_parent_id = {}
-        for row in rows:
-            parent = row["parent"]
-            if parent is not None:
-                children_by_parent_id.setdefault(id(parent), []).append(row)
-
-        def walk(row, merged_parent, merged_siblings):
-            merged_node = merged_siblings.get(row["label"])
-            if merged_node is None:
-                merged_node = {
-                    "label": row["label"], "parent": merged_parent, "children": {},
-                    "tags": set(), "structural_drop_tags": set(),
-                    "per_rank": {}, "static_children": [],
-                }
-                merged_siblings[row["label"]] = merged_node
-
-            merged_node["tags"] |= row.get("tags", set())
-            merged_node["structural_drop_tags"] |= row.get("structural_drop_tags", set())
-
-            entry = merged_node["per_rank"].setdefault(rank_key, {"count": 0, "self_sum": 0.0, "sum": 0.0})
-            entry["count"] += row["count"]
-            entry["self_sum"] += row["self_sum"]
-            entry["sum"] += row["sum"]
-
-            for child in children_by_parent_id.get(id(row), []):
-                walk(child, merged_node, merged_node["children"])
-
-        for root in roots:
-            walk(root, None, merged_roots)
-
-    return list(merged_roots.values())
-
-
-def flatten_tree(roots):
-    """Every merged node reachable via "children", pre-order -- the flat,
-    parent-linked list tree_render.build_children_map()/find_kernel_anchors() expect,
-    the same shape stage1_rocprofsys_sample.parse_table_file() + stage2_rocprofsys_sample.attach_ancestry()
-    give a single rank's own rows (merge_rank_trees()'s nodes carry "parent" too, for
-    exactly this reason)."""
-    flat = []
-
-    def visit(node):
-        flat.append(node)
-        for child in node["children"].values():
-            visit(child)
-
-    for root in roots:
-        visit(root)
-    return flat
-
-
-def caller_chains_for_label(rows, target_label):
-    """Every distinct root-to-target ancestor chain for rows matching target_label -- the
-    inverse walk of flatten_tree()/render_forest() (both go root-to-descendants): a function
-    called from N different call sites returns N chains, each a list of rows from the real root
-    down to (and including) the matching row itself, walked via "parent" links alone (rows is any
-    flat list where each entry's "parent" is another row in the same list, or None -- normally
-    flatten_tree()'s output). A label with no matching row anywhere (never sampled/instrumented,
-    or spliced away as noise before merging) returns an empty list, not an error -- absence is a
-    real, reportable fact for the caller, not a bug here."""
-    chains = []
-    for row in rows:
-        if row["label"] != target_label:
-            continue
-        chain = [row]
-        node = row["parent"]
-        while node is not None:
-            chain.append(node)
-            node = node["parent"]
-        chain.reverse()
-        chains.append(chain)
-    return chains
-
-
-def aggregate_node_stats(per_rank, rank_keys):
-    """{"calls_avg", "self_avg", "self_std", "self_min", "self_max",
-    "total_avg"} for one merged (or synthetic kernel) node, across every
-    rank in rank_keys -- NOT just the ranks present in per_rank: a rank
-    missing from per_rank genuinely spent 0 time/0 calls here, and counts as
-    0 in every statistic (see merge_rank_trees()'s docstring) rather than
-    being omitted, which would understate real load imbalance.
-    """
-    counts = [per_rank.get(rk, {}).get("count", 0) for rk in rank_keys]
-    selfs = [per_rank.get(rk, {}).get("self_sum", 0.0) for rk in rank_keys]
-    totals = [per_rank.get(rk, {}).get("sum", 0.0) for rk in rank_keys]
-    self_stats = stats_across_ranks(selfs)
-    return {
-        "calls_avg": stats_across_ranks(counts)["avg"],
-        "self_avg": self_stats["avg"],
-        "self_std": self_stats["std_dev"],
-        "self_min": self_stats["min"],
-        "self_max": self_stats["max"],
-        "total_avg": stats_across_ranks(totals)["avg"],
-    }
-
-
-def make_node_values(rank_keys):
-    """Returns a node_values(node) callable (see tree_render.render_node()) bound to a
-    fixed list of rank keys -- the same function works for a real merged
-    node or a synthetic kernel node (make_kernel_node()), since both carry
-    the same "per_rank" shape."""
-    def node_values(node):
-        stats = aggregate_node_stats(node["per_rank"], rank_keys)
-        return (
-            stats["calls_avg"], stats["self_avg"], stats["self_std"],
-            stats["self_min"], stats["self_max"], stats["total_avg"],
-        )
-    return node_values
 
 
 def find_kernel_anchors(rows, is_pruned):

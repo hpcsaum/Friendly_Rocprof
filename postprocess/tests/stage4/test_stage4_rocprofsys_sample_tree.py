@@ -15,6 +15,7 @@ sys.modules["stage4_rocprofsys_sample_tree"] = s4t
 spec.loader.exec_module(s4t)
 
 from stage1_run_dirs import resolve_run_dirs  # noqa: E402  (needs sys.path insert above first)
+from stage4_rocprofsys_common import caller_chains_for_label, flatten_tree, merge_rank_trees  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 MPI_2RANK_DIR = os.path.join(FIXTURES, "mpi_2rank")
@@ -32,7 +33,8 @@ def make_row(label, parent=None, count=1, self_sum=0.0, total_sum=None, gpu=Fals
     file builds its own tiny tree directly, so the shared module's math
     (kernel attribution, rendering, aggregation) can be exercised in
     isolation from any one tool's own filtering rules or from
-    merge_rank_trees() itself (covered separately in MergeRankTreesTests)."""
+    merge_rank_trees() itself (covered separately in
+    test_stage4_rocprofsys_common.MergeRankTreesTests)."""
     total_sum = total_sum if total_sum is not None else self_sum
     return {
         "label": label, "parent": parent, "children": {}, "static_children": [],
@@ -262,7 +264,7 @@ class AttachKernelSummariesCollectIntoTests(unittest.TestCase):
         s4t.attach_kernel_summaries(rows, {RANK: {"MyKernel": (1, 5.0)}}, NEVER_PRUNED, collect_into=collected)
         rows.extend(collected)
 
-        chains = s4t.caller_chains_for_label(rows, "MyKernel")
+        chains = caller_chains_for_label(rows, "MyKernel")
         self.assertEqual(len(chains), 1)
         labels = [n["label"] for n in chains[0]]
         self.assertEqual(labels, ["main", "compute", "[GPU kernels -- rocprofv3]", "MyKernel"])
@@ -274,102 +276,6 @@ class AttachKernelSummariesCollectIntoTests(unittest.TestCase):
         unattached = s4t.attach_kernel_summaries(rows, {RANK: {"K": (1, 1.0)}}, NEVER_PRUNED, collect_into=collected)
         self.assertEqual(unattached, {"K"})
         self.assertEqual(collected, [])
-
-
-class MergeRankTreesTests(unittest.TestCase):
-    def test_merges_same_label_across_ranks_by_structural_position(self):
-        # Two independent single-rank trees (distinct row objects, as if
-        # parsed from two separate files) sharing the same "main" ->
-        # "compute" structure must merge into ONE node per position, with
-        # both ranks' contributions kept separately in per_rank.
-        main_a = {"label": "main", "parent": None, "count": 1, "self_sum": 0.0, "sum": 10.0, "gpu": False}
-        compute_a = {"label": "compute", "parent": main_a, "count": 5, "self_sum": 1.0, "sum": 1.0, "gpu": False}
-        main_b = {"label": "main", "parent": None, "count": 1, "self_sum": 0.0, "sum": 20.0, "gpu": False}
-        compute_b = {"label": "compute", "parent": main_b, "count": 7, "self_sum": 3.0, "sum": 3.0, "gpu": False}
-
-        ranks = [
-            ("rankA", [main_a, compute_a], [main_a]),
-            ("rankB", [main_b, compute_b], [main_b]),
-        ]
-        merged_roots = s4t.merge_rank_trees(ranks)
-        self.assertEqual(len(merged_roots), 1)
-        merged_main = merged_roots[0]
-        self.assertEqual(merged_main["label"], "main")
-        self.assertEqual(set(merged_main["per_rank"].keys()), {"rankA", "rankB"})
-
-        merged_compute = merged_main["children"]["compute"]
-        self.assertEqual(merged_compute["per_rank"]["rankA"]["self_sum"], 1.0)
-        self.assertEqual(merged_compute["per_rank"]["rankB"]["self_sum"], 3.0)
-        self.assertIs(merged_compute["parent"], merged_main)
-
-    def test_tags_unioned_across_ranks(self):
-        row_a = {"label": "start_thread", "parent": None, "count": 1, "self_sum": 1.0, "sum": 1.0, "tags": set()}
-        row_b = {"label": "start_thread", "parent": None, "count": 1, "self_sum": 1.0, "sum": 1.0, "tags": {"gpu_api"}}
-        ranks = [("rankA", [row_a], [row_a]), ("rankB", [row_b], [row_b])]
-        merged_roots = s4t.merge_rank_trees(ranks)
-        self.assertEqual(merged_roots[0]["tags"], {"gpu_api"})
-
-
-class AggregateNodeStatsTests(unittest.TestCase):
-    def test_missing_rank_counts_as_zero_not_omitted(self):
-        per_rank = {"r0": {"count": 10, "self_sum": 2.0, "sum": 2.0}}
-        stats = s4t.aggregate_node_stats(per_rank, ["r0", "r1", "r2"])
-        self.assertAlmostEqual(stats["self_avg"], 2.0 / 3)
-        self.assertAlmostEqual(stats["self_min"], 0.0)
-        self.assertAlmostEqual(stats["self_max"], 2.0)
-
-    def test_std_dev_and_min_max(self):
-        per_rank = {
-            "r0": {"count": 1, "self_sum": 1.0, "sum": 1.0},
-            "r1": {"count": 1, "self_sum": 3.0, "sum": 3.0},
-            "r2": {"count": 1, "self_sum": 5.0, "sum": 5.0},
-        }
-        stats = s4t.aggregate_node_stats(per_rank, ["r0", "r1", "r2"])
-        self.assertAlmostEqual(stats["self_avg"], 3.0)
-        self.assertAlmostEqual(stats["self_std"], 1.632993161855452)
-        self.assertAlmostEqual(stats["self_min"], 1.0)
-        self.assertAlmostEqual(stats["self_max"], 5.0)
-
-
-class CallerChainsForLabelTests(unittest.TestCase):
-    def test_single_call_site_returns_one_root_to_target_chain(self):
-        main = make_row("main")
-        compute = make_row("compute", parent=main)
-        target = make_row("hot_function", parent=compute)
-        rows = [main, compute, target]
-
-        chains = s4t.caller_chains_for_label(rows, "hot_function")
-        self.assertEqual(len(chains), 1)
-        self.assertEqual([n["label"] for n in chains[0]], ["main", "compute", "hot_function"])
-
-    def test_two_distinct_call_sites_return_two_chains(self):
-        main = make_row("main")
-        compute_a = make_row("compute_a", parent=main)
-        compute_b = make_row("compute_b", parent=main)
-        target_a = make_row("hot_function", parent=compute_a)
-        target_b = make_row("hot_function", parent=compute_b)
-        rows = [main, compute_a, compute_b, target_a, target_b]
-
-        chains = s4t.caller_chains_for_label(rows, "hot_function")
-        self.assertEqual(len(chains), 2)
-        labels = {tuple(n["label"] for n in chain) for chain in chains}
-        self.assertEqual(labels, {
-            ("main", "compute_a", "hot_function"),
-            ("main", "compute_b", "hot_function"),
-        })
-
-    def test_no_match_returns_empty_list(self):
-        main = make_row("main")
-        rows = [main]
-        self.assertEqual(s4t.caller_chains_for_label(rows, "never_called"), [])
-
-    def test_target_is_a_root_returns_single_node_chain(self):
-        main = make_row("main")
-        rows = [main]
-        chains = s4t.caller_chains_for_label(rows, "main")
-        self.assertEqual(len(chains), 1)
-        self.assertEqual([n["label"] for n in chains[0]], ["main"])
-        self.assertIsNone(chains[0][0]["parent"])
 
 
 class LoadRankTreesTests(unittest.TestCase):
@@ -451,8 +357,8 @@ class AttachGpuKernelsTests(unittest.TestCase):
         cpu_dir, gpu_dir = resolve_run_dirs(run_dir)
         ranks = s4t.load_rank_trees(cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt")
         rank_keys = [rk for rk, _rows, _roots in ranks]
-        merged_roots = s4t.merge_rank_trees(ranks)
-        flat = s4t.flatten_tree(merged_roots)
+        merged_roots = merge_rank_trees(ranks)
+        flat = flatten_tree(merged_roots)
         gpu_per_rank = s4t.pair_gpu_per_rank(gpu_dir, run_dir, rank_keys)
         return flat, rank_keys, gpu_dir, gpu_per_rank
 

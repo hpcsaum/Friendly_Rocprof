@@ -16,13 +16,18 @@ sys.modules["stage5_tree_render"] = tr
 spec.loader.exec_module(tr)
 
 # render_forest() takes a node_values(node) callable -- in real usage this always
-# comes from stage4_rocprofsys_sample_tree.make_node_values(), so the fixture here uses the
+# comes from stage4_rocprofsys_common.make_node_values(), so the fixture here uses the
 # same real function rather than a stand-in, mirroring production code's own
 # dependency between the two modules.
 spec4 = importlib.util.spec_from_file_location("stage4_rocprofsys_sample_tree", os.path.join(POSTPROCESS_DIR, "stage4", "stage4_rocprofsys_sample_tree.py"))
 s4t = importlib.util.module_from_spec(spec4)
 sys.modules["stage4_rocprofsys_sample_tree"] = s4t
 spec4.loader.exec_module(s4t)
+
+spec4c = importlib.util.spec_from_file_location("stage4_rocprofsys_common", os.path.join(POSTPROCESS_DIR, "stage4", "stage4_rocprofsys_common.py"))
+s4c = importlib.util.module_from_spec(spec4c)
+sys.modules["stage4_rocprofsys_common"] = s4c
+spec4c.loader.exec_module(s4c)
 
 from stage1_run_dirs import resolve_run_dirs  # noqa: E402  (needs sys.path insert above first)
 
@@ -46,7 +51,7 @@ def make_row(label, parent=None, count=1, self_sum=0.0, total_sum=None, gpu=Fals
 
 
 NEVER_PRUNED = lambda node: False  # noqa: E731
-DEFAULT_NODE_VALUES = s4t.make_node_values([RANK])
+DEFAULT_NODE_VALUES = s4c.make_node_values([RANK])
 DEFAULT_HEADERS = [("CALLS", 8, "d"), ("SELF(s)", 12, ".6f"), ("TOTAL(s)", 12, ".6f")]
 
 
@@ -168,9 +173,9 @@ class RenderGpuKernelFallbackTests(unittest.TestCase):
         cpu_dir, gpu_dir = resolve_run_dirs(run_dir)
         ranks = s4t.load_rank_trees(cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt")
         rank_keys = [rk for rk, _rows, _roots in ranks]
-        merged_roots = s4t.merge_rank_trees(ranks)
-        flat = s4t.flatten_tree(merged_roots)
-        node_values = s4t.make_node_values(rank_keys)
+        merged_roots = s4c.merge_rank_trees(ranks)
+        flat = s4c.flatten_tree(merged_roots)
+        node_values = s4c.make_node_values(rank_keys)
         gpu_per_rank = s4t.pair_gpu_per_rank(gpu_dir, run_dir, rank_keys)
         unattached, gpu_kernel_by_rank = s4t.attach_gpu_kernels(flat, gpu_per_rank, gpu_dir, rank_keys, NEVER_PRUNED)
         return unattached, gpu_kernel_by_rank, node_values
