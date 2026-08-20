@@ -51,6 +51,7 @@
 | 2026-08-17 | Plan 2.17: split the root `README.md` into a beginner-facing user guide (what each tool does, how to run it) and a new `postprocess/README.md` developer guide (pipeline philosophy, the `stage1`-`stage6` architecture, noise-classification and kernel-attachment mechanisms, how to build a new tool) -- also closed two documentation gaps found along the way: `extract_hotspot_callers.py` had no README coverage at all, and `--extra-noise-config` (used by 7 of the 9 tools) was never mentioned anywhere |
 | 2026-08-20 | Plan 3.1: architecture-only plan for a new post-processing family reading Perfetto trace-CSV data instead of rocprof-sys's timemory text tables -- opens major phase `3.x`; found and documented a pre-existing stage4/5 boundary gap in the tree/POP-metrics backends, and a categories.h-documented AMD category enum far larger than one sample trace showed -- see full accounting below |
 | 2026-08-20 | Plan 3.2: renamed every `*_rocprofsys*` module to `*_rocprofsys_sample_*` (and `extract_calltree_traced.py` to `extract_wallclock_calltree.py`) to make room for the new `*_rocprofsys_trace_*` family; fixed both stage4/5 boundary gaps found in plan 3.1; documented the stage4→5 entry contract in `postprocess/README.md` -- roadmap step 1 of the plan-3.1 sequence -- see full accounting below |
+| 2026-08-20 | Plan 3.3: new `stage1_rocprofsys_trace.py` (`parse_trace_csv()`/`attach_ancestry()`) -- roadmap step 2 of the plan-3.1 sequence; a mid-review correction moved all label/count/self_sum shaping out of stage1+2 and into a later stage4 module, so this stage preserves every trace-CSV column untouched and only resolves `parent_slice_id` links -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -2316,4 +2317,44 @@ against rewriting the historical record). Full accounting in
 (plan mode should have produced this file before any code changed, per `CLAUDE.md`'s own
 convention) caught when asked directly, corrected by writing it retroactively rather than left
 undocumented.
+
+## 2026-08-20 — Plan 3.3: `stage1_rocprofsys_trace.py`, the trace-CSV reader
+
+Roadmap step 2 of plan 3.1's sequence -- the first genuinely new module for the trace-CSV family
+(no existing file touched). Plan mode was used before any code changed this time, per the
+process-gap correction from plan 3.2's own writeup.
+
+**A real design correction found mid-review, before implementation, not after**: the plan as
+first drafted had `stage1_rocprofsys_trace.py` reshape data toward `merge_rank_trees()`'s needs
+directly -- dropping `tid`/`pid`/`depth`, carving GPU-arg columns into a separate `gpu_args`
+sub-dict, synthesizing `count`/`self_sum`/renaming `name`→`label`. Corrected directly: stage1+2
+should preserve every CSV column untouched; deciding what a "count" or "self time" means for a
+given consumer is stage4's job (a later plan, `stage4_rocprofsys_trace_tree.py`), matching how the
+*existing* text-table stage1 only happens to output `label`/`count`/`sum`/`self_sum` directly
+because the raw timemory table already has that exact shape natively -- not because shaping data
+for stage4 is stage1's job in general. Two narrower follow-up decisions confirmed directly:
+`self_sum` derivation (needs a children map, i.e. needs tree-building machinery) stays out of this
+module entirely; unit conversion (`ts`/`dur` nanoseconds → seconds, matching every other stage's
+convention) **does** happen here, as a lossless, reversible normalization rather than a loss of
+information.
+
+**As built**: `parse_trace_csv(paths)` (a single path or list of paths, supporting the confirmed
+"single full CSV or the complete category-partitioned set for one rank" input shape) reads via
+stdlib `csv.DictReader`, preserving every column on every row (empty cell → `None`, otherwise left
+as the raw CSV string) except `slice_id`/`parent_slice_id` (cast to `int`, needed for the lookup
+below) and `ts`/`dur` (converted to seconds). `attach_ancestry(rows)` resolves `parent_slice_id`
+into a real `parent` object reference via a `slice_id` lookup -- no children map, no self_sum, no
+shape decisions of any kind. A row whose `parent_slice_id` doesn't match anything in the given
+data (the partial-input case -- e.g. only one of a category-partitioned file set was supplied)
+gets `parent = None` and is counted toward one summary warning, matching
+`pair_gpu_per_rank()`'s existing warning style, rather than raising or silently guessing.
+
+New fixtures (`trace_single_rank`, `trace_partitioned_rank`, `trace_partial_gpu_only`) exercise a
+multi-level tree with a `corr_id`-linked HIP-launch/kernel-dispatch pair and a comma-bearing
+`grid_size` value (stresses CSV quoting), the partitioned-file-concatenation case, and the
+missing-parent warning path.
+
+Verification: 13 new tests, full suite 515 → 528 passing, no existing file touched. See
+`docs/plans/3.3-trace-csv-reader.md` for the full accounting, written before implementation this
+time.
 
