@@ -15,9 +15,16 @@ column, including the long, sparse tail of GPU-dispatch-specific columns, passes
 as the CSV gave it.
 
 Functions: parse_trace_csv(), attach_ancestry().
+
+LABEL_KEY names the column these rows use as their human-readable display name ("name" here,
+unlike the sample/text-table pipeline's "label") -- exported so a caller threading rows into
+stage3_rocprofsys_common.tag_rows()'s label_key parameter has a single declared source of truth
+for it, rather than hardcoding the string "name" itself.
 """
 
 import csv
+
+LABEL_KEY = "name"
 
 # slice_id/parent_slice_id need to be real ints to work as attach_ancestry()'s lookup keys;
 # ts/dur get the nanoseconds-to-seconds conversion every other stage's "sum"/"self_sum"

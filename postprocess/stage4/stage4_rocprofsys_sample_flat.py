@@ -16,7 +16,7 @@ import os
 
 from stage1_rocprofsys_sample import PID_SUFFIX_RE, parse_table_file
 from stage2_rocprofsys_sample import attach_ancestry
-from stage3_rocprofsys_sample import remove_tagged_subtrees, tag_rows
+from stage3_rocprofsys_common import remove_tagged_subtrees, tag_rows
 
 NON_TIMING_FILES = {"available.txt", "instrumented.txt", "excluded.txt", "overlapping.txt"}
 # rocprof-sys's default config (ROCPROFSYS_FLAT_PROFILE=0, sampling on) writes THREE
@@ -64,7 +64,7 @@ def scan_ranks(output_dir):
 
     Rows tagged wrapper_noise, compiler_runtime_noise, wrapper_branch_noise, other, or
     mpi_territory-via-ancestor-only (a thread-root row whose own label
-    isn't itself an MPI call -- see stage3_rocprofsys_sample.tag_rows()'s
+    isn't itself an MPI call -- see stage3_rocprofsys_common.tag_rows()'s
     self_tags/tags distinction) are dropped entirely here, before either
     cpu/gpu classification or merging -- every consumer of this function
     (aggregate(), aggregate_per_rank(), and extract_pop_metrics.py's own

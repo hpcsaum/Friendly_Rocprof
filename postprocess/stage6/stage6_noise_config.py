@@ -3,7 +3,7 @@ every stage-3-consuming tool shares for the lifetime of one process, from an opt
 file layered on top of it.
 
 Scope: the one place default_noise_patterns.json (or a user's own diff file) is read.
-stage3_rocprofsys_sample.py's tag_rows() reads the result via tag_defs() -- a plain one-directional
+stage3_rocprofsys_common.py's tag_rows() reads the result via tag_defs() -- a plain one-directional
 dependency (stage3 -> stage6), never the reverse, and no other module in this package reads either
 file directly. A process-wide global, not threaded as a parameter through every function between a
 tool's main() and tag_rows() -- every real invocation of this codebase is a single, one-shot CLI
@@ -23,7 +23,7 @@ _TAG_DEFS = None
 
 
 def load_default_patterns(path=None):
-    """The bundled tag -> pattern-definition mapping (see stage3_rocprofsys_sample.py's module docstring
+    """The bundled tag -> pattern-definition mapping (see stage3_rocprofsys_common.py's module docstring
     for the schema)."""
     with open(path or DEFAULT_PATTERNS_PATH) as f:
         return json.load(f)
@@ -99,7 +99,7 @@ def _apply_diff(patterns, extra_config_path):
                     "pattern tag (derived tags like wrapper_branch_noise have no patterns to "
                     f"{op}; only \"disable\" applies to them)"
                 )
-            # Matching is against the row's own lowercased label (see stage3_rocprofsys_sample.py's
+            # Matching is against the row's own lowercased label (see stage3_rocprofsys_common.py's
             # _label_matches()), which only works case-insensitively if the pattern side is
             # already lowercase too -- true of every bundled pattern today by convention, but not
             # guaranteed for a user's own input, so it's normalized here rather than silently

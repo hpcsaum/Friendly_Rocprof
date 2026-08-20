@@ -6,18 +6,18 @@ import tempfile
 import unittest
 
 POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-MODULE_PATH = os.path.join(POSTPROCESS_DIR, "stage3", "stage3_rocprofsys_sample.py")
+MODULE_PATH = os.path.join(POSTPROCESS_DIR, "stage3", "stage3_rocprofsys_common.py")
 
-# stage3_rocprofsys_sample.py does a plain top-level "from stage6_noise_config import ...", relying on
+# stage3_rocprofsys_common.py does a plain top-level "from stage6_noise_config import ...", relying on
 # its own directory being on sys.path -- true automatically when it's run directly, but not when
 # loaded here by explicit file path, so replicate that manually (same technique as other test
 # files in this suite).
 sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
 import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
 
-spec = importlib.util.spec_from_file_location("stage3_rocprofsys_sample", MODULE_PATH)
+spec = importlib.util.spec_from_file_location("stage3_rocprofsys_common", MODULE_PATH)
 s3 = importlib.util.module_from_spec(spec)
-sys.modules["stage3_rocprofsys_sample"] = s3
+sys.modules["stage3_rocprofsys_common"] = s3
 spec.loader.exec_module(s3)
 
 import stage6_noise_config  # noqa: E402  (needs sys.path insert above first)

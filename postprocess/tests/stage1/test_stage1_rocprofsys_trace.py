@@ -137,5 +137,10 @@ class AttachAncestryTests(unittest.TestCase):
         self.assertIn("1 row(s)", warnings[0])
 
 
+class LabelKeyTests(unittest.TestCase):
+    def test_label_key_names_the_name_column(self):
+        self.assertEqual(stage1.LABEL_KEY, "name")
+
+
 if __name__ == "__main__":
     unittest.main()

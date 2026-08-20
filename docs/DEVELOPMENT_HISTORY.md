@@ -52,6 +52,7 @@
 | 2026-08-20 | Plan 3.1: architecture-only plan for a new post-processing family reading Perfetto trace-CSV data instead of rocprof-sys's timemory text tables -- opens major phase `3.x`; found and documented a pre-existing stage4/5 boundary gap in the tree/POP-metrics backends, and a categories.h-documented AMD category enum far larger than one sample trace showed -- see full accounting below |
 | 2026-08-20 | Plan 3.2: renamed every `*_rocprofsys*` module to `*_rocprofsys_sample_*` (and `extract_calltree_traced.py` to `extract_wallclock_calltree.py`) to make room for the new `*_rocprofsys_trace_*` family; fixed both stage4/5 boundary gaps found in plan 3.1; documented the stage4→5 entry contract in `postprocess/README.md` -- roadmap step 1 of the plan-3.1 sequence -- see full accounting below |
 | 2026-08-20 | Plan 3.3: new `stage1_rocprofsys_trace.py` (`parse_trace_csv()`/`attach_ancestry()`) -- roadmap step 2 of the plan-3.1 sequence; a mid-review correction moved all label/count/self_sum shaping out of stage1+2 and into a later stage4 module, so this stage preserves every trace-CSV column untouched and only resolves `parent_slice_id` links -- see full accounting below |
+| 2026-08-20 | Plan 3.4: renamed `stage3_rocprofsys_sample.py` to `stage3_rocprofsys_common.py` (it turned out to have no sample-specific logic at all) and gave `tag_rows()` a `label_key` parameter instead of hardcoding `"label"`; new `stage3_rocprofsys_trace.py` -- an exact `{category: tag}` lookup (`gpu_api`/`gpu_kernel`/`gpu_memcpy`/`mpi_territory`/`other`) built from AMD's `categories.h` enum, plus a delegated, unmodified reuse of `wrapper_noise`/`compiler_runtime_noise`/`wrapper_branch_noise` for trace rows' CPU-side names -- roadmap step 3 of the plan-3.1 sequence -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -2357,4 +2358,56 @@ missing-parent warning path.
 Verification: 13 new tests, full suite 515 → 528 passing, no existing file touched. See
 `docs/plans/3.3-trace-csv-reader.md` for the full accounting, written before implementation this
 time.
+
+## 2026-08-20 — Plan 3.4: `stage3_rocprofsys_common.py` split + `stage3_rocprofsys_trace.py` category tagger
+
+Roadmap step 3 of plan 3.1's sequence. Direct user guidance shaped this plan twice during design,
+both folded in before implementation:
+
+**Refactor first, once the reuse became real**: writing this plan required reading
+`stage3_rocprofsys_sample.py` line-by-line, which turned up that nothing in it was actually
+sample-specific -- `tag_rows()`, the sibling/ancestor propagation, and all four tree-surgery
+primitives already keyed only on a display-name field, `parent`, and tag sets, none of which are
+unique to the text-table format. Its `_sample` suffix (from plan 3.2's mechanical batch rename)
+was premature. Renamed to `stage3_rocprofsys_common.py`, updated its docstring to name both
+pipelines as consumers, and updated every import site
+(`stage4_rocprofsys_sample_tree.py`/`stage4_rocprofsys_sample_flat.py`/
+`stage5_calltree_view.py`/`stage5_wallclock_calltree_view.py`/`extract_hotspot_callers.py`, plus
+comment-only references in `stage6_noise_config.py` and its test, and `postprocess/README.md`) --
+pure rename, zero behavior change, confirmed by the renamed test file passing unmodified.
+
+**Corrected mid-design**: the first draft of this plan had `stage1_rocprofsys_trace.py` alias
+`row["name"]` into a `row["label"]` key so the shared engine could read it -- rejected directly.
+The engine shouldn't be hardcoded to the string `"label"` at all; different stage1 modules use
+different display-name keys (`"label"` for the sample pipeline, `"name"` for trace, something else
+for a hypothetical future format), so `tag_rows()` gained a `label_key` parameter (default
+`"label"`, so every existing caller is unaffected) instead, and `stage1_rocprofsys_trace.py`
+exports the key name it uses as a `LABEL_KEY = "name"` constant -- a single declared source of
+truth threaded down through the pipeline via a parameter, with no row-data mutation and no
+divergence from plan 3.3's "preserve every column, no interpretive shaping" scope.
+
+**As built**: `stage3_rocprofsys_trace.py`'s `tag_for_category(category)` maps a trace row's exact
+`category` to one of `gpu_api` (every `*_API` ROCm category), `gpu_kernel` (kernel dispatch, RCCL
+collective ops), `gpu_memcpy` (memory copy/scratch/page-migration), `mpi_territory` (`mpi`), or
+`None` for CPU-ish categories (`host`/`ompt`/`pthread`/`sampling`/`python`/`user`/`kokkos`/`none`)
+that get no category-level tag; anything else -- `numa`, the bare `rocm` category, `amd_smi_*`, or
+a category this map has never seen -- falls back to `other`, the roadmap's required explicit
+fallback bucket. `numa`/`amd_smi_*` are routed to `other` deliberately, not guessed into a new
+taxonomy: their row-level semantics aren't validated against real trace data yet.
+
+`tag_rows(rows)` delegates to `stage3_rocprofsys_common.tag_rows()`, restricted to just
+`wrapper_noise`/`compiler_runtime_noise`/`wrapper_branch_noise` (the two name-based sample-engine
+tags plus their sibling-derived tag), passing `label_key=stage1_rocprofsys_trace.LABEL_KEY` --
+reusing `default_noise_patterns.json`'s actual substring lists rather than re-deriving that domain
+knowledge for trace data, and giving a user's `--extra-noise-config` additions to those two tags
+free effect on trace-based tools too. `gpu_api`/`mpi_territory` are deliberately excluded from this
+delegated call (already exact from the category map); each row's `tag_for_category()` result is
+unioned into `row["tags"]` afterward, since the delegated call assigns rather than unions.
+`remove_tagged_subtrees()`/`splice_by_tag()`/`make_collapses_children()`/`make_is_pruned()` are
+re-exported unchanged from `stage3_rocprofsys_common` -- confirmed none of them read a row's
+display name or category, so they work on tagged trace rows with zero modification.
+
+Verification: 23 new tests for `stage3_rocprofsys_trace.py` plus 1 for `LABEL_KEY`, full suite
+528 → 552 passing, every renamed/updated file's existing tests unaffected. See
+`docs/plans/3.4-stage3-category-tagger.md` for the full accounting, written before implementation.
 

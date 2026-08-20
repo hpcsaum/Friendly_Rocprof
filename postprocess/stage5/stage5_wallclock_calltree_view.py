@@ -7,7 +7,7 @@ stage5_tree_render.py) is generic, shared with extract_calltree.py's own compani
 Functions: build_calltree_view().
 """
 
-from stage3_rocprofsys_sample import make_is_pruned, splice_by_tag
+from stage3_rocprofsys_common import make_is_pruned, splice_by_tag
 from stage4_rocprofsys_sample_tree import (
     attach_gpu_kernels,
     flatten_tree,

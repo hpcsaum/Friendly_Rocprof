@@ -1,12 +1,19 @@
 """Shared noise-classification engine for rocprof-sys call-tree/flat-scan tools.
 
-Scope: turning a flat list of rows (each carrying "label" and a "parent" back-reference, the
-shape stage2_rocprofsys_sample.attach_ancestry() produces) into a per-row set of noise TAGS, plus a
-small set of generic, tag-driven tree-surgery primitives. Nothing in this module reads a
-particular tool's own filtering rules or writes report output -- it has no opinion on which tags
-a given tool treats as noise or what "noise" should become (drop it, hide its children, merge it
-into its parent, route it to a different table) -- each calling tool supplies its own {tag: action}
-map for that.
+Shared by both rocprof-sys backends this project supports: the sample/timemory text-table
+pipeline (stage1_rocprofsys_sample.py / stage2_rocprofsys_sample.py, rows keyed by "label") and
+the trace-CSV pipeline (stage1_rocprofsys_trace.py, rows keyed by "name" -- see that module's
+LABEL_KEY constant and stage3_rocprofsys_trace.py, which calls tag_rows() below with
+label_key="name" to reuse this engine's wrapper_noise/compiler_runtime_noise/wrapper_branch_noise
+patterns unchanged). Nothing here assumes either format specifically -- "row" means any dict
+carrying a caller-chosen display-name key (see tag_rows()'s label_key parameter), a "parent"
+back-reference, and optionally "is_thread_root".
+
+Scope: turning a flat list of rows into a per-row set of noise TAGS, plus a small set of generic,
+tag-driven tree-surgery primitives. Nothing in this module reads a particular tool's own filtering
+rules or writes report output -- it has no opinion on which tags a given tool treats as noise or
+what "noise" should become (drop it, hide its children, merge it into its parent, route it to a
+different table) -- each calling tool supplies its own {tag: action} map for that.
 
 Philosophy: classification and treatment are separate. A tag is a fact about a row ("this row's
 label matches wrapper_noise"); an action is a decision about what a tool does with that fact
@@ -68,7 +75,7 @@ def _build_children_map(rows):
     return children_map
 
 
-def tag_rows(rows, tag_defs=None, filename=None):
+def tag_rows(rows, tag_defs=None, filename=None, label_key="label"):
     """Mutates every row in place: row["tags"] becomes a set of every tag whose pattern matched
     this row's own label, or the file it came from (see `filename` below), or (for a thread-root
     row) any ancestor's label, or (for an untethered root, parent=None) the first real descendant's
@@ -93,6 +100,11 @@ def tag_rows(rows, tag_defs=None, filename=None):
     filename, when given, is the single source file every row in `rows` was parsed from -- matched
     against each tag's own "filename_substrings" once for the whole batch, since a file-level fact
     is equally true for every row in it.
+
+    label_key names the key each row's display name lives under -- "label" for the sample/
+    text-table pipeline (the default, matching every existing caller), "name" for the trace-CSV
+    pipeline (see stage1_rocprofsys_trace.LABEL_KEY). Nothing else about a row's shape depends on
+    which pipeline produced it.
     """
     if tag_defs is None:
         tag_defs = _stage6_tag_defs()
@@ -113,7 +125,7 @@ def tag_rows(rows, tag_defs=None, filename=None):
     self_match = {}
     for row in rows:
         self_match[id(row)] = file_matches | {
-            name for name, td in patterned_tags.items() if _label_matches(row["label"], td)
+            name for name, td in patterned_tags.items() if _label_matches(row[label_key], td)
         }
 
     subtree_memo = {}

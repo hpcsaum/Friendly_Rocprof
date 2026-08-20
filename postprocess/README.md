@@ -51,7 +51,7 @@ tell two DEPTH-numbering conventions rocprof-sys's own output uses apart.
 
 ### `stage3/` — noise classification
 
-`stage3_rocprofsys_sample.py` turns ancestry-linked rows into a per-row set of noise *tags* — a tag is a
+`stage3_rocprofsys_common.py` turns ancestry-linked rows into a per-row set of noise *tags* — a tag is a
 fact about a row ("this row's label matches `wrapper_noise`"), deliberately kept separate from what
 a tool does about it (drop it, hide its children, splice it out and reparent, collapse it). The
 same tag can get a different treatment in a different tool without re-deriving the classification.
@@ -61,7 +61,11 @@ filtering" below for the exact schema. This module also owns the generic, tag-dr
 primitives every tool's own filtering builds on: `remove_tagged_subtrees()` (drop a whole subtree),
 `splice_by_tag()` (remove a row, reparenting its children, optionally folding its self-time into
 the new parent), `make_collapses_children()`/`make_is_pruned()` (predicates for the stage5
-renderers below).
+renderers below). Nothing in this engine is specific to either backend — it takes which key holds
+a row's display name as a parameter (`label_key`, defaulting to `"label"` for the sample pipeline),
+so `stage3_rocprofsys_trace.py` reuses it unchanged for the trace-CSV pipeline's `wrapper_noise`/
+`compiler_runtime_noise`/`wrapper_branch_noise` tags, layering its own exact `category`-based
+lookup (`gpu_api`, `gpu_kernel`, `gpu_memcpy`, `mpi_territory`, `other`) on top.
 
 ### `stage4/` — aggregation
 
@@ -174,7 +178,7 @@ See that module's own docstring for the exact mechanism.
 `"prefixes"`/`"substrings"`/`"suffixes"` (case-insensitive label matches) and/or
 `"filename_substrings"` (matched against the source file's basename), plus a couple of structural
 rules (`"ancestor_for_thread_roots"`, `"first_real_descendant_skip_tag"`, `"sibling_group_source_tag"`
-— see `stage3_rocprofsys_sample.py`'s own module docstring for exactly what each one does). A user's
+— see `stage3_rocprofsys_common.py`'s own module docstring for exactly what each one does). A user's
 `--extra-noise-config`/`$FRIENDLY_ROCPROF_NOISE_CONFIG` file layers a diff on top, resolved by
 `stage6_noise_config.configure()`:
 

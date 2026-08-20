@@ -8,7 +8,7 @@ extract_wallclock_calltree.py's own companion module.
 Functions: strip_wrapper_noise(), build_calltree_view().
 """
 
-from stage3_rocprofsys_sample import make_collapses_children, make_is_pruned, remove_tagged_subtrees, splice_by_tag
+from stage3_rocprofsys_common import make_collapses_children, make_is_pruned, remove_tagged_subtrees, splice_by_tag
 from stage4_rocprofsys_sample_tree import (
     attach_gpu_kernels,
     flatten_tree,

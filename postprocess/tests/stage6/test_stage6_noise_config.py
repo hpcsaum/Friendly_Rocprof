@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
 import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
 
 # Loaded as an isolated copy, not the shared singleton other modules import: stage6_noise_config's
-# _TAG_DEFS is a real process-wide global (see its own module docstring), and stage3_rocprofsys_sample.py
+# _TAG_DEFS is a real process-wide global (see its own module docstring), and stage3_rocprofsys_common.py
 # captures a direct reference to its tag_defs function at import time ("from stage6_noise_config
 # import tag_defs as _stage6_tag_defs") -- permanently overwriting sys.modules["stage6_noise_config"]
 # here would silently detach that reference from whichever instance this test's own nc.configure()

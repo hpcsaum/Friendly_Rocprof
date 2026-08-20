@@ -24,7 +24,7 @@ import os
 from stage1_rocprofsys_sample import PID_SUFFIX_RE, parse_table_file
 from stage1_rocprofv3 import parse_kernel_stats_csv
 from stage2_rocprofsys_sample import attach_ancestry
-from stage3_rocprofsys_sample import tag_rows
+from stage3_rocprofsys_common import tag_rows
 from stage4_rank_merge_math import stats_across_ranks
 from stage4_rocprofv3 import aggregate_per_rank
 
@@ -139,7 +139,7 @@ def make_kernel_node(label, per_rank, parent=None):
     it identically, plus "static_children" for its own kernel-name breakdown
     (a merged real node never has populated static_children until
     attach_kernel_summaries() adds one). Empty "tags"/"structural_drop_tags" --
-    a synthetic kernel-summary node is never itself subject to stage3_rocprofsys_sample
+    a synthetic kernel-summary node is never itself subject to stage3_rocprofsys_common
     noise tagging, so it's never pruned/collapsed. "parent" defaults to None (the
     shape every downward-only renderer has used until now); passing the real
     attachment point lets caller_chains_for_label() walk up through this node like
@@ -182,7 +182,7 @@ def merge_rank_trees(ranks):
     "parent" (a merged node or None -- same shape real rows use, so
     nearest_visible_ancestor() works unchanged), "children" ({label: merged
     child}, insertion-ordered by first-seen rank), "tags"/"structural_drop_tags"
-    (the union of every contributing rank's own stage3_rocprofsys_sample tag sets for
+    (the union of every contributing rank's own stage3_rocprofsys_common tag sets for
     this code location -- these are properties of a code location, not really
     rank-dependent, so union is a safe, conservative merge), and "per_rank"
     ({rank_key: {"count", "self_sum", "sum"}}, one entry per rank that had a
