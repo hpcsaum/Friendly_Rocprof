@@ -1,6 +1,6 @@
 """Stage 5 column spec for the CPU hotspots table.
 
-Scope: just the column layout for stage4_rocprofsys_flat.aggregate()'s CPU-side entries -- self
+Scope: just the column layout for stage4_rocprofsys_sample_flat.aggregate()'s CPU-side entries -- self
 time, inclusive time, call count, and self-vs-inclusive percentage. Ranking/filtering/rendering
 themselves are generic (see stage5_table_render.py); this file only decides what the table looks
 like.

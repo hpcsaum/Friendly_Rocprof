@@ -9,7 +9,7 @@ FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
 MODULE_PATH = os.path.join(POSTPROCESS_DIR, "tools", "extract_hotspot_callers.py")
 
-# extract_hotspot_callers.py does a plain top-level "from stage4_rocprofsys_flat import ...",
+# extract_hotspot_callers.py does a plain top-level "from stage4_rocprofsys_sample_flat import ...",
 # relying on its own directory being on sys.path -- true automatically when run directly, but not
 # when loaded here by explicit file path, so replicate that manually (same as the other tool tests).
 sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))

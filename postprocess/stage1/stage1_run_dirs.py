@@ -1,12 +1,12 @@
 """Run-directory resolution -- the one piece of stage 1 (reading a profile off disk)
 that both rocprof-sys and rocprofv3 tools need before either format-specific parser
-(stage1_rocprofsys.py, stage1_rocprofv3.py) can even start.
+(stage1_rocprofsys_sample.py, stage1_rocprofv3.py) can even start.
 
 Scope: turning a single "run" directory into the (cpu_dir, gpu_dir) pair the rest of
 the pipeline reads from. Knows nothing about either tool's file formats -- just the
 rocprof-sys/ and rocprofv3/ subdirectory convention profile_hotspots.sh and friends
 produce, plus the un-nested fallback profile_CPU_hotspots.sh uses on its own. Used by
-extract_calltree.py, extract_calltree_traced.py, and extract_pop_metrics.py.
+extract_calltree.py, extract_wallclock_calltree.py, and extract_pop_metrics.py.
 
 Functions: resolve_run_dirs(), resolve_two_dirs().
 """

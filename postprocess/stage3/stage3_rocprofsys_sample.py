@@ -1,7 +1,7 @@
 """Shared noise-classification engine for rocprof-sys call-tree/flat-scan tools.
 
 Scope: turning a flat list of rows (each carrying "label" and a "parent" back-reference, the
-shape stage2_rocprofsys.attach_ancestry() produces) into a per-row set of noise TAGS, plus a
+shape stage2_rocprofsys_sample.attach_ancestry() produces) into a per-row set of noise TAGS, plus a
 small set of generic, tag-driven tree-surgery primitives. Nothing in this module reads a
 particular tool's own filtering rules or writes report output -- it has no opinion on which tags
 a given tool treats as noise or what "noise" should become (drop it, hide its children, merge it

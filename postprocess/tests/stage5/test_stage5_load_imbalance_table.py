@@ -20,10 +20,10 @@ from stage5_table_render import render_table  # noqa: E402  (needs sys.path inse
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 
 spec_flat = importlib.util.spec_from_file_location(
-    "stage4_rocprofsys_flat", os.path.join(POSTPROCESS_DIR, "stage4", "stage4_rocprofsys_flat.py")
+    "stage4_rocprofsys_sample_flat", os.path.join(POSTPROCESS_DIR, "stage4", "stage4_rocprofsys_sample_flat.py")
 )
 flat = importlib.util.module_from_spec(spec_flat)
-sys.modules["stage4_rocprofsys_flat"] = flat
+sys.modules["stage4_rocprofsys_sample_flat"] = flat
 spec_flat.loader.exec_module(flat)
 
 spec_v3 = importlib.util.spec_from_file_location(

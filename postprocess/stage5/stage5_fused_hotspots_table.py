@@ -1,6 +1,6 @@
 """Stage 5 fused (CPU+GPU) hotspots table.
 
-Scope: merging stage4_rocprofsys_flat's CPU entries and stage4_rocprofv3's GPU entries into one
+Scope: merging stage4_rocprofsys_sample_flat's CPU entries and stage4_rocprofv3's GPU entries into one
 combined-pool ranked view, correcting for the CPU-side GPU-sync-wait time double-count, plus the
 fused table's own column spec. Ranking/filtering/rendering themselves are generic (see
 stage5_table_render.py).
@@ -8,7 +8,7 @@ stage5_table_render.py).
 Functions: build_combined_view().
 """
 
-import stage4_rocprofsys_flat
+import stage4_rocprofsys_sample_flat
 import stage4_rocprofv3
 
 # The two HIP calls that mean "block the CPU until the GPU catches up" -- see
@@ -63,7 +63,7 @@ def build_combined_view(rocprof_sys_dir, rocprofv3_dir):
     from multiple threads), self_sum sums correctly across them since every
     node's self-time is disjoint from every other's.
     """
-    cpu_entries, cpu_gpu_api_entries, cpu_scanned, cpu_total_raw = stage4_rocprofsys_flat.aggregate(rocprof_sys_dir)
+    cpu_entries, cpu_gpu_api_entries, cpu_scanned, cpu_total_raw = stage4_rocprofsys_sample_flat.aggregate(rocprof_sys_dir)
     gpu_entries, gpu_scanned, gpu_total_ns = stage4_rocprofv3.aggregate(rocprofv3_dir)
 
     gpu_api_overhead_sec = sum(e["self_sum"] for e in cpu_gpu_api_entries if e["label"] in SYNC_WAIT_LABELS)
@@ -74,7 +74,7 @@ def build_combined_view(rocprof_sys_dir, rocprofv3_dir):
     # self_sum drives the fused ranking by default (see stage5_table_render.select_entries()'s
     # rank_by) -- for GPU kernel entries there's no self-vs-inclusive distinction
     # (a kernel is already a leaf event), so self_sum == sum there. pct_total here
-    # is self-based, same convention as stage4_rocprofsys_flat.aggregate()'s own output --
+    # is self-based, same convention as stage4_rocprofsys_sample_flat.aggregate()'s own output --
     # select_entries() recomputes it against whichever metric it actually ranks by.
     fused_entries = []
     for e in cpu_entries:

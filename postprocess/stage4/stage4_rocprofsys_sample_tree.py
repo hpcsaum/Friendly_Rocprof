@@ -1,21 +1,110 @@
-"""Stage 4 (merge ranks / load-balance) for the tree-shaped calltree tools, plus GPU
-kernel attachment.
+"""Stage 4 (merge ranks / load-balance) for the tree-shaped calltree tools, plus rank loading,
+GPU-kernel-data pairing, and GPU kernel attachment.
 
-Scope: merging N per-rank call trees into one by tree position (not by label -- see
-stage4_rank_merge_math.py, used here and by the flat, by-label merge the hotspots tools use
-instead), computing avg/std_dev/min/max/calls statistics per node across ranks, and
-attaching real GPU kernel data (from rocprofv3) onto the CPU subroutine that actually
-launched it. Has no opinion on which nodes get rendered or how, or on any one tool's
-own pruning/collapsing rules -- each tool injects its own is_pruned()/
-collapses_children() callables; see tree_render.py for the rendering side.
+Scope: everything that assembles a per-rank or merged tree before it's rendered -- per-rank
+loading (parse + ancestry + noise-tagging, load_rank_trees()), merging N per-rank call trees into
+one by tree position (not by label -- see stage4_rank_merge_math.py, used here and by the flat,
+by-label merge the hotspots tools use instead), computing avg/std_dev/min/max/calls statistics per
+node across ranks, and attaching real GPU kernel data (from rocprofv3) onto the CPU subroutine
+that actually launched it. Has no opinion on which nodes get rendered or how, or on any one tool's
+own pruning/collapsing rules -- each tool injects its own is_pruned()/collapses_children()
+callables; see stage5_tree_render.py for the rendering side (including
+render_gpu_kernel_fallback(), the rendering half of what used to be one mixed
+attach-and-render function here).
 
-Functions: merge_rank_trees(), flatten_tree(), caller_chains_for_label(), aggregate_node_stats(),
-make_node_values(), attach_kernel_summaries(), kernel_owner_label(),
-find_kernel_anchors(), unattached_kernel_per_rank(), make_kernel_node(),
-nearest_visible_ancestor(), is_kernel_launch().
+Functions: load_rank_trees(), kernel_totals_with_counts(), pair_gpu_per_rank(), merge_rank_trees(),
+flatten_tree(), caller_chains_for_label(), aggregate_node_stats(), make_node_values(),
+attach_gpu_kernels(), attach_kernel_summaries(), kernel_owner_label(), find_kernel_anchors(),
+unattached_kernel_per_rank(), make_kernel_node(), nearest_visible_ancestor(), is_kernel_launch().
 """
 
+import glob
+import os
+
+from stage1_rocprofsys_sample import PID_SUFFIX_RE, parse_table_file
+from stage1_rocprofv3 import parse_kernel_stats_csv
+from stage2_rocprofsys_sample import attach_ancestry
+from stage3_rocprofsys_sample import tag_rows
 from stage4_rank_merge_math import stats_across_ranks
+from stage4_rocprofv3 import aggregate_per_rank
+
+
+def load_rank_trees(cpu_dir, primary_pattern, fallback_pattern, postprocess=None):
+    """Per rank: parse_table_file() + attach_ancestry() + tag_rows() directly (NOT a by-label
+    merge like stage4_rocprofsys_sample_flat.scan_ranks(), which would destroy tree identity).
+    primary_pattern's file wins per rank when present; fallback_pattern is used only for a rank
+    with no primary_pattern file at all -- the two are never spliced together into one tree, since
+    their parent-links come from two independently-reconstructed call orders. After
+    parsing/ancestry-linking/tagging, postprocess(rows) is called if given (returning the edited
+    row list), for any further tool-specific row-set editing -- e.g. the sampling calltree tool's
+    conditional wrapper-noise splice; it defaults to None (a no-op).
+
+    Returns a list of (rank_key, rows, roots) tuples, one per rank, in sorted order. rows is every
+    parsed row (parent/depth/thread_id/tags all set); roots is the subset with parent is None --
+    every row with parent is None starts its own tree, which correctly separates multiple OS
+    threads' subtrees within one rank regardless of which of the two DEPTH-numbering shapes the
+    file uses (is_thread_root isn't reliably set in the DEPTH-resets-to-0 case, but parent is None
+    always is).
+    """
+    paths_by_rank = {}
+    order = []
+    for path in sorted(glob.glob(os.path.join(cpu_dir, "**", primary_pattern), recursive=True)):
+        m = PID_SUFFIX_RE.search(os.path.basename(path))
+        rank_key = m.group(1) if m else path
+        paths_by_rank[rank_key] = path
+        order.append(rank_key)
+    for path in sorted(glob.glob(os.path.join(cpu_dir, "**", fallback_pattern), recursive=True)):
+        m = PID_SUFFIX_RE.search(os.path.basename(path))
+        rank_key = m.group(1) if m else path
+        if rank_key not in paths_by_rank:
+            paths_by_rank[rank_key] = path
+            order.append(rank_key)
+
+    result = []
+    for rank_key in order:
+        path = paths_by_rank[rank_key]
+        rows = parse_table_file(path)
+        if not rows:
+            continue
+        attach_ancestry(rows)
+        tag_rows(rows, filename=path)
+        if postprocess is not None:
+            rows = postprocess(rows)
+        roots = [r for r in rows if r["parent"] is None]
+        result.append((rank_key, rows, roots))
+    return result
+
+
+def kernel_totals_with_counts(gpu_dir, rank_index):
+    """Re-parses one rank's own kernel_stats.csv directly for its Calls column, since
+    aggregate_per_rank() only returns total seconds, not call counts."""
+    candidates = sorted(glob.glob(os.path.join(gpu_dir, "**", "*_kernel_stats.csv"), recursive=True))
+    path = candidates[rank_index]
+    rows = parse_kernel_stats_csv(path)
+    totals = {}
+    for row in rows:
+        entry = totals.setdefault(row["label"], [0, 0.0])
+        entry[0] += row["count"]
+        entry[1] += row["total_ns"] / 1e9
+    return {k: tuple(v) for k, v in totals.items()}
+
+
+def pair_gpu_per_rank(gpu_dir, run_dir, rank_keys):
+    """Returns the per-rank GPU kernel total-seconds dicts if gpu_dir is given and its rank count
+    matches rank_keys, else None -- printing a warning (not raising) on a mismatched rank count,
+    rather than risk pairing mismatched ranks."""
+    if gpu_dir is None:
+        return None
+    gpu_totals, gpu_scanned = aggregate_per_rank(gpu_dir)
+    if gpu_scanned and len(gpu_totals) == len(rank_keys):
+        return gpu_totals
+    if gpu_scanned:
+        print(
+            f"warning: {run_dir!r}: rocprof-sys reports {len(rank_keys)} rank(s) but "
+            f"rocprofv3 reports {len(gpu_totals)} -- skipping GPU kernel integration "
+            "rather than risk pairing mismatched ranks",
+        )
+    return None
 
 # Best-effort list of known GPU-kernel-launch entry points -- not exhaustive.
 # Matched via substring/`in` (case-insensitive), not startswith/equality,
@@ -50,7 +139,7 @@ def make_kernel_node(label, per_rank, parent=None):
     it identically, plus "static_children" for its own kernel-name breakdown
     (a merged real node never has populated static_children until
     attach_kernel_summaries() adds one). Empty "tags"/"structural_drop_tags" --
-    a synthetic kernel-summary node is never itself subject to stage3_rocprofsys
+    a synthetic kernel-summary node is never itself subject to stage3_rocprofsys_sample
     noise tagging, so it's never pruned/collapsed. "parent" defaults to None (the
     shape every downward-only renderer has used until now); passing the real
     attachment point lets caller_chains_for_label() walk up through this node like
@@ -93,7 +182,7 @@ def merge_rank_trees(ranks):
     "parent" (a merged node or None -- same shape real rows use, so
     nearest_visible_ancestor() works unchanged), "children" ({label: merged
     child}, insertion-ordered by first-seen rank), "tags"/"structural_drop_tags"
-    (the union of every contributing rank's own stage3_rocprofsys tag sets for
+    (the union of every contributing rank's own stage3_rocprofsys_sample tag sets for
     this code location -- these are properties of a code location, not really
     rank-dependent, so union is a safe, conservative merge), and "per_rank"
     ({rank_key: {"count", "self_sum", "sum"}}, one entry per rank that had a
@@ -138,7 +227,7 @@ def merge_rank_trees(ranks):
 def flatten_tree(roots):
     """Every merged node reachable via "children", pre-order -- the flat,
     parent-linked list tree_render.build_children_map()/find_kernel_anchors() expect,
-    the same shape stage1_rocprofsys.parse_table_file() + stage2_rocprofsys.attach_ancestry()
+    the same shape stage1_rocprofsys_sample.parse_table_file() + stage2_rocprofsys_sample.attach_ancestry()
     give a single rank's own rows (merge_rank_trees()'s nodes carry "parent" too, for
     exactly this reason)."""
     flat = []
@@ -392,6 +481,31 @@ def attach_kernel_summaries(rows, gpu_kernel_by_rank, is_pruned, collect_into=No
             still_unattached = set()
 
     return still_unattached
+
+
+def attach_gpu_kernels(flat, gpu_per_rank, gpu_dir, rank_keys, is_pruned, collect_into=None):
+    """Mutates flat's tree in place to attach real GPU kernel data onto the CPU subroutine that
+    launched it (attach_kernel_summaries()), re-deriving per-rank call counts from each rank's own
+    kernel_stats.csv along the way (kernel_totals_with_counts(), since aggregate_per_rank() only
+    returns total seconds, not call counts). Returns (unattached, gpu_kernel_by_rank): unattached
+    is the set of kernel names attach_kernel_summaries() couldn't place anywhere (empty if
+    gpu_per_rank is None or everything attached); gpu_kernel_by_rank is
+    {rank_key: {kernel_name: (count, total_seconds)}}, handed back so a caller building its own
+    "no anchor" fallback section (see stage5_tree_render.render_gpu_kernel_fallback()) has the
+    per-rank data it needs without re-parsing kernel_stats.csv a second time.
+
+    collect_into is passed straight through to attach_kernel_summaries() -- omit it (the default)
+    for a caller that only renders downward via static_children; pass a list for a caller that
+    also needs to find an attached kernel's own node later by label (e.g. caller_chains_for_label(),
+    which searches a flat row list)."""
+    if gpu_per_rank is None:
+        return set(), {}
+
+    gpu_kernel_by_rank = {
+        rank_key: kernel_totals_with_counts(gpu_dir, i) for i, rank_key in enumerate(rank_keys)
+    }
+    unattached = attach_kernel_summaries(flat, gpu_kernel_by_rank, is_pruned, collect_into=collect_into)
+    return unattached, gpu_kernel_by_rank
 
 
 def unattached_kernel_per_rank(kernel_names, gpu_kernel_by_rank):

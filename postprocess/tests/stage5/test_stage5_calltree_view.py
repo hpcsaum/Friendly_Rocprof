@@ -11,7 +11,7 @@ import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
 
 from stage1_run_dirs import resolve_run_dirs  # noqa: E402  (needs sys.path insert above first)
 from stage5_calltree_view import build_calltree_view, strip_wrapper_noise  # noqa: E402
-from stage5_tree_render import load_rank_trees  # noqa: E402
+from stage4_rocprofsys_sample_tree import load_rank_trees  # noqa: E402
 import stage6_noise_config  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")

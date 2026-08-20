@@ -2,16 +2,16 @@
 """Top hotspots plus, for each one, its caller chain(s) back to a real program root -- CPU-only, or
 fused CPU+GPU when a rocprofv3 directory is paired in.
 
-The inverse view of the calltree tools: extract_calltree.py/extract_calltree_traced.py walk DOWN
+The inverse view of the calltree tools: extract_calltree.py/extract_wallclock_calltree.py walk DOWN
 from roots, rendering every descendant; this walks UP from a specific hot function (or, when GPU
 kernel data is paired in, a specific kernel) to however many distinct root-to-it ancestor chains
 exist in the data. Built almost entirely from existing stage1-6 primitives --
-stage4_rocprofsys_flat.aggregate()/stage5_fused_hotspots_table.build_combined_view() for the ranked
+stage4_rocprofsys_sample_flat.aggregate()/stage5_fused_hotspots_table.build_combined_view() for the ranked
 hotspot selection (same as extract_CPU_hotspots.py/extract_hotspots.py) and
-stage5_tree_render.load_rank_trees()/stage4_rocprofsys_tree.merge_rank_trees() for the same merged
+stage4_rocprofsys_sample_tree.load_rank_trees()/merge_rank_trees() for the same merged
 call tree the calltree tools build.
 
-Two new primitives this tool's two phases needed, both in stage4_rocprofsys_tree.py:
+Two new primitives this tool's two phases needed, both in stage4_rocprofsys_sample_tree.py:
 caller_chains_for_label() (the upward walk itself) and, for GPU kernels, a `parent` link on
 synthetic kernel nodes plus attach_kernel_summaries()'s `collect_into` param -- once an attached
 kernel is a real member of the same flat row pool, caller_chains_for_label() finds and walks it
@@ -34,21 +34,22 @@ import _stage_paths  # noqa: E402  (adds every stageN/ dir to sys.path)
 import extract_CPU_hotspots as cpu_tool
 import extract_GPU_hotspots as gpu_tool
 from stage1_run_dirs import resolve_two_dirs
-from stage3_rocprofsys import make_is_pruned
-from stage4_rocprofsys_flat import aggregate
-from stage4_rocprofsys_tree import caller_chains_for_label, flatten_tree, make_node_values, merge_rank_trees
+from stage3_rocprofsys_sample import make_is_pruned
+from stage4_rocprofsys_sample_flat import aggregate
+from stage4_rocprofsys_sample_tree import (
+    attach_gpu_kernels,
+    caller_chains_for_label,
+    flatten_tree,
+    load_rank_trees,
+    make_node_values,
+    merge_rank_trees,
+    pair_gpu_per_rank,
+)
 from stage5_calltree_view import strip_wrapper_noise
 from stage5_cpu_hotspots_table import CPU_HOTSPOTS_COLUMNS
 from stage5_fused_hotspots_table import FUSED_HOTSPOTS_COLUMNS, build_combined_view
 from stage5_table_render import pct_total_note, ranking_note, render_table, select_entries
-from stage5_tree_render import (
-    REPORT_HEADERS,
-    aggregation_note,
-    attach_and_render_gpu_kernels,
-    format_aligned_rows,
-    load_rank_trees,
-    pair_gpu_per_rank,
-)
+from stage5_tree_render import REPORT_HEADERS, aggregation_note, format_aligned_rows, render_gpu_kernel_fallback
 import stage6_cli_common
 import stage6_noise_config
 from stage6_report_builder import command_header, help_redirect, render_report, standard_header, write_report_file
@@ -190,9 +191,10 @@ def write_report(output_dir, gpu_dir, dest_path, top=None, threshold=None, show_
         # filtered by this at all, only which node a kernel attaches under is.
         is_pruned = make_is_pruned({"gpu_api"})
         gpu_per_rank = pair_gpu_per_rank(gpu_dir, output_dir, rank_keys)
-        fallback_text = attach_and_render_gpu_kernels(
-            flat, gpu_per_rank, gpu_dir, rank_keys, is_pruned, node_values, collect_into=flat,
+        unattached, gpu_kernel_by_rank = attach_gpu_kernels(
+            flat, gpu_per_rank, gpu_dir, rank_keys, is_pruned, collect_into=flat,
         )
+        fallback_text = render_gpu_kernel_fallback(unattached, gpu_kernel_by_rank, node_values)
 
     header = standard_header("extract_hotspot_callers.py", SHORT_DESCRIPTION, [{
         "directories": directories, "executable": run_info["executable"],

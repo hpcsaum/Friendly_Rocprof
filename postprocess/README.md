@@ -33,7 +33,7 @@ postprocess/
 
 ### `stage1/` — parsing and run-directory resolution
 
-- `stage1_rocprofsys.py` — parses `rocprof-sys`'s pipe-delimited timemory text tables
+- `stage1_rocprofsys_sample.py` — parses `rocprof-sys`'s pipe-delimited timemory text tables
   (`wall_clock-<pid>.txt`, `sampling_wall_clock-<pid>.txt`, etc.) into row dicts (`label`, `count`,
   `depth`, `sum`, `self_sum`, ...).
 - `stage1_rocprofv3.py` — parses `rocprofv3`'s `*_kernel_stats.csv` output.
@@ -44,14 +44,14 @@ postprocess/
 
 ### `stage2/` — ancestry linking
 
-`stage2_rocprofsys.py`'s `attach_ancestry()` turns a flat list of parsed rows (each carrying only
+`stage2_rocprofsys_sample.py`'s `attach_ancestry()` turns a flat list of parsed rows (each carrying only
 its own `depth`) into a real tree: each row gets a `parent` back-reference to the row that called
 it, `is_thread_root` for a rank's own top-level frames, and the frame-count-based logic needed to
 tell two DEPTH-numbering conventions rocprof-sys's own output uses apart.
 
 ### `stage3/` — noise classification
 
-`stage3_rocprofsys.py` turns ancestry-linked rows into a per-row set of noise *tags* — a tag is a
+`stage3_rocprofsys_sample.py` turns ancestry-linked rows into a per-row set of noise *tags* — a tag is a
 fact about a row ("this row's label matches `wrapper_noise`"), deliberately kept separate from what
 a tool does about it (drop it, hide its children, splice it out and reparent, collapse it). The
 same tag can get a different treatment in a different tool without re-deriving the classification.
@@ -68,14 +68,15 @@ renderers below).
 Two parallel merge strategies, because a ranked table and a call tree need fundamentally different
 shapes from the same underlying rows:
 
-- `stage4_rocprofsys_flat.py` — merges rows **by label** across every rank into one flat pool
+- `stage4_rocprofsys_sample_flat.py` — merges rows **by label** across every rank into one flat pool
   (`aggregate()`), or keeps each rank's own per-label totals separate (`aggregate_per_rank()`, for
   load-imbalance tables). Destroys tree position on purpose — a hotspot table doesn't care where in
   the tree a function was called from, only its totals.
-- `stage4_rocprofsys_tree.py` — merges N per-rank trees into one **by tree position**
-  (`merge_rank_trees()`), preserving structure; also owns GPU-kernel-to-CPU-launch-site attachment
-  (see below) and `caller_chains_for_label()`, the inverse walk (target function → every distinct
-  root-to-it ancestor chain) `extract_hotspot_callers.py` uses.
+- `stage4_rocprofsys_sample_tree.py` — merges N per-rank trees into one **by tree position**
+  (`merge_rank_trees()`), preserving structure; also owns per-rank loading (`load_rank_trees()`),
+  GPU-kernel-data pairing (`pair_gpu_per_rank()`) and GPU-kernel-to-CPU-launch-site attachment
+  (`attach_gpu_kernels()`, see below), and `caller_chains_for_label()`, the inverse walk (target
+  function → every distinct root-to-it ancestor chain) `extract_hotspot_callers.py` uses.
 - `stage4_rocprofv3.py` — the equivalent by-kernel-name aggregation for `rocprofv3`'s own GPU data.
 - `stage4_rank_merge_math.py` — the shared avg/std_dev/min/max-across-ranks math both merge
   strategies' load-imbalance/load-balance columns use.
@@ -88,12 +89,45 @@ opinion on what the entries represent), `render_table()` (turn entries into alig
 column spec), plus the wrapping/legend-text helpers (`wrap_trailing_label()`, `pct_total_note()`,
 `ranking_note()`) that keep a table's prose and its actual shape from drifting apart.
 `stage5_tree_render.py` is the equivalent for call trees: `render_forest()`/`render_node()` (draw
-`tree`-style connectors), `format_aligned_rows()` (right-align columns under a tree), and the
-shared rank-loading/GPU-kernel-pairing logic both calltree tools use
-(`load_rank_trees()`/`attach_and_render_gpu_kernels()`). Each `stage5_*_table.py` file is just a
-column spec (what a specific table looks like); each `stage5_calltree*_view.py` file is a specific
-tool's own prune/collapse predicates plus whatever postprocessing step it needs, composed over the
-shared renderer.
+`tree`-style connectors), `format_aligned_rows()` (right-align columns under a tree), and
+`render_gpu_kernel_fallback()` (the rendering half of GPU-kernel attachment — the actual
+attachment is `stage4_rocprofsys_sample_tree.attach_gpu_kernels()`; this only renders whatever
+that couldn't place anywhere into the fallback table). Each `stage5_*_table.py` file is just a
+column spec (what a specific table looks like); each `stage5_calltree*_view.py`/
+`stage5_wallclock_calltree_view.py` file is a specific tool's own prune/collapse predicates plus
+whatever postprocessing step it needs, composed over stage4's loading/merging/attachment
+functions and stage5's rendering functions.
+
+### The stage4 → stage5 entry contract
+
+Every `stage5_*_table.py`/`stage5_tree_render.py` function is deliberately generic — it only ever
+reads a handful of dict keys, never how they were computed — which is what lets a report kind be
+reused across data sources instead of rewritten per source (see the trace-CSV tool family design,
+`docs/plans/3.1-trace-postprocessing-family.md`). That reuse only actually happens when a stage4
+backend targets one of a small number of canonical shapes; a new backend that invents its own
+field names for the same kind of report loses the reuse even though the shape is conceptually the
+same. The shapes in use today:
+
+- **flat entry** (hotspots tables): `{label, count, sum, self_sum, pct_self, pct_total}`, plus an
+  optional `domain` for a fused multi-source table. Produced by
+  `stage4_rocprofsys_sample_flat.aggregate()`/`stage4_rocprofv3.aggregate()`; consumed by
+  `stage5_cpu_hotspots_table.py`/`stage5_gpu_hotspots_table.py`/`stage5_fused_hotspots_table.py`.
+- **tree node** (calltree): `{label, parent, children, per_rank, tags, structural_drop_tags,
+  static_children}`. Produced by `stage4_rocprofsys_sample_tree.merge_rank_trees()`; consumed by
+  `stage5_tree_render.py`'s rendering functions.
+- **per-rank label→value** (load imbalance): plain `{label: value}`, one dict per rank. Produced
+  by `stage4_*.aggregate_per_rank()`; consumed by
+  `stage5_load_imbalance_table.compute_load_imbalance()` — the simplest shape, already fully
+  generic with no per-domain variation at all.
+- **per-rank timing summary** (POP metrics): `{rank_key, total_time, comm_time, useful_compute,
+  cpu_only_time, gpu_busy_time}`, one dict per rank. Produced by
+  `stage5_pop_metrics_table.gather_timing_summary_per_rank()`; consumed by
+  `compute_metrics_from_per_rank()` in the same file.
+
+A new backend for one of these *existing* report kinds should emit one of these shapes and gets
+that report's stage5 view for free. A genuinely new report kind that doesn't fit any of them gets
+its own new shape and its own stage5 view file — a normal outcome, not something to force into an
+existing shape.
 
 ### `stage6/` — report assembly
 
@@ -118,7 +152,7 @@ shared renderer.
 
 Each of the 9 files here is a compose-and-print script: parse arguments (mostly via
 `stage6_cli_common`), pull data through stage1→stage4, rank/render it through stage5, assemble it
-through stage6, write the file. `extract_calltree.py`/`extract_calltree_traced.py`/
+through stage6, write the file. `extract_calltree.py`/`extract_wallclock_calltree.py`/
 `extract_hotspots.py`/`extract_hotspot_callers.py` also import each other directly
 (`extract_CPU_hotspots`/`extract_GPU_hotspots` as `cpu_tool`/`gpu_tool`) to reuse their
 `gather_run_info()` rather than duplicating metadata-guessing logic.
@@ -128,7 +162,7 @@ through stage6, write the file. `extract_calltree.py`/`extract_calltree_traced.p
 A report tool typically touches most of the six stages at once (a calltree tool alone spans
 stage1, stage2, stage3, stage4, and stage5), and several stages import from each other too
 (stage4/stage5 import from stage1-3, stage3 imports from stage6). Every module keeps its plain,
-flat import style regardless — `from stage1_rocprofsys import parse_table_file`, not a
+flat import style regardless — `from stage1_rocprofsys_sample import parse_table_file`, not a
 package-qualified path — so `postprocess/_stage_paths.py` puts every `stageN/` and `tools/`
 directory on `sys.path` once; import it (after putting `postprocess/`'s own path on `sys.path` —
 see any file in `tools/` for the one-line pattern) before importing anything from another stage.
@@ -140,7 +174,7 @@ See that module's own docstring for the exact mechanism.
 `"prefixes"`/`"substrings"`/`"suffixes"` (case-insensitive label matches) and/or
 `"filename_substrings"` (matched against the source file's basename), plus a couple of structural
 rules (`"ancestor_for_thread_roots"`, `"first_real_descendant_skip_tag"`, `"sibling_group_source_tag"`
-— see `stage3_rocprofsys.py`'s own module docstring for exactly what each one does). A user's
+— see `stage3_rocprofsys_sample.py`'s own module docstring for exactly what each one does). A user's
 `--extra-noise-config`/`$FRIENDLY_ROCPROF_NOISE_CONFIG` file layers a diff on top, resolved by
 `stage6_noise_config.configure()`:
 
@@ -159,7 +193,7 @@ reserved `other` tag starts empty (no bundled patterns) and exists specifically 
 
 ## Kernel-to-CPU attachment
 
-`stage4_rocprofsys_tree.py`'s `attach_kernel_summaries()` places real GPU kernel data (from
+`stage4_rocprofsys_sample_tree.py`'s `attach_kernel_summaries()` places real GPU kernel data (from
 `rocprofv3`) onto the CPU call-tree node that actually launched it, two-tier:
 
 1. **Name match**: Cray's OpenACC/HIP-offload kernel naming embeds the enclosing Fortran
@@ -184,10 +218,10 @@ A new `tools/extract_X.py` typically needs, in order:
 
 1. **Resolve input directories** — `stage1_run_dirs.resolve_run_dirs()`/`resolve_two_dirs()`.
 2. **Get data**:
-   - Flat ranked table → `stage4_rocprofsys_flat.aggregate()`/`aggregate_per_rank()` (CPU) or
+   - Flat ranked table → `stage4_rocprofsys_sample_flat.aggregate()`/`aggregate_per_rank()` (CPU) or
      `stage4_rocprofv3.aggregate()` (GPU).
-   - Call tree → `stage5_tree_render.load_rank_trees()` +
-     `stage4_rocprofsys_tree.merge_rank_trees()`/`flatten_tree()`.
+   - Call tree → `stage4_rocprofsys_sample_tree.load_rank_trees()` + `merge_rank_trees()`/
+     `flatten_tree()`.
 3. **Rank/render**:
    - Table → `stage5_table_render.select_entries()` + `render_table()` against a `stage5_*_table.py`
      column spec (or write a new one).

@@ -49,6 +49,8 @@
 | 2026-08-17 | Plan 2.15 Phase B: `extract_hotspot_callers.py` gains an optional GPU-paired mode -- fuses CPU+GPU ranking (reusing `stage5_fused_hotspots_table.build_combined_view()` as-is) and traces a hot kernel's own caller chain(s) through its launching CPU call site; needed one small, additive gap-fix (a `parent` link on synthetic kernel nodes plus a `collect_into` param), after which `caller_chains_for_label()` handles kernels with zero further changes -- see full accounting below |
 | 2026-08-17 | Plan 2.16: reorganized `postprocess/` into one directory per stage (`stage1/`-`stage6/`) plus a `tools/` directory for the 9 CLI tools, mirrored in `tests/`; pure relocation, zero import-statement changes anywhere (a new shared `_stage_paths.py` sys.path bootstrap keeps every existing flat `from stageN_x import y` working unchanged) -- surfaced and fixed one real, pre-existing test-isolation bug along the way (see full accounting below) |
 | 2026-08-17 | Plan 2.17: split the root `README.md` into a beginner-facing user guide (what each tool does, how to run it) and a new `postprocess/README.md` developer guide (pipeline philosophy, the `stage1`-`stage6` architecture, noise-classification and kernel-attachment mechanisms, how to build a new tool) -- also closed two documentation gaps found along the way: `extract_hotspot_callers.py` had no README coverage at all, and `--extra-noise-config` (used by 7 of the 9 tools) was never mentioned anywhere |
+| 2026-08-20 | Plan 3.1: architecture-only plan for a new post-processing family reading Perfetto trace-CSV data instead of rocprof-sys's timemory text tables -- opens major phase `3.x`; found and documented a pre-existing stage4/5 boundary gap in the tree/POP-metrics backends, and a categories.h-documented AMD category enum far larger than one sample trace showed -- see full accounting below |
+| 2026-08-20 | Plan 3.2: renamed every `*_rocprofsys*` module to `*_rocprofsys_sample_*` (and `extract_calltree_traced.py` to `extract_wallclock_calltree.py`) to make room for the new `*_rocprofsys_trace_*` family; fixed both stage4/5 boundary gaps found in plan 3.1; documented the stage4→5 entry contract in `postprocess/README.md` -- roadmap step 1 of the plan-3.1 sequence -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -2208,4 +2210,110 @@ every one of the 9 `tools/*.py` files has a `README.md` section and every `stage
 directory has a `postprocess/README.md` subsection (scripted grep check, not just visual
 skimming); confirmed no stale pre-plan-2.16 (`postprocess/extract_*.py` without `tools/`) paths
 remain in either file. No test suite run needed -- no code files touched.
+
+## 2026-08-20 — Plan 3.1: architecture for a trace-CSV post-processing family (opens phase 3.x)
+
+Working manually against a real Perfetto trace (`Heat_Convection_Solver`'s
+`instrument_hotspots-trace-output-.../perfetto-trace-{0..3}.proto`), converted to flat per-rank
+CSVs via Perfetto's own `trace_processor` Python package (a separate, user-run step, not part of
+this codebase). That CSV is structurally unlike either existing source: real per-event nanosecond
+timestamps/durations instead of aggregated stats, one row per call instance instead of one row per
+label, and a `parent_slice_id`/`depth` pair that already gives the exact call tree -- no
+stack-walk reconstruction needed -- plus an exact, ground-truth `category` per row and, for GPU
+rows, a `corr_id` giving an **exact** correlation to the host-side launch call (replacing the
+existing kernel-attachment heuristics' name-demangling/proportional-weight-splitting guesswork).
+
+**Verified, not assumed, whether stage5/stage6 are actually reusable** by directly reading
+`stage5_table_render.py`, `stage4_rocprofsys_tree.py`, `stage3_rocprofsys.py`, and
+`stage6_cli_common.py`: yes substantially, with `stage4_rocprofsys_tree.merge_rank_trees()` able to
+double as the "collapse repeated same-position calls within one rank" pass trace data needs (one
+new small glue function required between two merge passes, since its output shape isn't the same
+as its input shape), and kernel attachment genuinely replaced (not just relocated) by the
+`corr_id` exact join.
+
+**Found a pre-existing stage4/5 boundary gap while designing this**, not caused by trace-CSV work
+at all: the flat-hotspots side cleanly separates stage4 (gather/merge) from stage5 (rank/render),
+but the tree side never did (`stage5_tree_render.py` mixed genuinely generic rendering with
+rocprof-sys-specific rank loading and GPU-kernel-attachment orchestration), and
+`stage5_pop_metrics_table.compute_run_metrics()` similarly welded per-rank data gathering to its
+LB/CommE/PE arithmetic. Both block a new backend from reusing the existing stage5 view code, so
+both get fixed as roadmap step 1 (plan 3.2) before any new trace-CSV module lands.
+
+**`categories.h` (AMD's own rocprofiler-systems header, confirmed via ROCm 7.0.1-era doxygen docs)
+documents a far larger category enum than one sample trace exercised** -- `ROCM_HSA_API`,
+`ROCM_MEMORY_COPY`, `ROCM_SCRATCH_MEMORY`, `ROCM_MARKER_API` (ROCTX), `ROCM_RCCL_API`, several
+`AMD_SMI_*` variants, and more, none of which appeared in the one real trace this session had
+access to (no ROCTX markers, no memory copies, no RCCL, no AMD-SMI counters). The new category→tag
+mapping design (plan 3.4) needs an explicit fallback bucket for unmapped categories, not a closed
+enum assumption.
+
+**Also corrected a mistaken claim from an earlier draft of this plan**: the CPU-hotspot pool
+should exclude only `ROCM_*` device/API categories, not `mpi` too -- verified by direct read of
+`stage4_rocprofsys_flat.py:207` that the existing `aggregate()` buckets purely on `row["gpu"]`; an
+MPI-tagged row that isn't GPU-classified is real CPU self-time and does show up in today's normal
+hotspots ranking, not excluded from it.
+
+No code changes in this plan -- architecture only. See
+`docs/plans/3.1-trace-postprocessing-family.md` for the full reuse-verification table, the general
+stage4→5-contract reflection this session's own findings prompted, and the 7-step implementation
+roadmap (plans 3.2-3.8) this plan lays out.
+
+## 2026-08-20 — Plan 3.2: renames, both stage4/5 boundary fixes, and the documented contract
+
+Roadmap step 1 of plan 3.1's sequence -- three things merged into one plan because none of the new
+trace-CSV modules can be built cleanly without them settled first.
+
+**Renamed** every `*_rocprofsys*` module to `*_rocprofsys_sample_*`
+(`stage1_rocprofsys.py`/`stage2_rocprofsys.py`/`stage3_rocprofsys.py`/`stage4_rocprofsys_flat.py`/
+`stage4_rocprofsys_tree.py`, plus every mirrored test file), since they only ever handle
+rocprof-sys's timemory text-table/sampling output and a bare `*_trace_*` name for the new family
+wouldn't say *whose* trace format. Surfaced a necessary side effect: `extract_calltree_traced.py`
+renamed to `extract_wallclock_calltree.py` (with its `stage5_calltree_traced_view.py` companion to
+`stage5_wallclock_calltree_view.py`) -- "traced" there has always meant "built from
+`wall_clock-*.txt` timemory data," a different sense of the word than the new Perfetto-trace-CSV
+tools, and leaving it name-adjacent to a future `extract_trace_calltree.py` would recreate the
+exact ambiguity the rename removes elsewhere. Found during implementation and fixed for full
+consistency: the renamed tool's own default output filename was still `calltree_traced.txt` -- the
+same stale ambiguity one level down -- renamed to `wallclock_calltree.txt`, matching
+`extract_calltree.py`/`calltree.txt`'s existing convention; the one genuinely user-visible
+behavior change in this plan, everything else being import-path-only.
+
+**Stage4/5 boundary fix #1**: moved `load_rank_trees()`/`kernel_totals_with_counts()`/
+`pair_gpu_per_rank()` out of `stage5_tree_render.py` into the renamed
+`stage4_rocprofsys_sample_tree.py`. The old `attach_and_render_gpu_kernels()` turned out not to be
+a pure-relocation candidate once actually read closely: it mixed stage4-shaped tree mutation with
+stage5-shaped fallback-table rendering (`format_aligned_rows()`/`REPORT_HEADERS`), and moving it
+wholesale would have made stage4 import from stage5, inverting the intended dependency direction.
+Split instead into `stage4_rocprofsys_sample_tree.attach_gpu_kernels()` (attachment,
+returns `(unattached, gpu_kernel_by_rank)`) and `stage5_tree_render.render_gpu_kernel_fallback()`
+(rendering only) -- a real design correction found only by reading the function's actual body, not
+anticipated when plan 3.1 described this as a simple move.
+
+**Stage4/5 boundary fix #2**: split `stage5_pop_metrics_table.compute_run_metrics()` into
+`gather_timing_summary_per_rank()` (data gathering, kept in this file rather than moved to stage4 --
+matching `stage5_fused_hotspots_table.build_combined_view()`'s already-established "stage5 backend
+gathers from stage4 modules" precedent) and `compute_metrics_from_per_rank()` (pure LB/CommE/PE
+arithmetic over a plain per-rank list, no stage4 imports at all). `compute_run_metrics()` itself
+kept as a thin, byte-identical wrapper for existing callers.
+
+**Documented the stage4→5 entry contract** in a new `postprocess/README.md` section, naming the
+four canonical shapes now in use (flat entry, tree node, per-rank label→value, per-rank timing
+summary) and the rule that a new backend for an existing report kind targets one of them to
+inherit its stage5 view for free.
+
+Verification, checked independently after each of the three sub-steps rather than once at the
+end: 509/509 passing after the rename alone; 512/512 after boundary fix #1 (with its own test
+split -- `LoadRankTreesTests`/`KernelTotalsWithCountsTests`/`PairGpuPerRankTests` moved into
+`test_stage4_rocprofsys_sample_tree.py`, the old `AttachAndRenderGpuKernelsTests` split into
+`AttachGpuKernelsTests` there and `RenderGpuKernelFallbackTests` in `test_stage5_tree_render.py`);
+515/515 after boundary fix #2 (3 new tests added, including calling
+`compute_metrics_from_per_rank()` against a hand-built per-rank list with no gather step involved
+at all, to directly confirm the reuse boundary actually works). Every touched file compiles;
+`grep` confirms zero remaining references to any pre-rename name anywhere under `postprocess/`
+(historical mentions in `docs/plans/*.md` deliberately left untouched, per this project's own rule
+against rewriting the historical record). Full accounting in
+`docs/plans/3.2-rename-and-boundary-fixes.md`, written after implementation -- a process gap
+(plan mode should have produced this file before any code changed, per `CLAUDE.md`'s own
+convention) caught when asked directly, corrected by writing it retroactively rather than left
+undocumented.
 

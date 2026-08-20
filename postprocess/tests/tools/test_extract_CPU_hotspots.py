@@ -10,7 +10,7 @@ FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
 MODULE_PATH = os.path.join(POSTPROCESS_DIR, "tools", "extract_CPU_hotspots.py")
 
-# extract_CPU_hotspots.py does a plain top-level "from stage1_rocprofsys import ...",
+# extract_CPU_hotspots.py does a plain top-level "from stage1_rocprofsys_sample import ...",
 # relying on its own directory being on sys.path -- true automatically when run
 # directly, but not when loaded here by explicit file path, so replicate that
 # manually (same as test_extract_hotspots.py).
@@ -22,7 +22,7 @@ hotspots = importlib.util.module_from_spec(spec)
 sys.modules["extract_CPU_hotspots"] = hotspots
 spec.loader.exec_module(hotspots)
 
-import stage4_rocprofsys_flat as flat  # noqa: E402  (needs sys.path insert above first)
+import stage4_rocprofsys_sample_flat as flat  # noqa: E402  (needs sys.path insert above first)
 import stage6_noise_config  # noqa: E402
 
 

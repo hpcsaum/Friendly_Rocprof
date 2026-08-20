@@ -1,5 +1,5 @@
 """Adds every postprocess/stageN/ and postprocess/tools/ directory to sys.path, once, so every
-source and test file's existing flat "from stage1_rocprofsys import X"-style imports keep
+source and test file's existing flat "from stage1_rocprofsys_sample import X"-style imports keep
 resolving no matter which subdirectory the importing file itself lives in. Import this only after
 putting postprocess/'s own absolute path on sys.path (see any tool or test file for the one-line
 pattern) -- this module finds its sibling directories via its own __file__, so it works

@@ -10,8 +10,8 @@ sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
 import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
 
 from stage1_run_dirs import resolve_run_dirs  # noqa: E402  (needs sys.path insert above first)
-from stage5_calltree_traced_view import build_calltree_view  # noqa: E402
-from stage5_tree_render import load_rank_trees  # noqa: E402
+from stage5_wallclock_calltree_view import build_calltree_view  # noqa: E402
+from stage4_rocprofsys_sample_tree import load_rank_trees  # noqa: E402
 import stage6_noise_config  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
@@ -183,8 +183,8 @@ class KernelIntegrationTests(unittest.TestCase):
 class AggregationTests(unittest.TestCase):
     # mpi_2rank: two ranks (2001, 2002), each with its own real timing for
     # "main"/"compute_stencil" -- exercises the cross-rank merge + load
-    # balance columns end to end (stage4_rocprofsys_tree's own math is tested
-    # directly and more exhaustively in test_stage4_rocprofsys_tree.py).
+    # balance columns end to end (stage4_rocprofsys_sample_tree's own math is tested
+    # directly and more exhaustively in test_stage4_rocprofsys_sample_tree.py).
     def test_no_per_rank_sections(self):
         report = render(MPI_2RANK_DIR)
         self.assertNotIn("=== Rank", report)

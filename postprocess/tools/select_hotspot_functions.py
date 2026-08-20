@@ -32,7 +32,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _stage_paths  # noqa: E402  (adds every stageN/ dir to sys.path)
 
-from stage4_rocprofsys_flat import aggregate
+from stage4_rocprofsys_sample_flat import aggregate
 from stage5_table_render import iter_table_rows, select_entries
 import stage6_cli_common
 import stage6_noise_config

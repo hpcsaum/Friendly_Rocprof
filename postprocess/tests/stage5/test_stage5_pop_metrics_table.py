@@ -83,6 +83,53 @@ class ComputeRunMetricsTests(unittest.TestCase):
             self.assertIsNone(r["gpu_busy_time"])
 
 
+class GatherComputeSplitTests(unittest.TestCase):
+    """compute_run_metrics() is gather_timing_summary_per_rank() + compute_metrics_from_per_rank()
+    -- the point of the split (see stage5_pop_metrics_table.py's own docstrings) is that a new
+    data source can call compute_metrics_from_per_rank() directly, without going through
+    gather_timing_summary_per_rank()'s rocprof-sys-specific data collection at all. Confirmed here
+    by calling it against a plain, hand-built per-rank list -- no fixture directory involved."""
+
+    def test_gather_returns_the_same_per_rank_shape_compute_run_metrics_uses(self):
+        per_rank, cpu_dir, gpu_dir, rank_keys = pop_table.gather_timing_summary_per_rank(REF_DIR)
+        self.assertIsNone(gpu_dir)
+        self.assertEqual(len(rank_keys), 2)
+        self.assertEqual(len(per_rank), 2)
+        for r in per_rank:
+            self.assertEqual(
+                set(r.keys()),
+                {"rank_key", "total_time", "comm_time", "useful_compute", "cpu_only_time", "gpu_busy_time"},
+            )
+        self.assertTrue(cpu_dir)
+
+    def test_compute_metrics_from_per_rank_works_without_any_gather_step(self):
+        # Same two ranks as pop_ref_2rank's own arithmetic, built by hand instead of parsed --
+        # compute_metrics_from_per_rank() has no idea (or opinion) where these numbers came from.
+        per_rank = [
+            {"rank_key": "r0", "total_time": 10.0, "comm_time": 2.0, "useful_compute": 8.0,
+             "cpu_only_time": None, "gpu_busy_time": None},
+            {"rank_key": "r1", "total_time": 12.0, "comm_time": 3.0, "useful_compute": 9.0,
+             "cpu_only_time": None, "gpu_busy_time": None},
+        ]
+        metrics = pop_table.compute_metrics_from_per_rank(per_rank)
+        useful = [8.0, 9.0]
+        total = [10.0, 12.0]
+        self.assertAlmostEqual(metrics["load_balance"], statistics.mean(useful) / max(useful))
+        self.assertAlmostEqual(metrics["communication_efficiency"], max(useful) / max(total))
+        self.assertIsNone(metrics["gpu_offload_efficiency"])
+        self.assertIsNone(metrics["total_gpu_busy_time"])
+
+    def test_compute_run_metrics_is_exactly_gather_then_compute(self):
+        gathered_per_rank, cpu_dir, gpu_dir, rank_keys = pop_table.gather_timing_summary_per_rank(REF_DIR)
+        expected = pop_table.compute_metrics_from_per_rank(gathered_per_rank)
+        actual = pop_table.compute_run_metrics(REF_DIR)
+        for key, value in expected.items():
+            self.assertEqual(actual[key], value)
+        self.assertEqual(actual["per_rank"], gathered_per_rank)
+        self.assertEqual(actual["num_ranks"], len(rank_keys))
+        self.assertEqual(actual["gpu_dir"], gpu_dir)
+
+
 class MpiPrefixReconciliationTests(unittest.TestCase):
     def test_mpidi_and_differently_cased_labels_count_as_communication(self):
         # pop_mpi_prefix_reconciliation/wall_clock-4001.txt: main(10.0) with

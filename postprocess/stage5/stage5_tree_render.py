@@ -4,42 +4,34 @@ Scope: drawing an indented, tree-connector-style call tree (render_forest()/
 render_node()) and right-aligning it into fixed-width text columns
 (format_aligned_rows()). Has no opinion on what a node's own numeric values mean or
 how they were computed -- callers supply a node_values(node) callable (see
-stage4_rocprofsys_tree.py's make_node_values()) and their own is_pruned()/
+stage4_rocprofsys_sample_tree.py's make_node_values()) and their own is_pruned()/
 collapses_children() predicates. Every node render_forest() walks is expected to
 carry a "static_children" list -- get_children() reads that key generically,
-without importing anything from stage4_rocprofsys_tree.py, but it's that module's
+without importing anything from stage4_rocprofsys_sample_tree.py, but it's that module's
 merge_rank_trees()/make_kernel_node()/_attach_kernel_group() that actually populate
 it; a real but indirect (data-shape, not call-graph) coupling worth knowing about
 when changing either side.
 
-Also owns the rank-loading and GPU-kernel-pairing/attachment logic shared by
-extract_calltree.py and extract_calltree_traced.py -- identical (or near-identical,
-modulo which glob pattern each tool prefers), so it lives here once rather than twice.
-Each tool's own
-stage5_calltree_view.py/stage5_calltree_traced_view.py companion module supplies only
+render_gpu_kernel_fallback() is the rendering half of GPU-kernel attachment: the actual
+attachment (mutating the tree, re-deriving per-rank kernel counts) is
+stage4_rocprofsys_sample_tree.attach_gpu_kernels() -- this module only turns whatever that
+couldn't place anywhere into the "=== GPU kernels ... ===" fallback table text, the same
+rendering-only role every other function here has. Each calltree tool's own
+stage5_calltree_view.py/stage5_wallclock_calltree_view.py companion module supplies only
 what's genuinely tool-specific (its own prune/collapse predicates, and, for the
-sampling tool, its wrapper-noise postprocess step) and calls these functions to do
-the rest.
+sampling tool, its wrapper-noise postprocess step) and calls stage4's loading/merging/
+attachment functions plus this module's rendering functions to do the rest.
 
 Functions: render_forest(), render_node(), get_children(), count_all_descendants(),
-build_children_map(), wrap_leading_labels(), format_aligned_rows(), load_rank_trees(),
-kernel_totals_with_counts(), pair_gpu_per_rank(), attach_and_render_gpu_kernels(),
-render_calltree_text(), aggregation_note(), tree_view_note().
+build_children_map(), wrap_leading_labels(), format_aligned_rows(),
+render_gpu_kernel_fallback(), render_calltree_text(), aggregation_note(), tree_view_note().
 """
 
-import glob
-import os
-
-from stage1_rocprofsys import PID_SUFFIX_RE, parse_table_file
-from stage1_rocprofv3 import parse_kernel_stats_csv
-from stage2_rocprofsys import attach_ancestry
-from stage3_rocprofsys import tag_rows
-from stage4_rocprofsys_tree import attach_kernel_summaries, make_kernel_node, unattached_kernel_per_rank
-from stage4_rocprofv3 import aggregate_per_rank
+from stage4_rocprofsys_sample_tree import make_kernel_node, unattached_kernel_per_rank
 
 # Real right-aligned columns for both calltree tools' rendered trees -- one row per
-# stage4_rocprofsys_tree.merge_rank_trees() node, averaged/load-balance-summarized
-# across every rank (see stage4_rocprofsys_tree.aggregate_node_stats()), not per-rank.
+# stage4_rocprofsys_sample_tree.merge_rank_trees() node, averaged/load-balance-summarized
+# across every rank (see stage4_rocprofsys_sample_tree.aggregate_node_stats()), not per-rank.
 # calls is a plain average (a function called a wildly different number of times per
 # rank is unusual and would show up in self-avg/self-max anyway); self gets the full
 # avg/std_dev/min/max load-balance treatment, matching this codebase's established
@@ -184,104 +176,12 @@ def format_aligned_rows(rows, headers):
     return "\n".join(lines) + "\n"
 
 
-def load_rank_trees(cpu_dir, primary_pattern, fallback_pattern, postprocess=None):
-    """Per rank: parse_table_file() + attach_ancestry() + tag_rows() directly (NOT a by-label
-    merge like stage4_rocprofsys_flat.scan_ranks(), which would destroy tree identity).
-    primary_pattern's file wins per rank when present; fallback_pattern is used only for a rank
-    with no primary_pattern file at all -- the two are never spliced together into one tree, since
-    their parent-links come from two independently-reconstructed call orders. After
-    parsing/ancestry-linking/tagging, postprocess(rows) is called if given (returning the edited
-    row list), for any further tool-specific row-set editing -- e.g. the sampling calltree tool's
-    conditional wrapper-noise splice; it defaults to None (a no-op).
-
-    Returns a list of (rank_key, rows, roots) tuples, one per rank, in sorted order. rows is every
-    parsed row (parent/depth/thread_id/tags all set); roots is the subset with parent is None --
-    every row with parent is None starts its own tree, which correctly separates multiple OS
-    threads' subtrees within one rank regardless of which of the two DEPTH-numbering shapes the
-    file uses (is_thread_root isn't reliably set in the DEPTH-resets-to-0 case, but parent is None
-    always is).
-    """
-    paths_by_rank = {}
-    order = []
-    for path in sorted(glob.glob(os.path.join(cpu_dir, "**", primary_pattern), recursive=True)):
-        m = PID_SUFFIX_RE.search(os.path.basename(path))
-        rank_key = m.group(1) if m else path
-        paths_by_rank[rank_key] = path
-        order.append(rank_key)
-    for path in sorted(glob.glob(os.path.join(cpu_dir, "**", fallback_pattern), recursive=True)):
-        m = PID_SUFFIX_RE.search(os.path.basename(path))
-        rank_key = m.group(1) if m else path
-        if rank_key not in paths_by_rank:
-            paths_by_rank[rank_key] = path
-            order.append(rank_key)
-
-    result = []
-    for rank_key in order:
-        path = paths_by_rank[rank_key]
-        rows = parse_table_file(path)
-        if not rows:
-            continue
-        attach_ancestry(rows)
-        tag_rows(rows, filename=path)
-        if postprocess is not None:
-            rows = postprocess(rows)
-        roots = [r for r in rows if r["parent"] is None]
-        result.append((rank_key, rows, roots))
-    return result
-
-
-def kernel_totals_with_counts(gpu_dir, rank_index):
-    """Re-parses one rank's own kernel_stats.csv directly for its Calls column, since
-    aggregate_per_rank() only returns total seconds, not call counts."""
-    candidates = sorted(glob.glob(os.path.join(gpu_dir, "**", "*_kernel_stats.csv"), recursive=True))
-    path = candidates[rank_index]
-    rows = parse_kernel_stats_csv(path)
-    totals = {}
-    for row in rows:
-        entry = totals.setdefault(row["label"], [0, 0.0])
-        entry[0] += row["count"]
-        entry[1] += row["total_ns"] / 1e9
-    return {k: tuple(v) for k, v in totals.items()}
-
-
-def pair_gpu_per_rank(gpu_dir, run_dir, rank_keys):
-    """Returns the per-rank GPU kernel total-seconds dicts if gpu_dir is given and its rank count
-    matches rank_keys, else None -- printing a warning (not raising) on a mismatched rank count,
-    rather than risk pairing mismatched ranks."""
-    if gpu_dir is None:
-        return None
-    gpu_totals, gpu_scanned = aggregate_per_rank(gpu_dir)
-    if gpu_scanned and len(gpu_totals) == len(rank_keys):
-        return gpu_totals
-    if gpu_scanned:
-        print(
-            f"warning: {run_dir!r}: rocprof-sys reports {len(rank_keys)} rank(s) but "
-            f"rocprofv3 reports {len(gpu_totals)} -- skipping GPU kernel integration "
-            "rather than risk pairing mismatched ranks",
-        )
-    return None
-
-
-def attach_and_render_gpu_kernels(flat, gpu_per_rank, gpu_dir, rank_keys, is_pruned, node_values,
-                                   collect_into=None):
-    """If gpu_per_rank is given, re-derives per-rank call counts from each rank's own
-    kernel_stats.csv (kernel_totals_with_counts()), mutates flat in place to attach matched
-    kernels onto the tree (stage4_rocprofsys_tree.attach_kernel_summaries()), and renders the
-    '=== GPU kernels ... ===' fallback table for anything that couldn't be attached. Returns
-    fallback text (empty string if gpu_per_rank is None or nothing was left unattached), ending in
-    exactly its own content's newline and no more -- the caller supplies any blank line.
-
-    collect_into is passed straight through to attach_kernel_summaries() -- omit it (the default)
-    for a caller that only renders downward via static_children; pass a list for a caller that
-    also needs to find an attached kernel's own node later by label (e.g. via
-    stage4_rocprofsys_tree.caller_chains_for_label(), which searches a flat row list)."""
-    if gpu_per_rank is None:
-        return ""
-
-    gpu_kernel_by_rank = {
-        rank_key: kernel_totals_with_counts(gpu_dir, i) for i, rank_key in enumerate(rank_keys)
-    }
-    unattached = attach_kernel_summaries(flat, gpu_kernel_by_rank, is_pruned, collect_into=collect_into)
+def render_gpu_kernel_fallback(unattached, gpu_kernel_by_rank, node_values):
+    """Renders the '=== GPU kernels ... ===' fallback table for whatever
+    stage4_rocprofsys_sample_tree.attach_gpu_kernels() couldn't place anywhere in the tree --
+    the rendering half of what used to be one mixed attach-and-render function here. Returns ""
+    when unattached is empty (nothing left to show), ending in exactly its own content's trailing
+    newline and no more otherwise -- the caller supplies any blank line."""
     if not unattached:
         return ""
 
@@ -324,7 +224,7 @@ def aggregation_note():
 def tree_view_note(rank_keys, max_depth, show_gpu_api, show_rocprofsys_internals=None,
                     show_mpi_internals=None, show_compiler_runtime=None):
     """Bulleted note summarizing how this specific tree was filtered/truncated. The 3 internals
-    flags default to None (omitted from the summary entirely) for extract_calltree_traced.py,
+    flags default to None (omitted from the summary entirely) for extract_wallclock_calltree.py,
     which only has show_gpu_api; extract_calltree.py passes all 4."""
     tiers = [("GPU-API/runtime noise", show_gpu_api)]
     if show_rocprofsys_internals is not None:

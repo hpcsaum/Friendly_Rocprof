@@ -4,11 +4,11 @@ import sys
 import unittest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
-MODULE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "stage1", "stage1_rocprofsys.py")
+MODULE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "stage1", "stage1_rocprofsys_sample.py")
 
-spec = importlib.util.spec_from_file_location("stage1_rocprofsys", MODULE_PATH)
+spec = importlib.util.spec_from_file_location("stage1_rocprofsys_sample", MODULE_PATH)
 stage1 = importlib.util.module_from_spec(spec)
-sys.modules["stage1_rocprofsys"] = stage1
+sys.modules["stage1_rocprofsys_sample"] = stage1
 spec.loader.exec_module(stage1)
 
 

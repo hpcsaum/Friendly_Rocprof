@@ -3,7 +3,7 @@
 Scope: turning per-rank *_kernel_stats.csv files into merged, by-kernel-name aggregated entries --
 either one global total per kernel (aggregate()) or one total per kernel per rank
 (aggregate_per_rank(), what a load-imbalance table needs). No tag/noise-filtering machinery is
-needed here, unlike stage4_rocprofsys_flat.py's CPU side -- rocprofv3's kernel_stats.csv is already
+needed here, unlike stage4_rocprofsys_sample_flat.py's CPU side -- rocprofv3's kernel_stats.csv is already
 clean per-kernel data, not a raw call tree that needs noise classification. Feeds
 stage5_gpu_hotspots_table.py, stage5_load_imbalance_table.py, stage5_fused_hotspots_table.py, and
 stage5_pop_metrics_table.py.

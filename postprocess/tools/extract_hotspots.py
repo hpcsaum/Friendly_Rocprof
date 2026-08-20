@@ -24,7 +24,7 @@ import _stage_paths  # noqa: E402  (adds every stageN/ dir to sys.path)
 
 import extract_CPU_hotspots as cpu_tool
 import extract_GPU_hotspots as gpu_tool
-import stage4_rocprofsys_flat
+import stage4_rocprofsys_sample_flat
 import stage4_rocprofv3
 from stage1_run_dirs import resolve_two_dirs
 from stage5_cpu_hotspots_table import CPU_HOTSPOTS_COLUMNS
@@ -121,7 +121,7 @@ def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=
         prepare=_prepare_pct_total("self_sum", info["cpu_total_raw"]),
     )
 
-    cpu_per_rank, cpu_imbalance_scanned = stage4_rocprofsys_flat.aggregate_per_rank(rocprof_sys_dir, unfiltered=unfiltered)
+    cpu_per_rank, cpu_imbalance_scanned = stage4_rocprofsys_sample_flat.aggregate_per_rank(rocprof_sys_dir, unfiltered=unfiltered)
     if len(cpu_imbalance_scanned) < 2:
         cpu_imbalance_title = (
             f"CPU load imbalance across ranks (rocprof-sys run) -- skipped: only "

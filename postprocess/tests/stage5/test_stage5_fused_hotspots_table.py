@@ -16,7 +16,7 @@ fused = importlib.util.module_from_spec(spec)
 sys.modules["stage5_fused_hotspots_table"] = fused
 spec.loader.exec_module(fused)
 
-import stage4_rocprofsys_flat  # noqa: E402  (needs sys.path insert above first)
+import stage4_rocprofsys_sample_flat  # noqa: E402  (needs sys.path insert above first)
 import stage4_rocprofv3  # noqa: E402
 from stage5_table_render import render_table  # noqa: E402
 
@@ -37,7 +37,7 @@ class BuildCombinedViewTests(unittest.TestCase):
         # Independently recompute expected numbers straight from the sibling
         # stage4 modules' own aggregate() on the same fixtures, rather than hand-typing
         # decimals -- this is the actual documented formula, not a guess.
-        exp_cpu_entries, exp_gpu_api_entries, exp_cpu_scanned, exp_cpu_total_raw = stage4_rocprofsys_flat.aggregate(
+        exp_cpu_entries, exp_gpu_api_entries, exp_cpu_scanned, exp_cpu_total_raw = stage4_rocprofsys_sample_flat.aggregate(
             CPU_DIR_GPU_SYNC_WAIT
         )
         exp_gpu_entries, exp_gpu_scanned, exp_gpu_total_ns = stage4_rocprofv3.aggregate(GPU_DIR_SINGLE)

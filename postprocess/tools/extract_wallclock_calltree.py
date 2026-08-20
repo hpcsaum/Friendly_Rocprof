@@ -14,7 +14,7 @@ at the cost of needing noise filtering and only statistically-approximate timing
 Unlike extract_CPU_hotspots.py's scan_ranks()/aggregate(), this does NOT merge
 same-label rows within one rank's own file -- a calltree needs every individual
 call-tree node kept distinct (attach_ancestry()'s parent links intact), not summed
-by label. It DOES merge structurally ACROSS ranks (see stage4_rocprofsys_tree.merge_rank_trees())
+by label. It DOES merge structurally ACROSS ranks (see stage4_rocprofsys_sample_tree.merge_rank_trees())
 into one aggregated tree -- a global view, not one call tree per rank -- with each
 node's CALLS/SELF/TOTAL columns averaged (and self-time's load imbalance shown via
 std_dev/min/max) across every rank, the same avg/std_dev/min/max convention
@@ -37,7 +37,7 @@ import _stage_paths  # noqa: E402  (adds every stageN/ dir to sys.path)
 import extract_CPU_hotspots as cpu_tool
 import extract_GPU_hotspots as gpu_tool
 from stage1_run_dirs import resolve_two_dirs
-from stage5_calltree_traced_view import build_calltree_view
+from stage5_wallclock_calltree_view import build_calltree_view
 from stage5_tree_render import aggregation_note, tree_view_note
 import stage6_cli_common
 import stage6_noise_config
@@ -112,7 +112,7 @@ def write_report(cpu_dir, gpu_dir, dest_path, max_depth=None, show_gpu_api=False
             for key in ("executable", "run_datetime", "total_runtime")
         }
 
-    header = standard_header("extract_calltree_traced.py", SHORT_DESCRIPTION, [{
+    header = standard_header("extract_wallclock_calltree.py", SHORT_DESCRIPTION, [{
         "directories": directories, "executable": run_info["executable"],
         "run_datetime": run_info["run_datetime"], "runtime": run_info["total_runtime"],
         "num_ranks": len(rank_keys),
@@ -124,7 +124,7 @@ def write_report(cpu_dir, gpu_dir, dest_path, max_depth=None, show_gpu_api=False
 
     footer = help_redirect(
         "noise filtering, instrumentation depth, and kernel-placement caveats",
-        script_name="extract_calltree_traced.py",
+        script_name="extract_wallclock_calltree.py",
     ) + command_line
 
     return write_report_file(dest_path, render_report(header, sections, footer))
@@ -139,7 +139,7 @@ def main(argv=None):
                          help="rocprofv3 output directory (GPU side) -- omit when output_dir "
                               "already contains both subdirs, or when there's no GPU data to pair")
     parser.add_argument("-o", "--output", dest="dest", default=None,
-                         help="path to write the call tree report (default: <output_dir>/calltree_traced.txt)")
+                         help="path to write the call tree report (default: <output_dir>/wallclock_calltree.txt)")
     stage6_cli_common.add_max_depth_arg(parser)
     stage6_cli_common.add_noise_tier_args(parser, ["gpu_api"])
     stage6_noise_config.add_cli_argument(parser)
@@ -150,7 +150,7 @@ def main(argv=None):
 
     stage6_noise_config.configure_from_args(args)
 
-    dest = stage6_cli_common.resolve_dest(args.dest, args.output_dir, "calltree_traced.txt")
+    dest = stage6_cli_common.resolve_dest(args.dest, args.output_dir, "wallclock_calltree.txt")
     tokens = [os.path.abspath(args.output_dir)]
     if args.gpu_dir:
         tokens.append(os.path.abspath(args.gpu_dir))

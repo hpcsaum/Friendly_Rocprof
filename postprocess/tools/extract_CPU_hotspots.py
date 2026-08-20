@@ -18,8 +18,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _stage_paths  # noqa: E402  (adds every stageN/ dir to sys.path)
 
-from stage1_rocprofsys import PID_SUFFIX_RE
-from stage4_rocprofsys_flat import aggregate, aggregate_per_rank
+from stage1_rocprofsys_sample import PID_SUFFIX_RE
+from stage4_rocprofsys_sample_flat import aggregate, aggregate_per_rank
 from stage5_cpu_hotspots_table import CPU_HOTSPOTS_COLUMNS
 from stage5_load_imbalance_table import compute_load_imbalance, imbalance_note, load_imbalance_columns
 from stage5_table_render import pct_total_note, ranking_note, render_table, select_entries

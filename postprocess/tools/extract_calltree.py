@@ -6,7 +6,7 @@ that launched them.
 This is the sampling-based variant: it prefers sampling_wall_clock-<pid>.txt
 (a real unwound stack sample at every tick, regardless of what rocprof-sys
 happened to instrument) per rank, falling back to wall_clock-<pid>.txt only
-for a rank with no sampling file at all. Unlike extract_calltree_traced.py
+for a rank with no sampling file at all. Unlike extract_wallclock_calltree.py
 (the wall_clock-preferred tool), this shows the TRUE call depth -- a real
 intermediate frame that was never GOTCHA-instrumented still shows up here --
 at the cost of two tradeoffs: (1) sampling's own timing is only statistically
@@ -19,7 +19,7 @@ Unlike extract_CPU_hotspots.py's scan_ranks()/aggregate(), this does NOT merge
 same-label rows within one rank's own file -- a calltree needs every
 individual call-tree node kept distinct (attach_ancestry()'s parent links
 intact), not summed by label. It DOES merge structurally ACROSS ranks (see
-stage4_rocprofsys_tree.merge_rank_trees()) into one aggregated tree -- a global view,
+stage4_rocprofsys_sample_tree.merge_rank_trees()) into one aggregated tree -- a global view,
 not one call tree per rank -- with each node's CALLS/TOTAL-AVG(s) columns
 averaged, and SELF given a full avg/std_dev/min/max load-balance
 breakdown, the same convention extract_CPU_hotspots.compute_load_imbalance()
@@ -67,7 +67,7 @@ either way.
 
 This is the sampling-based variant: it shows the TRUE call depth (every real
 stack frame at each sample tick), not just what rocprof-sys happened to
-instrument -- see extract_calltree_traced.py for the faster, exact-where-
+instrument -- see extract_wallclock_calltree.py for the faster, exact-where-
 instrumented alternative if you don't need that. The tradeoff is that
 sampling's own timing is only statistically approximate, and the raw sampled
 stack is dominated by noise: rocprof-sys's own instrumentation/dynamic-linker

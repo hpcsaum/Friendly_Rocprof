@@ -7,18 +7,18 @@ import unittest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-MODULE_PATH = os.path.join(POSTPROCESS_DIR, "tools", "extract_calltree_traced.py")
+MODULE_PATH = os.path.join(POSTPROCESS_DIR, "tools", "extract_wallclock_calltree.py")
 
-# extract_calltree_traced.py does a plain top-level "from stage1_run_dirs import ...",
+# extract_wallclock_calltree.py does a plain top-level "from stage1_run_dirs import ...",
 # relying on its own directory being on sys.path -- true automatically when run
 # directly, but not when loaded here by explicit file path, so replicate that
 # manually (same as test_extract_hotspots.py).
 sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
 import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
 
-spec = importlib.util.spec_from_file_location("extract_calltree_traced", MODULE_PATH)
+spec = importlib.util.spec_from_file_location("extract_wallclock_calltree", MODULE_PATH)
 ct_tool = importlib.util.module_from_spec(spec)
-sys.modules["extract_calltree_traced"] = ct_tool
+sys.modules["extract_wallclock_calltree"] = ct_tool
 spec.loader.exec_module(ct_tool)
 
 import stage6_noise_config  # noqa: E402  (needs sys.path insert above first)
@@ -29,7 +29,7 @@ EMPTY_DIR = os.path.join(FIXTURES, "no_timing_data")
 
 
 class ResolveTwoDirsTests(unittest.TestCase):
-    # extract_calltree_traced.py imports resolve_two_dirs() from stage1_run_dirs.py (which has
+    # extract_wallclock_calltree.py imports resolve_two_dirs() from stage1_run_dirs.py (which has
     # its own thorough direct tests) -- this just confirms the import wires through correctly.
     def test_detects_paired_subdirs(self):
         cpu_dir, gpu_dir = ct_tool.resolve_two_dirs(KERNEL_ANCHOR_DIR, None)
@@ -45,7 +45,7 @@ class ResolveTwoDirsTests(unittest.TestCase):
 class HeaderProseTests(unittest.TestCase):
     def test_header_states_ranks_aggregated(self):
         with tempfile.TemporaryDirectory() as tmp:
-            dest = os.path.join(tmp, "calltree_traced.txt")
+            dest = os.path.join(tmp, "wallclock_calltree.txt")
             report = ct_tool.write_report(MPI_2RANK_DIR, None, dest)
         self.assertIn("MPI ranks: 2", report)
 

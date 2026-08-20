@@ -1,21 +1,23 @@
 """Stage 5 tree builder for the sampling-based calltree tool (extract_calltree.py).
 
 Scope: this tool's own --show-*-driven prune/collapse predicates and its wrapper-noise
-postprocess step; everything else (rank loading, GPU-kernel pairing/attachment, rendering) is
-generic, shared with extract_calltree_traced.py's own companion module -- see
-stage5_tree_render.py.
+postprocess step; everything else (rank loading, GPU-kernel pairing/attachment in
+stage4_rocprofsys_sample_tree.py; rendering in stage5_tree_render.py) is generic, shared with
+extract_wallclock_calltree.py's own companion module.
 
 Functions: strip_wrapper_noise(), build_calltree_view().
 """
 
-from stage3_rocprofsys import make_collapses_children, make_is_pruned, remove_tagged_subtrees, splice_by_tag
-from stage4_rocprofsys_tree import flatten_tree, make_node_values, merge_rank_trees
-from stage5_tree_render import (
-    attach_and_render_gpu_kernels,
+from stage3_rocprofsys_sample import make_collapses_children, make_is_pruned, remove_tagged_subtrees, splice_by_tag
+from stage4_rocprofsys_sample_tree import (
+    attach_gpu_kernels,
+    flatten_tree,
     load_rank_trees,
+    make_node_values,
+    merge_rank_trees,
     pair_gpu_per_rank,
-    render_calltree_text,
 )
+from stage5_tree_render import render_calltree_text, render_gpu_kernel_fallback
 
 
 def strip_wrapper_noise(rows):
@@ -37,11 +39,13 @@ def build_calltree_view(run_dir, cpu_dir, gpu_dir, max_depth=None, show_gpu_api=
     """Builds this tool's own prune/collapse predicates from its four --show-* flags and its own
     wrapper-noise postprocess step (strip_wrapper_noise(), passed to the shared load_rank_trees(),
     active unless show_rocprofsys_internals), merges into one aggregated tree
-    (stage4_rocprofsys_tree.merge_rank_trees), then delegates to stage5_tree_render's shared
-    load_rank_trees()/pair_gpu_per_rank()/render_calltree_text()/attach_and_render_gpu_kernels()
-    for everything that's identical to extract_calltree_traced.py's own view. Returns a dict:
-    rank_keys, gpu_paired (bool -- the caller's header line needs this), tree_text, fallback_text
-    (empty string if nothing unattached).
+    (stage4_rocprofsys_sample_tree.merge_rank_trees), then delegates to
+    stage4_rocprofsys_sample_tree's shared load_rank_trees()/pair_gpu_per_rank()/
+    attach_gpu_kernels() and stage5_tree_render's render_calltree_text()/
+    render_gpu_kernel_fallback() for everything that's identical to
+    extract_wallclock_calltree.py's own view. Returns a dict: rank_keys, gpu_paired (bool -- the
+    caller's header line needs this), tree_text, fallback_text (empty string if nothing
+    unattached).
     """
     ranks = load_rank_trees(
         cpu_dir, "sampling_wall_clock-*.txt", "wall_clock-*.txt",
@@ -67,7 +71,8 @@ def build_calltree_view(run_dir, cpu_dir, gpu_dir, max_depth=None, show_gpu_api=
     flat = flatten_tree(merged_roots)
 
     gpu_per_rank = pair_gpu_per_rank(gpu_dir, run_dir, rank_keys)
-    fallback_text = attach_and_render_gpu_kernels(flat, gpu_per_rank, gpu_dir, rank_keys, is_pruned, node_values)
+    unattached, gpu_kernel_by_rank = attach_gpu_kernels(flat, gpu_per_rank, gpu_dir, rank_keys, is_pruned)
+    fallback_text = render_gpu_kernel_fallback(unattached, gpu_kernel_by_rank, node_values)
     tree_text = render_calltree_text(merged_roots, flat, max_depth, is_pruned, node_values, collapses_children)
 
     return {

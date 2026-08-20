@@ -7,15 +7,16 @@ hierarchy. Also owns the "=== Metrics ===" table's column spec and assembly -- w
 columns appear depends on the data (GPU columns only when any run has GPU data, CompE/GE only for a
 scaling study), unlike the hotspots tables' fixed column sets.
 
-Functions: gpu_sync_wait_per_rank(), mpi_comm_time_per_rank(), compute_run_metrics(),
-compute_scaling_metrics(), compute_gpu_efficiency(), run_label(), fmt(), pop_metrics_columns(),
-metrics_legend(), format_metrics_table().
+Functions: gpu_sync_wait_per_rank(), mpi_comm_time_per_rank(), gather_timing_summary_per_rank(),
+compute_metrics_from_per_rank(), compute_run_metrics(), compute_scaling_metrics(),
+compute_gpu_efficiency(), run_label(), fmt(), pop_metrics_columns(), metrics_legend(),
+format_metrics_table().
 """
 
 import os
 import statistics
 
-import stage4_rocprofsys_flat
+import stage4_rocprofsys_sample_flat
 import stage4_rocprofv3
 from stage1_run_dirs import resolve_run_dirs
 from stage5_table_render import render_table
@@ -36,7 +37,7 @@ def gpu_sync_wait_per_rank(cpu_dir):
     rows and aggregate_per_rank() silently drops them. Goes one level lower,
     straight to scan_ranks(), to see those rows at all.
     """
-    ranks = stage4_rocprofsys_flat.scan_ranks(cpu_dir)
+    ranks = stage4_rocprofsys_sample_flat.scan_ranks(cpu_dir)
     return [
         sum(row["self_sum"] for row in r["rows"] if row["gpu"] and row["label"] in SYNC_WAIT_LABELS)
         for r in ranks
@@ -49,18 +50,16 @@ def mpi_comm_time_per_rank(cpu_dir):
     MPI classification from a bare label string a second time. Can't use
     aggregate_per_rank() for this, same reason gpu_sync_wait_per_rank() can't:
     it only returns non-GPU rows with the tag already discarded."""
-    ranks = stage4_rocprofsys_flat.scan_ranks(cpu_dir)
+    ranks = stage4_rocprofsys_sample_flat.scan_ranks(cpu_dir)
     return [sum(row["self_sum"] for row in r["rows"] if row["mpi"]) for r in ranks]
 
 
-def compute_run_metrics(run_dir):
-    """Load Balance, Communication Efficiency, and Parallel Efficiency for one
-    run, plus the per-rank "useful compute time" totals a scaling comparison
-    needs, plus four GPU-specific extensions (GPU Offload Efficiency, GPU
-    Utilization, GPU Load Balance, and the totals GPU Efficiency needs) when a
-    paired rocprofv3 dir is present -- see docs/pop_metrics_reference.md's
-    "GPU-specific extensions" section for why these aren't official POP
-    metrics. Returns a dict -- see the bottom of this function for every key.
+def gather_timing_summary_per_rank(run_dir):
+    """Gathers the raw per-rank timing data compute_metrics_from_per_rank() needs -- the "get the
+    data" half of what used to be one function here (compute_run_metrics()), kept in this file
+    (rather than moved to a stage4 module) matching stage5_fused_hotspots_table.build_combined_view()'s
+    own already-established shape: a stage5 backend that gathers from stage4 modules and does
+    per-run correction arithmetic, not something stage4 itself owns.
 
     Per rank: total_time is that rank's root/whole-program inclusive wall time
     (max of its inclusive-time dict, same "largest value is the root" heuristic
@@ -81,9 +80,15 @@ def compute_run_metrics(run_dir):
     two directories don't report the same number of ranks, the GPU side is
     skipped entirely for this run (falls back to CPU-only) with a warning,
     rather than risk combining mismatched ranks.
+
+    Returns (per_rank, cpu_dir, gpu_dir, rank_keys): per_rank is a list of
+    {"rank_key", "total_time", "comm_time", "useful_compute", "cpu_only_time", "gpu_busy_time"}
+    dicts, one per rank, in the "per-rank timing summary" shape compute_metrics_from_per_rank()
+    consumes; gpu_dir comes back None when GPU data wasn't actually paired in (even if a gpu_dir
+    argument existed, on a rank-count mismatch).
     """
     cpu_dir, gpu_dir = resolve_run_dirs(run_dir)
-    incl_per_rank, rank_keys = stage4_rocprofsys_flat.aggregate_per_rank(cpu_dir, unfiltered=True)
+    incl_per_rank, rank_keys = stage4_rocprofsys_sample_flat.aggregate_per_rank(cpu_dir, unfiltered=True)
     comm_time_per_rank = mpi_comm_time_per_rank(cpu_dir)
 
     if not rank_keys:
@@ -135,6 +140,21 @@ def compute_run_metrics(run_dir):
             "gpu_busy_time": gpu_busy_time,
         })
 
+    return per_rank, cpu_dir, (gpu_dir if gpu_per_rank is not None else None), rank_keys
+
+
+def compute_metrics_from_per_rank(per_rank):
+    """Load Balance, Communication Efficiency, and Parallel Efficiency from a plain per-rank
+    timing summary (see gather_timing_summary_per_rank()'s return shape) -- the "compute what the
+    table needs" half of what used to be one function here. Source-agnostic once that list
+    exists: no stage4 imports, no opinion on where total_time/comm_time/useful_compute/
+    gpu_busy_time actually came from, so a new data source's own gathering step can feed this
+    function directly. Also the per-run totals a scaling comparison needs
+    (total/avg_useful_compute) and the four GPU-specific extensions (GPU Offload Efficiency, GPU
+    Utilization, GPU Load Balance, and the totals GPU Efficiency needs) when any rank carries GPU
+    data -- see docs/pop_metrics_reference.md's "GPU-specific extensions" section for why these
+    aren't official POP metrics. Returns a dict -- see the bottom of this function for every key.
+    """
     useful_values = [r["useful_compute"] for r in per_rank]
     total_values = [r["total_time"] for r in per_rank]
     max_useful = max(useful_values)
@@ -146,8 +166,8 @@ def compute_run_metrics(run_dir):
         load_balance * comm_efficiency if load_balance is not None and comm_efficiency is not None else None
     )
 
-    # All-or-nothing per run (see resolve_run_dirs()/the mismatched-rank-count fallback above):
-    # either every rank has GPU data or none do, so checking one field is enough.
+    # All-or-nothing per run (see gather_timing_summary_per_rank()'s mismatched-rank-count
+    # fallback): either every rank has GPU data or none do, so checking one field is enough.
     gpu_busy_values = [r["gpu_busy_time"] for r in per_rank]
     has_gpu_data = all(v is not None for v in gpu_busy_values)
     max_gpu_busy = max(gpu_busy_values) if has_gpu_data else None
@@ -168,11 +188,6 @@ def compute_run_metrics(run_dir):
     )
 
     return {
-        "run_dir": run_dir,
-        "cpu_dir": cpu_dir,
-        "gpu_dir": gpu_dir if gpu_per_rank is not None else None,
-        "num_ranks": len(rank_keys),
-        "per_rank": per_rank,
         "load_balance": load_balance,
         "communication_efficiency": comm_efficiency,
         "parallel_efficiency": parallel_efficiency,
@@ -183,6 +198,24 @@ def compute_run_metrics(run_dir):
         "gpu_load_balance": gpu_load_balance,
         "total_gpu_busy_time": sum(gpu_busy_values) if has_gpu_data else None,
         "avg_gpu_busy_time": statistics.mean(gpu_busy_values) if has_gpu_data else None,
+    }
+
+
+def compute_run_metrics(run_dir):
+    """One run's full metrics dict: gather_timing_summary_per_rank() then
+    compute_metrics_from_per_rank(), merged with this run's own identifying metadata. Kept as one
+    call for existing callers (e.g. extract_pop_metrics.py) that just want "give me a directory,
+    get me the metrics" -- a new data source reuses compute_metrics_from_per_rank() directly
+    instead, feeding it from its own gathering step rather than this one."""
+    per_rank, cpu_dir, gpu_dir, rank_keys = gather_timing_summary_per_rank(run_dir)
+    metrics = compute_metrics_from_per_rank(per_rank)
+    return {
+        "run_dir": run_dir,
+        "cpu_dir": cpu_dir,
+        "gpu_dir": gpu_dir,
+        "num_ranks": len(rank_keys),
+        "per_rank": per_rank,
+        **metrics,
     }
 
 

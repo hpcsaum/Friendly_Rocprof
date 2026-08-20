@@ -1,20 +1,22 @@
-"""Stage 5 tree builder for the traced/wall_clock-based calltree tool (extract_calltree_traced.py).
+"""Stage 5 tree builder for the traced/wall_clock-based calltree tool (extract_wallclock_calltree.py).
 
 Scope: this tool's own single --show-gpu-api-driven prune predicate; everything else (rank
-loading, GPU-kernel pairing/attachment, rendering) is generic, shared with extract_calltree.py's
-own companion module -- see stage5_tree_render.py.
+loading, GPU-kernel pairing/attachment in stage4_rocprofsys_sample_tree.py; rendering in
+stage5_tree_render.py) is generic, shared with extract_calltree.py's own companion module.
 
 Functions: build_calltree_view().
 """
 
-from stage3_rocprofsys import make_is_pruned, splice_by_tag
-from stage4_rocprofsys_tree import flatten_tree, make_node_values, merge_rank_trees
-from stage5_tree_render import (
-    attach_and_render_gpu_kernels,
+from stage3_rocprofsys_sample import make_is_pruned, splice_by_tag
+from stage4_rocprofsys_sample_tree import (
+    attach_gpu_kernels,
+    flatten_tree,
     load_rank_trees,
+    make_node_values,
+    merge_rank_trees,
     pair_gpu_per_rank,
-    render_calltree_text,
 )
+from stage5_tree_render import render_calltree_text, render_gpu_kernel_fallback
 
 
 def _splice_other(rows):
@@ -48,7 +50,8 @@ def build_calltree_view(run_dir, cpu_dir, gpu_dir, max_depth=None, show_gpu_api=
     flat = flatten_tree(merged_roots)
 
     gpu_per_rank = pair_gpu_per_rank(gpu_dir, run_dir, rank_keys)
-    fallback_text = attach_and_render_gpu_kernels(flat, gpu_per_rank, gpu_dir, rank_keys, is_pruned, node_values)
+    unattached, gpu_kernel_by_rank = attach_gpu_kernels(flat, gpu_per_rank, gpu_dir, rank_keys, is_pruned)
+    fallback_text = render_gpu_kernel_fallback(unattached, gpu_kernel_by_rank, node_values)
     tree_text = render_calltree_text(merged_roots, flat, max_depth, is_pruned, node_values)
 
     return {

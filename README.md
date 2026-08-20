@@ -146,7 +146,7 @@ When a paired `rocprofv3/` directory is available (from `profile_hotspots.sh`, o
 `instrument_hotspots.sh trace`), real GPU kernel data is nested into the tree at the CPU
 code that launched it, when that can be determined.
 
-### Call tree (exact, shallower) — `extract_calltree_traced.py`
+### Call tree (exact, shallower) — `extract_wallclock_calltree.py`
 
 The faster, simpler alternative: built from rocprof-sys's own instrumented data instead of
 sampling, so every call shown has **exact** timing — but the tree is only as deep as
@@ -154,7 +154,7 @@ rocprof-sys's own instrumentation boundaries, so a real but never-instrumented i
 frame is invisible.
 
 ```bash
-python3 postprocess/tools/extract_calltree_traced.py <output-dir> [-o calltree_traced.txt] [--max-depth N] [--show-gpu-api]
+python3 postprocess/tools/extract_wallclock_calltree.py <output-dir> [-o wallclock_calltree.txt] [--max-depth N] [--show-gpu-api]
 ```
 
 Same GPU-kernel attachment and `--max-depth` behavior as `extract_calltree.py` above;

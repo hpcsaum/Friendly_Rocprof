@@ -16,21 +16,19 @@ sys.modules["stage5_tree_render"] = tr
 spec.loader.exec_module(tr)
 
 # render_forest() takes a node_values(node) callable -- in real usage this always
-# comes from stage4_rocprofsys_tree.make_node_values(), so the fixture here uses the
+# comes from stage4_rocprofsys_sample_tree.make_node_values(), so the fixture here uses the
 # same real function rather than a stand-in, mirroring production code's own
 # dependency between the two modules.
-spec4 = importlib.util.spec_from_file_location("stage4_rocprofsys_tree", os.path.join(POSTPROCESS_DIR, "stage4", "stage4_rocprofsys_tree.py"))
+spec4 = importlib.util.spec_from_file_location("stage4_rocprofsys_sample_tree", os.path.join(POSTPROCESS_DIR, "stage4", "stage4_rocprofsys_sample_tree.py"))
 s4t = importlib.util.module_from_spec(spec4)
-sys.modules["stage4_rocprofsys_tree"] = s4t
+sys.modules["stage4_rocprofsys_sample_tree"] = s4t
 spec4.loader.exec_module(s4t)
 
 from stage1_run_dirs import resolve_run_dirs  # noqa: E402  (needs sys.path insert above first)
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
-MPI_2RANK_DIR = os.path.join(FIXTURES, "mpi_2rank")
 KERNEL_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_kernel_anchor")
 KERNEL_NO_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_kernel_no_anchor")
-SAMPLING_FALLBACK_DIR = os.path.join(FIXTURES, "calltree_sampling_fallback")
 
 RANK = "r0"  # every hand-built test tree in this file simulates one rank
 
@@ -161,104 +159,32 @@ class WrapLeadingLabelsTests(unittest.TestCase):
         self.assertEqual(wrapped[1], ("... (2 more node(s) hidden)", None))
 
 
-class LoadRankTreesTests(unittest.TestCase):
-    def test_primary_pattern_file_used_when_present(self):
-        cpu_dir, _gpu_dir = resolve_run_dirs(MPI_2RANK_DIR)
-        ranks = tr.load_rank_trees(cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt")
-        self.assertEqual(len(ranks), 2)
-
-    def test_fallback_pattern_used_only_when_primary_missing(self):
-        # calltree_sampling_fallback: one rank has both files (primary wins), the other
-        # rank has only the fallback pattern's file.
-        ranks = tr.load_rank_trees(SAMPLING_FALLBACK_DIR, "sampling_wall_clock-*.txt", "wall_clock-*.txt")
-        self.assertEqual(len(ranks), 2)
-        labels_by_rank = {rk: {r["label"] for r in rows} for rk, rows, _roots in ranks}
-        self.assertIn({"main_fallback", "instrumented_leaf"}, labels_by_rank.values())
-
-    def test_swapping_which_pattern_is_primary_changes_the_winner(self):
-        # Same fixture, patterns reversed -- the rank with both files now takes its data
-        # from wall_clock instead of sampling_wall_clock.
-        sampling_first = tr.load_rank_trees(SAMPLING_FALLBACK_DIR, "sampling_wall_clock-*.txt", "wall_clock-*.txt")
-        wall_clock_first = tr.load_rank_trees(SAMPLING_FALLBACK_DIR, "wall_clock-*.txt", "sampling_wall_clock-*.txt")
-        sampling_labels = {rk: {r["label"] for r in rows} for rk, rows, _roots in sampling_first}
-        wall_clock_labels = {rk: {r["label"] for r in rows} for rk, rows, _roots in wall_clock_first}
-        self.assertNotEqual(sampling_labels, wall_clock_labels)
-
-    def test_postprocess_hook_defaults_to_noop(self):
-        cpu_dir, _gpu_dir = resolve_run_dirs(MPI_2RANK_DIR)
-        ranks = tr.load_rank_trees(cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt")
-        _rank_key, rows, _roots = ranks[0]
-        self.assertTrue(any(r["label"] == "hipMemcpy" for r in rows))  # nothing stripped by default
-
-    def test_postprocess_hook_applied_when_given(self):
-        cpu_dir, _gpu_dir = resolve_run_dirs(MPI_2RANK_DIR)
-
-        def _drop_hipmemcpy(rows):
-            return [r for r in rows if r["label"] != "hipMemcpy"]
-
-        ranks = tr.load_rank_trees(
-            cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt", postprocess=_drop_hipmemcpy
-        )
-        _rank_key, rows, _roots = ranks[0]
-        self.assertFalse(any(r["label"] == "hipMemcpy" for r in rows))
-
-
-class KernelTotalsWithCountsTests(unittest.TestCase):
-    def test_returns_count_and_seconds_per_kernel(self):
-        _cpu_dir, gpu_dir = resolve_run_dirs(KERNEL_ANCHOR_DIR)
-        totals = tr.kernel_totals_with_counts(gpu_dir, 0)
-        self.assertIn("JacobiIterationKernel", totals)
-        count, seconds = totals["JacobiIterationKernel"]
-        self.assertGreater(count, 0)
-        self.assertGreater(seconds, 0)
-
-
-class PairGpuPerRankTests(unittest.TestCase):
-    def test_returns_none_when_gpu_dir_is_none(self):
-        self.assertIsNone(tr.pair_gpu_per_rank(None, "run", ["r0"]))
-
-    def test_pairs_when_rank_counts_match(self):
-        cpu_dir, gpu_dir = resolve_run_dirs(KERNEL_ANCHOR_DIR)
-        ranks = tr.load_rank_trees(cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt")
-        rank_keys = [rk for rk, _rows, _roots in ranks]
-        result = tr.pair_gpu_per_rank(gpu_dir, KERNEL_ANCHOR_DIR, rank_keys)
-        self.assertIsNotNone(result)
-        self.assertEqual(len(result), len(rank_keys))
-
-    def test_returns_none_on_mismatched_rank_count(self):
-        _cpu_dir, gpu_dir = resolve_run_dirs(KERNEL_ANCHOR_DIR)
-        result = tr.pair_gpu_per_rank(gpu_dir, KERNEL_ANCHOR_DIR, ["r0", "r1"])  # gpu side has only 1 file
-        self.assertIsNone(result)
-
-
-class AttachAndRenderGpuKernelsTests(unittest.TestCase):
-    def _build_tree(self, run_dir):
+class RenderGpuKernelFallbackTests(unittest.TestCase):
+    def _attach(self, run_dir):
+        """Builds a real merged tree and runs the actual stage4 attachment step, so this
+        rendering-only test exercises render_gpu_kernel_fallback() against real (unattached,
+        gpu_kernel_by_rank) data, the same fixture-based approach the rest of this file uses --
+        not a hand-mocked stand-in."""
         cpu_dir, gpu_dir = resolve_run_dirs(run_dir)
-        ranks = tr.load_rank_trees(cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt")
+        ranks = s4t.load_rank_trees(cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt")
         rank_keys = [rk for rk, _rows, _roots in ranks]
         merged_roots = s4t.merge_rank_trees(ranks)
         flat = s4t.flatten_tree(merged_roots)
         node_values = s4t.make_node_values(rank_keys)
-        gpu_per_rank = tr.pair_gpu_per_rank(gpu_dir, run_dir, rank_keys)
-        return flat, rank_keys, node_values, gpu_dir, gpu_per_rank
+        gpu_per_rank = s4t.pair_gpu_per_rank(gpu_dir, run_dir, rank_keys)
+        unattached, gpu_kernel_by_rank = s4t.attach_gpu_kernels(flat, gpu_per_rank, gpu_dir, rank_keys, NEVER_PRUNED)
+        return unattached, gpu_kernel_by_rank, node_values
 
-    def test_returns_empty_string_when_no_gpu_data(self):
-        result = tr.attach_and_render_gpu_kernels([], None, None, [], NEVER_PRUNED, DEFAULT_NODE_VALUES)
-        self.assertEqual(result, "")
+    def test_returns_empty_string_when_nothing_unattached(self):
+        self.assertEqual(tr.render_gpu_kernel_fallback(set(), {}, DEFAULT_NODE_VALUES), "")
 
-    def test_attaches_matched_kernel_and_returns_no_fallback(self):
-        flat, rank_keys, node_values, gpu_dir, gpu_per_rank = self._build_tree(KERNEL_ANCHOR_DIR)
-        fallback = tr.attach_and_render_gpu_kernels(flat, gpu_per_rank, gpu_dir, rank_keys, NEVER_PRUNED, node_values)
-        self.assertEqual(fallback, "")  # matched by name -- nothing left unattached
-        has_kernel_group = any(
-            any("GPU kernels" in c["label"] for c in node.get("static_children", []))
-            for node in flat
-        )
-        self.assertTrue(has_kernel_group)
+    def test_matched_kernel_leaves_nothing_to_render(self):
+        unattached, gpu_kernel_by_rank, node_values = self._attach(KERNEL_ANCHOR_DIR)
+        self.assertEqual(tr.render_gpu_kernel_fallback(unattached, gpu_kernel_by_rank, node_values), "")
 
     def test_unmatched_kernel_produces_fallback_text(self):
-        flat, rank_keys, node_values, gpu_dir, gpu_per_rank = self._build_tree(KERNEL_NO_ANCHOR_DIR)
-        fallback = tr.attach_and_render_gpu_kernels(flat, gpu_per_rank, gpu_dir, rank_keys, NEVER_PRUNED, node_values)
+        unattached, gpu_kernel_by_rank, node_values = self._attach(KERNEL_NO_ANCHOR_DIR)
+        fallback = tr.render_gpu_kernel_fallback(unattached, gpu_kernel_by_rank, node_values)
         self.assertIn("=== GPU kernels (rocprofv3)", fallback)
         self.assertIn("JacobiIterationKernel", fallback)
         # ends in exactly the table's own trailing newline -- no self-appended blank line;

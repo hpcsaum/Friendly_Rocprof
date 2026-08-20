@@ -46,14 +46,14 @@ class WriteReportTests(unittest.TestCase):
             self.assertTrue(i1 < i2 < i3 < i4)
 
     def test_table2_matches_standalone_cpu_tool_output(self):
-        import stage4_rocprofsys_flat
+        import stage4_rocprofsys_sample_flat
         from stage5_cpu_hotspots_table import CPU_HOTSPOTS_COLUMNS
         from stage5_table_render import render_table, select_entries
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "hotspots.txt")
             report = combined.write_report(CPU_DIR, GPU_DIR, dest)
 
-        cpu_entries, _cpu_gpu_api_entries, _cpu_scanned, cpu_total_raw = stage4_rocprofsys_flat.aggregate(CPU_DIR)
+        cpu_entries, _cpu_gpu_api_entries, _cpu_scanned, cpu_total_raw = stage4_rocprofsys_sample_flat.aggregate(CPU_DIR)
 
         def _prepare(entries):
             for e in entries:
@@ -79,14 +79,14 @@ class WriteReportTests(unittest.TestCase):
         self.assertIn(standalone_table.strip(), report)
 
     def test_table4_matches_standalone_gpu_api_bucket(self):
-        import stage4_rocprofsys_flat
+        import stage4_rocprofsys_sample_flat
         from stage5_cpu_hotspots_table import CPU_HOTSPOTS_COLUMNS
         from stage5_table_render import render_table, select_entries
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "hotspots.txt")
             report = combined.write_report(CPU_DIR, GPU_DIR, dest)
 
-        _cpu_entries, cpu_gpu_api_entries, _cpu_scanned, cpu_total_raw = stage4_rocprofsys_flat.aggregate(CPU_DIR)
+        _cpu_entries, cpu_gpu_api_entries, _cpu_scanned, cpu_total_raw = stage4_rocprofsys_sample_flat.aggregate(CPU_DIR)
 
         def _prepare(entries):
             for e in entries:
@@ -153,7 +153,7 @@ class WriteReportTests(unittest.TestCase):
             self.assertIn("JacobiIterationKernel", report[i6:])
 
     def test_load_imbalance_tables_match_standalone_tool_output(self):
-        import stage4_rocprofsys_flat
+        import stage4_rocprofsys_sample_flat
         import stage4_rocprofv3
         from stage5_load_imbalance_table import compute_load_imbalance, load_imbalance_columns
         from stage5_table_render import render_table
@@ -161,7 +161,7 @@ class WriteReportTests(unittest.TestCase):
             dest = os.path.join(tmp, "hotspots.txt")
             report = combined.write_report(CPU_DIR, GPU_DIR, dest)
 
-        cpu_per_rank, _ = stage4_rocprofsys_flat.aggregate_per_rank(CPU_DIR)
+        cpu_per_rank, _ = stage4_rocprofsys_sample_flat.aggregate_per_rank(CPU_DIR)
         cpu_selected, _ = compute_load_imbalance(cpu_per_rank)
         self.assertIn(render_table(load_imbalance_columns(), cpu_selected).strip(), report)
 

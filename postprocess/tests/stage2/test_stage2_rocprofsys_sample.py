@@ -3,11 +3,11 @@ import os
 import sys
 import unittest
 
-MODULE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "stage2", "stage2_rocprofsys.py")
+MODULE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "stage2", "stage2_rocprofsys_sample.py")
 
-spec = importlib.util.spec_from_file_location("stage2_rocprofsys", MODULE_PATH)
+spec = importlib.util.spec_from_file_location("stage2_rocprofsys_sample", MODULE_PATH)
 stage2 = importlib.util.module_from_spec(spec)
-sys.modules["stage2_rocprofsys"] = stage2
+sys.modules["stage2_rocprofsys_sample"] = stage2
 spec.loader.exec_module(stage2)
 
 
