@@ -1,9 +1,9 @@
 """Stage 4 (build + cache the canonical per-rank aggregate) for rocprof-sys's Perfetto trace-CSV
 pipeline.
 
-Scope: the ONE expensive path for one rank -- parse, tag, synthesize count/self_sum/sum, attach
-kernel-dispatch rows to their exact launch site via corr_id, and collapse repeated same-position
-calls within the rank (build_rank_aggregate()) -- plus an on-disk cache around it
+Scope: the ONE expensive path for one rank -- parse, synthesize count/self_sum/sum, attach
+kernel-dispatch rows to their exact launch site via corr_id, tag (stage3), and collapse repeated
+same-position calls within the rank (build_rank_aggregate()) -- plus an on-disk cache around it
 (get_rank_aggregate()) so a 10GB+ trace-CSV is parsed at most once per rank, ever. The result is a
 flat, parent-linked row list in the same canonical shape stage4_rocprofsys_common.merge_rank_trees()
 already produces for one rank (label/parent/tags/structural_drop_tags/count/self_sum/sum) --
@@ -19,7 +19,7 @@ import json
 import os
 
 from stage1_rocprofsys_trace import LABEL_KEY, attach_ancestry, parse_trace_csv
-from stage3_rocprofsys_trace import tag_rows
+from stage3_rocprofsys_trace import tag_for_category, tag_rows
 from stage4_rocprofsys_common import flatten_tree, merge_rank_trees
 
 
@@ -45,23 +45,29 @@ def _synthesize_self_sum(rows):
 
 
 def _attach_kernels_by_corr_id(rows):
-    """Reparents every untethered (parent is None) gpu_kernel-tagged row with a corr_id onto the
-    gpu_api-tagged row sharing that same corr_id -- an exact structural join, simpler than the
+    """Reparents every untethered (parent is None) gpu_kernel-category row with a corr_id onto the
+    gpu_api-category row sharing that same corr_id -- an exact structural join, simpler than the
     sample pipeline's attach_gpu_kernels()/attach_kernel_summaries() (which grafts a *synthetic*
     static_children subtree precisely because rocprofv3's kernel_stats.csv carries no real tree
     position at all; corr_id gives trace data an exact one, so the dispatch row just becomes a
     normal child -- no proportional weight-splitting needed). Zero matches leaves the row as its
     own root, no guessing, matching stage1_rocprofsys_trace.attach_ancestry()'s own "don't guess a
     parent" precedent. More than one match warns once (count-based) and leaves the row unattached
-    -- guessing would defeat the entire point of an exact join."""
+    -- guessing would defeat the entire point of an exact join.
+
+    Classifies rows by tag_for_category() directly rather than by row["tags"] -- this runs before
+    tag_rows() (see build_rank_aggregate()'s ordering note) so every kernel-dispatch row is
+    reparented before tag_rows() ever sees it as an untethered "root," which would otherwise get
+    compared as a sibling of the real CPU thread root(s) by tag_rows()'s own sibling-group
+    derivation and wrongly flag that thread root's entire subtree for removal."""
     launch_sites_by_corr_id = {}
     for row in rows:
-        if row.get("corr_id") is not None and "gpu_api" in row["tags"]:
+        if row.get("corr_id") is not None and tag_for_category(row.get("category")) == "gpu_api":
             launch_sites_by_corr_id.setdefault(row["corr_id"], []).append(row)
 
     ambiguous_count = 0
     for row in rows:
-        if row["parent"] is not None or "gpu_kernel" not in row["tags"]:
+        if row["parent"] is not None or tag_for_category(row.get("category")) != "gpu_kernel":
             continue
         corr_id = row.get("corr_id")
         if corr_id is None:
@@ -106,18 +112,28 @@ def _flatten_rank_merge(merged_roots, rank_key):
 
 
 def build_rank_aggregate(csv_paths, rank_key):
-    """The one expensive path for one rank: parse + ancestry + tag (unchanged stage1/stage3), self
-    time synthesis, the corr_id kernel join, and the intra-rank merge_rank_trees() collapse of
-    repeated same-position calls -- confirmed directly against its source: nothing about its loop
-    structure requires more than one rank, so feeding it just this rank's own (rank_key, rows,
-    roots) performs exactly the same by-id(parent)+label merge it already does across ranks.
-    Returns the flat, parent-linked, tool-independent row list get_rank_aggregate() caches."""
+    """The one expensive path for one rank: parse + ancestry (unchanged stage1), self time
+    synthesis, the corr_id kernel join, tag_rows() (stage3), and the intra-rank merge_rank_trees()
+    collapse of repeated same-position calls -- confirmed directly against its source: nothing
+    about its loop structure requires more than one rank, so feeding it just this rank's own
+    (rank_key, rows, roots) performs exactly the same by-id(parent)+label merge it already does
+    across ranks. Returns the flat, parent-linked, tool-independent row list get_rank_aggregate()
+    caches.
+
+    tag_rows() runs AFTER the corr_id join, not before -- a kernel-dispatch row is untethered
+    (parent is None) until the join reparents it, and tag_rows()'s own sibling-group derivation
+    (for wrapper_branch_noise) compares every untethered row at the top level as if they were
+    siblings sharing one real parent. Running it before the join would compare a real CPU thread
+    root against an unrelated, still-untethered kernel-dispatch row as "siblings," and wrongly
+    flag the CPU thread's entire subtree as contaminated. The join itself only needs
+    tag_for_category() (a direct, stateless lookup -- see _attach_kernels_by_corr_id()), not the
+    full tag_rows() pass, so this ordering costs nothing."""
     rows = parse_trace_csv(csv_paths)
     attach_ancestry(rows)
-    tag_rows(rows)
 
     _synthesize_self_sum(rows)
     _attach_kernels_by_corr_id(rows)
+    tag_rows(rows)
 
     roots = [r for r in rows if r["parent"] is None]  # recomputed AFTER reparenting above
     merged_roots = merge_rank_trees([(rank_key, rows, roots)], label_key=LABEL_KEY)

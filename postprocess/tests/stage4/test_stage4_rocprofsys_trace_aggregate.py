@@ -25,6 +25,7 @@ SINGLE_RANK_CSV = os.path.join(FIXTURES, "trace_single_rank", "rank0.csv")
 MULTI_INSTANCE_CSV = os.path.join(FIXTURES, "trace_multi_instance", "rank0.csv")
 NO_MATCH_CSV = os.path.join(FIXTURES, "trace_corr_id_no_match", "rank0.csv")
 AMBIGUOUS_CSV = os.path.join(FIXTURES, "trace_corr_id_ambiguous", "rank0.csv")
+NOISE_CSV = os.path.join(FIXTURES, "trace_calltree_noise", "rank0.csv")
 
 SINGLE_RANK_LABELS = {"main", "jacobi_sweep", "hipLaunchKernel", "MPI_Barrier", "jacobi_kernel.kd"}
 
@@ -79,6 +80,22 @@ class BuildRankAggregateTests(unittest.TestCase):
         # some of these -- that's a stage5/6 decision, never baked in here.
         rows = agg.build_rank_aggregate(SINGLE_RANK_CSV, "r0")
         self.assertEqual({r["label"] for r in rows}, SINGLE_RANK_LABELS)
+
+    def test_untethered_kernel_dispatch_row_does_not_contaminate_the_real_root_via_tag_rows(self):
+        # Regression: tag_rows() must run AFTER the corr_id join, not before. Before the join, a
+        # kernel-dispatch row is still an untethered "root" -- if tag_rows() ran at that point, its
+        # own sibling-group derivation would compare it against the real CPU thread root as if they
+        # were siblings sharing one parent, and (since the kernel-dispatch row's own tiny subtree
+        # never matches wrapper_noise) wrongly flag the CPU root's entire subtree as
+        # wrapper_branch_noise-contaminated, even though nothing about that CPU subtree is
+        # genuinely contaminated relative to a real sibling.
+        rows = agg.build_rank_aggregate(NOISE_CSV, "r0")
+        main = by_label(rows, "main")
+        self.assertEqual(main["structural_drop_tags"], set())
+        # And the kernel is exactly where the corr_id join should have put it.
+        launch = by_label(rows, "hipLaunchKernel")
+        kernel = by_label(rows, "jacobi_kernel.kd")
+        self.assertIs(kernel["parent"], launch)
 
 
 class GetRankAggregateCacheTests(unittest.TestCase):

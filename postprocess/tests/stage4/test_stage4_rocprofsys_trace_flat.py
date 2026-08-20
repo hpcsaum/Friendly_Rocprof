@@ -48,8 +48,26 @@ class AggregateTests(unittest.TestCase):
             {"main", "jacobi_sweep", "hipLaunchKernel", "MPI_Barrier", "jacobi_kernel.kd"},
         )
 
+    def test_domain_is_gpu_for_gpu_tagged_labels_cpu_otherwise(self):
+        entries, _total_runtime = flat.aggregate(RANK_INPUTS)
+        self.assertEqual(by_label(entries, "hipLaunchKernel")["domain"], "GPU")
+        self.assertEqual(by_label(entries, "jacobi_kernel.kd")["domain"], "GPU")
+        self.assertEqual(by_label(entries, "main")["domain"], "CPU")
+        self.assertEqual(by_label(entries, "jacobi_sweep")["domain"], "CPU")
+        self.assertEqual(by_label(entries, "MPI_Barrier")["domain"], "CPU")
+
 
 class AggregatePerRankTests(unittest.TestCase):
+    def test_gpu_labels_are_included_not_excluded(self):
+        # Unlike the sample pipeline's own aggregate_per_rank() (which drops GPU rows because
+        # rocprofv3's data has no compatible per-rank breakdown to fold in), trace data gives
+        # real per-rank GPU timing -- GPU load imbalance belongs in the same breakdown, not
+        # excluded to match an older data source's limitation.
+        per_rank, _rank_keys = flat.aggregate_per_rank(RANK_INPUTS)
+        self.assertIn("hipLaunchKernel", per_rank[0])
+        self.assertIn("jacobi_kernel.kd", per_rank[0])
+        self.assertAlmostEqual(per_rank[0]["jacobi_kernel.kd"], 3.0)
+
     def test_self_sum_by_default(self):
         per_rank, rank_keys = flat.aggregate_per_rank(RANK_INPUTS)
         self.assertEqual(rank_keys, ["r0", "r1"])

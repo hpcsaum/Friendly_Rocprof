@@ -1,0 +1,2 @@
+pid,process_name,tid,thread_name,slice_id,parent_slice_id,depth,name,category,ts,dur,corr_id,blockDimX,gridDimX,grid_size,workgroup_size
+2000,./app,2000,main,3,1,1,MPI_Barrier,mpi,150000000,50000000,,,,,

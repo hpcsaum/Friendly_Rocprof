@@ -54,6 +54,7 @@
 | 2026-08-20 | Plan 3.3: new `stage1_rocprofsys_trace.py` (`parse_trace_csv()`/`attach_ancestry()`) -- roadmap step 2 of the plan-3.1 sequence; a mid-review correction moved all label/count/self_sum shaping out of stage1+2 and into a later stage4 module, so this stage preserves every trace-CSV column untouched and only resolves `parent_slice_id` links -- see full accounting below |
 | 2026-08-20 | Plan 3.4: renamed `stage3_rocprofsys_sample.py` to `stage3_rocprofsys_common.py` (it turned out to have no sample-specific logic at all) and gave `tag_rows()` a `label_key` parameter instead of hardcoding `"label"`; new `stage3_rocprofsys_trace.py` -- an exact `{category: tag}` lookup (`gpu_api`/`gpu_kernel`/`gpu_memcpy`/`mpi_territory`/`other`) built from AMD's `categories.h` enum, plus a delegated, unmodified reuse of `wrapper_noise`/`compiler_runtime_noise`/`wrapper_branch_noise` for trace rows' CPU-side names -- roadmap step 3 of the plan-3.1 sequence -- see full accounting below |
 | 2026-08-20 | Plan 3.5+3.6 (merged): split `stage4_rocprofsys_common.py` out of `stage4_rocprofsys_sample_tree.py` (`merge_rank_trees`/`flatten_tree`/`caller_chains_for_label`/`aggregate_node_stats`/`make_node_values`, all format-agnostic); new `stage4_rocprofsys_trace_aggregate.py` builds and on-disk-caches one rank's canonical, tool-independent aggregate (self_sum synthesis, an exact `corr_id` kernel-to-launch-site join, intra-rank dedup via a single-rank `merge_rank_trees()` call); new thin `stage4_rocprofsys_trace_tree.py`/`stage4_rocprofsys_trace_flat.py` derive every stage5 view from that same aggregate, never re-parsing -- roadmap steps 3.5+3.6 of the plan-3.1 sequence, merged into one plan after a design correction -- see full accounting below |
+| 2026-08-20 | Plan 3.7: new `stage4_rocprofsys_trace_ranks.py` (multi-rank file discovery, confirmed against this project's own real trace-CSV export); new `stage5_trace_calltree_view.py` and three new CLI tools (`extract_trace_hotspots.py`/`extract_trace_calltree.py`/`extract_trace_pop_metrics.py`) completing plan 3.1's roadmap -- the manual smoke test against real 4-rank data caught two real bugs (a `tag_rows()`-vs-`corr_id`-join ordering bug in `build_rank_aggregate()`, and a wrong file-precedence assumption in `discover_ranks()` that silently disabled every `corr_id` join), both fixed and covered by new regression tests -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -2470,4 +2471,55 @@ a two-rank pair), 24 new tests across the common-module split, the aggregate bui
 two thin consumers, full suite 552 → 578 passing. See
 `docs/plans/3.5-trace-aggregate-and-cache.md` for the full accounting, written before
 implementation (with one header-note divergence recorded there, per `CLAUDE.md`'s convention).
+
+## 2026-08-20 — Plan 3.7: rank discovery + the 3 new trace CLI tools
+
+Roadmap step 3.7 of plan 3.1's sequence, the final step. Two things this step was built to defer
+now had real answers: real trace-CSV filenames (this project's own manual conversion work) resolved
+the multi-rank file-discovery question, and `{tag: action}` wiring needed almost no new design since
+`stage3_rocprofsys_trace.py` already reused the sample pipeline's exact tag names -- `--show-gpu-api`
+/`--show-rocprofsys-internals`/`--show-mpi-internals`/`--show-compiler-runtime` apply to the new
+calltree tool completely unchanged, the same `stage6_cli_common.add_noise_tier_args()` call
+`extract_calltree.py` already makes. Two small stage4 additions surfaced during composition:
+`stage4_rocprofsys_trace_flat.aggregate()`'s entries gained a `"domain"` field (the optional field
+plan 3.1's own flat-entry shape already allowed), and `aggregate_per_rank()` was directly confirmed
+to already include GPU rows in its load-imbalance breakdown, unlike the sample pipeline's own
+GPU-excluding equivalent -- a real capability trace data affords (exact per-rank GPU timing) that
+the sample pipeline's already-aggregated rocprofv3 data never had a compatible shape for.
+
+**Two real bugs found by testing against actual data, not just fixtures** -- exactly the value of
+the manual real-data smoke test this project's own verification convention calls for:
+
+1. `build_rank_aggregate()`'s existing ordering (tag, then join) had a genuine bug, invisible to
+   every fixture built so far because none of them combined a `wrapper_noise`-matching name with a
+   still-untethered kernel-dispatch row in the same rank. `stage3_rocprofsys_trace.tag_rows()`'s
+   sibling-group derivation (for `wrapper_branch_noise`) compares every row with `parent is None` at
+   the top level as if they were real siblings sharing one parent -- but a kernel-dispatch row is
+   only untethered *until* the `corr_id` join reparents it. Tagging before the join meant a kernel
+   row and a real CPU thread root got compared as "siblings," and the kernel's own tiny
+   (necessarily wrapper_noise-free) subtree made the sibling-derivation conclude the CPU thread's
+   entire subtree was contaminated and should be dropped -- silently emptying the default calltree
+   view whenever this combination occurred. Fixed by moving `tag_rows()` to run after the `corr_id`
+   join; the join itself was changed to use `tag_for_category()` directly (a stateless per-row
+   lookup) instead of reading `row["tags"]`, since it now has to run before any tags exist.
+2. `discover_ranks()`'s file-precedence assumption (prefer the single unfiltered CSV over the
+   category-partitioned trio, reasoning they're "overlapping supersets") broke every `corr_id` join
+   the moment it ran against this project's own real 4-rank trace-CSV export: that export's
+   unfiltered file turned out to carry a narrower column set than its partitioned files entirely
+   missing `corr_id` and the other wide GPU-arg columns, an artifact of how that particular file
+   happened to be generated earlier in the project. Confirmed the partitioned trio is still an
+   exact row-for-row partition of the unfiltered file (their row counts sum to it exactly) before
+   flipping the precedence: the partitioned set now wins whenever present, the unfiltered file only
+   used as a fallback when no partitioned files exist for a rank. Re-running all three new tools
+   against the same real data afterward showed every kernel dispatch correctly nested under its
+   real launch site, and the cache paid off exactly as designed -- the first tool's run took ~24s
+   (a genuine 4-rank parse), the next two tools reading the same ranks finished in well under a
+   tenth of a second each, reusing the on-disk cache the first run wrote.
+
+Verification: 1 new fixture set for CLI-level tests (a properly-named two-rank pair, plus a
+noise-tagged single-rank case), regression tests for both bugs above, full suite 578 → 607 passing,
+plus the manual real-data smoke test described above. See
+`docs/plans/3.7-rank-discovery-and-cli-tools.md` for the full accounting, written before
+implementation (with two header-note divergences recorded there and in plan 3.5's own file, per
+`CLAUDE.md`'s convention).
 

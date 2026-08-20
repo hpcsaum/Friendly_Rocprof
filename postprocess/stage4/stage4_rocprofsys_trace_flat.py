@@ -23,13 +23,19 @@ def _rank_rows(rank_inputs, cache_dir):
     ]
 
 
+_GPU_DOMAIN_TAGS = {"gpu_api", "gpu_kernel", "gpu_memcpy"}
+
+
 def aggregate(rank_inputs, cache_dir=None):
     """Global by-label totals across every rank -- returns (entries, total_runtime), entries being
-    [{"label", "count", "sum", "self_sum", "pct_self", "pct_total"}], the same flat-entry shape
-    stage4_rocprofsys_sample_flat.aggregate() produces. total_runtime is the sum, across ranks, of
-    that rank's own largest root sum (its outermost scope's inclusive time) -- the same "outermost
-    scope has the single largest sum" convention the sample pipeline's aggregate() already relies
-    on, computed here from each rank's own root rows instead of a raw text-table row."""
+    [{"label", "count", "sum", "self_sum", "pct_self", "pct_total", "domain"}], the flat-entry
+    shape stage4_rocprofsys_sample_flat.aggregate() produces, plus the "domain" field
+    ("GPU"/"CPU") that shape's own documented contract already allows as optional --
+    stage5_fused_hotspots_table.FUSED_HOTSPOTS_COLUMNS reads it directly. total_runtime is the sum,
+    across ranks, of that rank's own largest root sum (its outermost scope's inclusive time) --
+    the same "outermost scope has the single largest sum" convention the sample pipeline's
+    aggregate() already relies on, computed here from each rank's own root rows instead of a raw
+    text-table row."""
     ranks = _rank_rows(rank_inputs, cache_dir)
 
     total_runtime = 0.0
@@ -39,10 +45,14 @@ def aggregate(rank_inputs, cache_dir=None):
         if roots:
             total_runtime += max(row["sum"] for row in roots)
         for row in rows:
-            entry = totals.setdefault(row["label"], {"count": 0, "sum": 0.0, "self_sum": 0.0})
+            entry = totals.setdefault(
+                row["label"], {"count": 0, "sum": 0.0, "self_sum": 0.0, "domain": "CPU"}
+            )
             entry["count"] += row["count"]
             entry["sum"] += row["sum"]
             entry["self_sum"] += row["self_sum"]
+            if row["tags"] & _GPU_DOMAIN_TAGS:
+                entry["domain"] = "GPU"
 
     entries = []
     for label, entry in totals.items():
@@ -55,6 +65,7 @@ def aggregate(rank_inputs, cache_dir=None):
             "self_sum": entry["self_sum"],
             "pct_self": pct_self,
             "pct_total": pct_total,
+            "domain": entry["domain"],
         })
     return entries, total_runtime
 

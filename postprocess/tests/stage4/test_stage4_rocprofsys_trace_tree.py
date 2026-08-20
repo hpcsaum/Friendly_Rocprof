@@ -70,6 +70,24 @@ class MergeRanksTests(unittest.TestCase):
         self.assertIn("mpi_territory", mpi["tags"])
         self.assertIn("gpu_kernel", launch["children"]["jacobi_kernel.kd"]["tags"])
 
+    def test_postprocess_hook_edits_each_ranks_rows_before_the_cross_rank_merge(self):
+        # Mirrors stage4_rocprofsys_sample_tree.load_rank_trees()'s own postprocess contract:
+        # a per-rank edit applied before roots are recomputed and before the merge.
+        def drop_mpi_barrier(rows):
+            return [row for row in rows if row["label"] != "MPI_Barrier"]
+
+        roots = tree.merge_ranks(RANK_INPUTS, postprocess=drop_mpi_barrier)
+        main = next(n for n in roots if n["label"] == "main")
+        sweep = main["children"]["jacobi_sweep"]
+        self.assertNotIn("MPI_Barrier", sweep["children"])
+        self.assertIn("hipLaunchKernel", sweep["children"])
+
+    def test_postprocess_hook_defaults_to_a_noop(self):
+        with_none = tree.merge_ranks(RANK_INPUTS)
+        with_explicit_none = tree.merge_ranks(RANK_INPUTS, postprocess=None)
+        labels = lambda roots: sorted(n["label"] for n in flatten(roots))  # noqa: E731
+        self.assertEqual(labels(with_none), labels(with_explicit_none))
+
 
 if __name__ == "__main__":
     unittest.main()

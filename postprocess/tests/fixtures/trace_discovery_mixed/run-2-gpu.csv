@@ -1,0 +1,2 @@
+pid,process_name,tid,thread_name,slice_id,parent_slice_id,depth,name,category,ts,dur,corr_id,blockDimX,gridDimX,grid_size,workgroup_size
+3000,./app,3000,main,2,1,1,hipLaunchKernel,rocm_hip_api,100000000,10000000,,64,256,,
