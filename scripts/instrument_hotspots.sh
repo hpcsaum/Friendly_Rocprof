@@ -363,8 +363,20 @@ else
   # never affects this script's exit code either way.
   printf '%s\n' "${LABELS[@]}" | python3 "$SELECTOR" --check-instrumented "$OUT_BINARY.rocprof-sys-info/instrumented.json" || true
 
+  # $OUT_BINARY itself always sits next to the original executable, which isn't
+  # necessarily anywhere near $OUTPUT_DIR (e.g. --out-binary pointing elsewhere, or a
+  # read-only source tree) -- copy it and its instrumentation-info sidecar into this
+  # run's own output directory too, so the binary that produced a given scan/trace is
+  # always found alongside it. $OUTPUT_DIR may not exist yet here (e.g. --report skips
+  # the profiling step that would otherwise create it).
+  mkdir -p "$OUTPUT_DIR"
+  COPIED_BINARY="$OUTPUT_DIR/$(basename "$OUT_BINARY")"
+  cp "$OUT_BINARY" "$COPIED_BINARY"
+  rm -rf "$COPIED_BINARY.rocprof-sys-info"
+  cp -r "$OUT_BINARY.rocprof-sys-info" "$COPIED_BINARY.rocprof-sys-info"
+
   if [[ "$MODE" == "instrument" ]]; then
-    echo "wrote instrumented binary: $OUT_BINARY"
+    echo "wrote instrumented binary: $OUT_BINARY (copy saved under $OUTPUT_DIR)"
     echo "to generate the trace, run:"
     printf '  %q ' "$0" trace "${ORIGINAL_ARGS[@]}"
     echo
@@ -402,6 +414,7 @@ APP_EXIT=$?
 set -e
 
 echo "trace written under $TRACE_OUTPUT_DIR (a Perfetto trace -- view it at ui.perfetto.dev; not parsed by any tool in this project)"
+echo "instrumented binary that produced it: $OUT_BINARY (copy saved under $OUTPUT_DIR)"
 echo "to regenerate this trace, run:"
 printf '  %q ' "$0" trace "${ORIGINAL_ARGS[@]}"
 echo

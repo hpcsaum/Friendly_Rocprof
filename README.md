@@ -215,6 +215,36 @@ python3 postprocess/tools/select_hotspot_functions.py --output-dir <rocprof-sys-
 python3 postprocess/tools/select_hotspot_functions.py --report results/run1/hotspots.txt
 ```
 
+If you also want automatic hotspots/calltree reports built from the trace instead of just the raw
+`.proto` output, use `profile_traced_hotspots.sh` below instead of `instrument_hotspots.sh trace`.
+
+### Selective instrumentation + reports — `profile_traced_hotspots.sh`
+
+Does everything `instrument_hotspots.sh trace` does above, then goes further: converts the trace to
+CSV and builds an actual `hotspots.txt` + `calltree.txt` from it — the "just give me the reports"
+version, for when you don't want to run the conversion and report tools by hand afterward. Use
+`instrument_hotspots.sh` directly instead if you only want the raw trace (e.g. to open in
+Perfetto's own UI).
+
+```bash
+# build + trace + convert + report, in one invocation
+scripts/profile_traced_hotspots.sh -- ./app arg1 arg2
+
+# skip straight to an existing trace directory -- no executable needed
+scripts/profile_traced_hotspots.sh --trace-report results/run1/trace
+
+# MPI: same --mpi convention as the other tools
+scripts/profile_traced_hotspots.sh --mpi "mpirun -np 4" -- ./app arg1 arg2
+```
+
+Two independent selection concepts happen to share flag names with `instrument_hotspots.sh`'s own
+flags: bare `--top`/`--threshold`/`--all`/`--unfiltered` control the **final report** (how many
+entries appear in `hotspots.txt`); `--instrument-top`/`--instrument-threshold`/`--instrument-all`/
+`--instrument-unfiltered` control which functions get **instrumented** in the first place, for
+expert users who want that to diverge from the report — left at the ≥1% default if none of the
+`--instrument-*` flags are given. `--trace-report DIR` skips the sample/instrument/trace steps
+entirely, and skips the CSV conversion too if `DIR` already has converted files.
+
 ### GPU kernel deep-dive — `profile_hotspot_kernels.sh`
 
 Once `profile_GPU_hotspots.sh` (above) has told you which GPU kernels are the biggest, this

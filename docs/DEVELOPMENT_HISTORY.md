@@ -58,6 +58,7 @@
 | 2026-08-21 | Plan 3.8: fixed every GPU kernel collapsing under one shared `hipModuleLaunchKernel` node in the real `Heat_Convection_Solver` trace -- `build_rank_aggregate()` now reanchors a kernel sharing a generic OMPT launch entry point onto the exact real CPU call instance its own embedded owner name and the trace's own timestamps identify, exact rather than estimated; `kernel_owner_label()` generalized (via `test_apps/results/`) from Cray Fortran's `$ck_` marker to every compiler this project tests -- see full accounting below |
 | 2026-08-21 | Plan 3.9: final help-text/comment audit closing plan 3.1's roadmap (renumbered from 3.8, taken by the bug-fix plan above) -- rewrote 7 comments across the trace-family modules that had drifted into history/investigation language, most written during plan 3.8's own real-data debugging; both READMEs updated to cover the whole `3.x` trace pipeline for the first time, including fixing `postprocess/README.md`'s `stage4` write-up, which still attributed `merge_rank_trees()` and friends to `stage4_rocprofsys_sample_tree.py` after plan 3.5 had already split them out into `stage4_rocprofsys_common.py` -- see full accounting below |
 | 2026-08-21 | Plan 3.10: new `convert_trace_to_csv.py` -- converts a rocprof-sys trace-mode run's per-rank Perfetto `.proto` files into the trace-CSV format the `3.x` pipeline already consumes, closing the "conversion step deferred to a later plan" gap every prior `3.x` plan left open; design grounded in reading Perfetto's actual C++/SQL source directly rather than docs alone, surfacing a real correctness trap (`trace_processor_shell` prints SQL `NULL` as the literal string `"[NULL]"`, not a blank cell) that would have silently corrupted this pipeline's own blank-handling convention -- see full accounting below |
+| 2026-08-21 | Plan 3.11: new `scripts/profile_traced_hotspots.sh` chains `instrument_hotspots.sh trace` -> `convert_trace_to_csv.py` -> `extract_trace_hotspots.py`/`extract_trace_calltree.py` into one invocation, resolving a real flag-namespace collision between instrumentation-selection and final-report-selection flags by splitting them into bare vs `--instrument-*`-prefixed sets; also fixes a real `instrument_hotspots.sh` bug (the instrumented binary was never copied into the script's own output directory) -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -2690,3 +2691,43 @@ two tools' naming conventions can never silently drift apart. Full suite 622 →
 READMEs and the three `extract_trace_*.py` tools' docstrings updated to name this tool as the
 conversion step, replacing the "out of scope" language that's now stale. See
 `docs/plans/3.10-proto-to-csv-converter.md` for the full accounting.
+
+## 2026-08-21 — Plan 3.11: `profile_traced_hotspots.sh` + an `instrument_hotspots.sh` bug fix
+
+New `scripts/profile_traced_hotspots.sh` chains everything plans 3.7-3.10 built: it runs
+`instrument_hotspots.sh trace` (unchanged, still the right tool for someone who only wants the raw
+trace), then `convert_trace_to_csv.py`, then `extract_trace_hotspots.py`/`extract_trace_calltree.py`
+-- one invocation instead of four. Designing its CLI surfaced a real flag-namespace collision:
+`instrument_hotspots.sh`'s own `--top`/`--threshold`/`--all`/`--unfiltered` select which functions
+get *instrumented*, while `extract_trace_hotspots.py`'s flags of the same names select what
+appears in the *final report* -- two independent concerns sharing names. Resolved (per the user's
+own direction) by making the bare flags control the final report (the more common thing to want to
+adjust) and adding a parallel `--instrument-*`-prefixed set for the rarer case of wanting
+instrumentation selection to diverge from it. A second new flag, `--trace-report DIR`, skips the
+sample/instrument/trace steps entirely and resumes from an existing trace directory, checking for
+already-converted CSV files first so a repeat report-only run never redoes the conversion.
+
+Also fixed a real bug in `instrument_hotspots.sh` (found by the user, not deferred): the
+instrumented binary it builds was left only next to the original executable
+(`<executable>.inst`), never copied into the script's own output directory -- confirmed directly
+by reading the script (`OUT_BINARY` defaulting to `"$BINARY.inst"`, nothing after the rewrite
+copying it anywhere else). Now copied (with its `.rocprof-sys-info` sidecar) into `$OUTPUT_DIR`
+right after the rewrite succeeds, in both `instrument` and `trace` modes.
+
+Deferred, not part of this plan (the user's own words, "probably deserves a dedicated plan"): CPU
+(and possibly MPI) callers of a GPU kernel that made it into the hotspot table need to be
+instrumented too, regardless of their own hotspot status -- directly related to plan 3.8's
+kernel-owner-reanchoring work, since a kernel's real CPU caller has to exist as an actual
+instrumented frame for that mechanism to have anything to attach to. Noted as a forward pointer for
+a future plan, not designed here.
+
+Verification: no real ROCm/Perfetto tooling is available in this dev sandbox (standing project
+constraint), so verification here is `bash -n` on both scripts, and extensive manual `--dry-run`
+testing against a placeholder executable and fake `rocprof-sys-*` stub binaries on `PATH` --
+this caught a real bug in the new script itself before it shipped: a `print_args` helper meant to
+guard against `printf`'s own "still runs once even with zero arguments" quirk instead returned
+non-zero on an empty array, which under this script's own `set -e` silently killed the whole
+script partway through a dry-run preview. One real end-to-end run (against an existing trace-CSV
+test fixture, exercising the true `extract_trace_hotspots.py`/`extract_trace_calltree.py` tools for
+real, not mocked) confirmed the whole chain produces a real, correct report. See
+`docs/plans/3.11-profile-traced-hotspots.md` for the full accounting.
