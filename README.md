@@ -294,10 +294,22 @@ begin with.
 
 A trace-mode run is produced by any `rocprof-sys` run with `ROCPROFSYS_TRACE=1` set -- `trace` mode
 in `instrument_hotspots.sh` above is one convenient way to get one, but not the only source; any
-`rocprof-sys` trace experiment works. Either way, the raw output is a Perfetto `.proto` trace, which
-still needs converting to the flat CSV files these tools read (a separate, user-run conversion
-step using Perfetto's own `trace_processor` -- see https://perfetto.dev/ -- out of scope for this
-project's own code). Once you have that CSV directory:
+`rocprof-sys` trace experiment works. Either way, the raw output is a directory of per-rank Perfetto
+`.proto` trace files, which `convert_trace_to_csv.py` turns into the flat CSV files the three tools
+below read:
+
+```bash
+python3 postprocess/tools/convert_trace_to_csv.py <rocprof-sys-trace-dir> [-o <csv-dir>] [--unfiltered] [--trace-processor PATH]
+```
+
+By default this writes the `-gpu`/`-mpi`/`-other` partitioned trio per rank -- the shape needed for
+exact GPU-kernel-to-launch-site correlation in the tools below. `--unfiltered` additionally writes a
+plain, combined per-rank file with no GPU-arg columns -- cheaper, but a downstream tool loses exact
+kernel placement if that's the only file present for a rank. This tool doesn't manage Perfetto's own
+`trace_processor_shell` tool itself -- point it at an already-installed one with `--trace-processor
+PATH` or `$FRIENDLY_ROCPROF_TRACE_PROCESSOR`, or leave both unset to fall back to PATH; see
+https://perfetto.dev/docs/analysis/trace-processor for how to obtain it. Once you have that CSV
+directory:
 
 ```bash
 python3 postprocess/tools/extract_trace_hotspots.py <trace-csv-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all] [--unfiltered]

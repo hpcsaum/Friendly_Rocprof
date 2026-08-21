@@ -27,7 +27,7 @@ postprocess/
   stage4/           -- aggregation
   stage5/           -- ranking, selection, and rendering
   stage6/           -- report assembly, run metadata, noise-config, shared CLI helpers
-  tools/            -- the 12 CLI entry points
+  tools/            -- the 13 CLI entry points
   tests/            -- mirrors the layout above, plus a shared tests/fixtures/
 ```
 
@@ -42,7 +42,8 @@ postprocess/
   gpu_dir_or_None)` pair every CPU+GPU-pairing tool needs — `resolve_run_dirs()` for the
   single-directory-argument case, `resolve_two_dirs()` for the optional-second-argument case.
 - `stage1_rocprofsys_trace.py` — parses a rocprof-sys **trace**-mode run's flat CSV export (already
-  converted from the raw Perfetto `.proto` trace, a separate user-run step) into row dicts, and
+  converted from the raw Perfetto `.proto` trace via `convert_trace_to_csv.py`, a separate
+  invocation from any of the tools below) into row dicts, and
   resolves each row's real `parent_slice_id` link into an object reference (`attach_ancestry()`) --
   every column the CSV carries survives untouched; unlike the sample pipeline, no `label`/`count`/
   `self_sum` shaping happens here, since that's a stage4 concern for this pipeline (see below).
@@ -187,12 +188,16 @@ existing shape.
 
 ### `tools/` — the CLI entry points
 
-Each of the 12 files here is a compose-and-print script: parse arguments (mostly via
-`stage6_cli_common`), pull data through stage1→stage4, rank/render it through stage5, assemble it
-through stage6, write the file. `extract_calltree.py`/`extract_wallclock_calltree.py`/
+Most of the 13 files here (every `extract_*.py`) are compose-and-print scripts: parse arguments
+(mostly via `stage6_cli_common`), pull data through stage1→stage4, rank/render it through stage5,
+assemble it through stage6, write the file. `extract_calltree.py`/`extract_wallclock_calltree.py`/
 `extract_hotspots.py`/`extract_hotspot_callers.py` also import each other directly
 (`extract_CPU_hotspots`/`extract_GPU_hotspots` as `cpu_tool`/`gpu_tool`) to reuse their
-`gather_run_info()` rather than duplicating metadata-guessing logic.
+`gather_run_info()` rather than duplicating metadata-guessing logic. A few tools sit outside that
+shape entirely: `select_hotspot_functions.py`/`select_hotspot_kernels.py` don't assemble a stage6
+report at all (they print label/regex pairs for `instrument_hotspots.sh` to consume), and
+`convert_trace_to_csv.py` doesn't touch stage1–6 at all -- it's the trace pipeline's own stage 0,
+producing the CSV files `stage1_rocprofsys_trace.py` reads, not consuming them.
 
 ## Cross-stage imports and `_stage_paths.py`
 

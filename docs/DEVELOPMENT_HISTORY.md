@@ -57,6 +57,7 @@
 | 2026-08-20 | Plan 3.7: new `stage4_rocprofsys_trace_ranks.py` (multi-rank file discovery, confirmed against this project's own real trace-CSV export); new `stage5_trace_calltree_view.py` and three new CLI tools (`extract_trace_hotspots.py`/`extract_trace_calltree.py`/`extract_trace_pop_metrics.py`) completing plan 3.1's roadmap -- the manual smoke test against real 4-rank data caught two real bugs (a `tag_rows()`-vs-`corr_id`-join ordering bug in `build_rank_aggregate()`, and a wrong file-precedence assumption in `discover_ranks()` that silently disabled every `corr_id` join), both fixed and covered by new regression tests -- see full accounting below |
 | 2026-08-21 | Plan 3.8: fixed every GPU kernel collapsing under one shared `hipModuleLaunchKernel` node in the real `Heat_Convection_Solver` trace -- `build_rank_aggregate()` now reanchors a kernel sharing a generic OMPT launch entry point onto the exact real CPU call instance its own embedded owner name and the trace's own timestamps identify, exact rather than estimated; `kernel_owner_label()` generalized (via `test_apps/results/`) from Cray Fortran's `$ck_` marker to every compiler this project tests -- see full accounting below |
 | 2026-08-21 | Plan 3.9: final help-text/comment audit closing plan 3.1's roadmap (renumbered from 3.8, taken by the bug-fix plan above) -- rewrote 7 comments across the trace-family modules that had drifted into history/investigation language, most written during plan 3.8's own real-data debugging; both READMEs updated to cover the whole `3.x` trace pipeline for the first time, including fixing `postprocess/README.md`'s `stage4` write-up, which still attributed `merge_rank_trees()` and friends to `stage4_rocprofsys_sample_tree.py` after plan 3.5 had already split them out into `stage4_rocprofsys_common.py` -- see full accounting below |
+| 2026-08-21 | Plan 3.10: new `convert_trace_to_csv.py` -- converts a rocprof-sys trace-mode run's per-rank Perfetto `.proto` files into the trace-CSV format the `3.x` pipeline already consumes, closing the "conversion step deferred to a later plan" gap every prior `3.x` plan left open; design grounded in reading Perfetto's actual C++/SQL source directly rather than docs alone, surfacing a real correctness trap (`trace_processor_shell` prints SQL `NULL` as the literal string `"[NULL]"`, not a blank cell) that would have silently corrupted this pipeline's own blank-handling convention -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -2632,3 +2633,60 @@ pipeline's own two-tier description.
 Verification: comment/doc-only changes, so the full suite stays unchanged at 622 passing; every
 edited file re-imports cleanly. See `docs/plans/3.9-help-text-and-comment-audit.md` for the full
 accounting.
+
+## 2026-08-21 — Plan 3.10: rocprof-sys Perfetto `.proto` → trace-CSV converter
+
+Every `3.x` plan from 3.1 onward explicitly deferred the `.proto`→CSV conversion step as "a
+separate, user-run tool, out of scope" -- the real trace data this project tested against was
+converted by hand, with no repeatable process. This plan closes that gap with a new
+`postprocess/tools/convert_trace_to_csv.py`.
+
+Design work leaned heavily on reading source directly rather than trusting documentation summaries:
+a full Perfetto checkout happened to already exist locally, so the actual `trace_processor_shell`
+C++ source (`shell/query.cc`, `trace_processor_shell.cc`) and the actual PerfettoSQL stdlib source
+(`prelude/after_eof/tracks.sql`) were read to confirm the exact CLI contract and SQL schema, rather
+than relying on perfetto.dev's docs (which turned out to have some genuine gaps -- the docs didn't
+mention `process_track` at all, only `thread_track`). This surfaced two things a docs-only design
+would have missed:
+
+1. **A real correctness trap**: a SQL `NULL` prints from `trace_processor_shell` as the literal
+   7-character string `"[NULL]"`, not an empty cell. Copied naively, every genuinely-NULL cell
+   (e.g. `tid` on a GPU kernel-dispatch slice with no owning thread) would become the literal
+   string `[NULL]` -- truthy in Python, silently breaking `stage1_rocprofsys_trace.py`'s `v if v
+   else None` blank-handling that the rest of the pipeline depends on. Fixed by a dedicated parsing
+   step that converts any cell exactly equal to `[NULL]` back to an empty string before this tool
+   writes its own CSV.
+2. **GPU kernel-dispatch slices sit on a `process_track`, not a `thread_track`** -- confirmed
+   directly against the real production CSVs (kernel-dispatch rows have `pid`/`process_name`
+   populated but blank `tid`/`thread_name`). The base-slice SQL query `LEFT JOIN`s both track kinds
+   and coalesces on `process.upid`, rather than assuming every slice has an owning thread.
+
+A Plan agent cross-checked the design against this project's own code before implementation and
+confirmed the query design, refined the args-pivoting approach (per-file dynamic arg-column
+headers, computed independently rather than assuming only the GPU partition ever carries args),
+and confirmed the tool's home: `postprocess/tools/`, not `scripts/`, specifically so it can
+`import stage3_rocprofsys_trace.tag_for_category()` directly for the `-gpu`/`-mpi`/`-other`
+partition-bin logic, with zero risk of that logic drifting out of sync with the real tag map (the
+same reasoning that keeps this codebase's noise-pattern logic in one place elsewhere). Confirmed
+directly with the user: stays Python rather than bash, for that same reuse reason and because this
+project's own bash scripts are only ever syntax-checked, never unit-tested, while the subtle
+correctness traps above are exactly the kind of thing a real test with hand-crafted fixtures can
+pin down.
+
+The user also revised the tool's default behavior mid-design: the default now writes the
+`-gpu`/`-mpi`/`-other` partitioned trio (not the single unfiltered file), once research showed the
+real unfiltered file lacks `corr_id` and every GPU-arg column entirely -- exactly the gap
+`discover_ranks()` already had to work around for the hand-converted real data (see plan 3.7's own
+entry above). The plain unfiltered file stays available as an opt-in `--unfiltered` extra.
+
+Verification: 20 new tests in `test_convert_trace_to_csv.py`, everything hung off mocking the one
+`_run_trace_processor()` subprocess call with hand-crafted, exact-format canned
+`trace_processor_shell` stdout (no real `.proto` file or `trace_processor_shell` binary is
+obtainable in this dev sandbox -- confirmed directly: even downloading the tool's own native binary
+is blocked by this session's sandboxing). `write_unfiltered_csv()`'s output is round-tripped
+through the real `stage1_rocprofsys_trace.parse_trace_csv()` as an integration check, and every
+output filename is asserted against `stage4_rocprofsys_trace_ranks._RANK_FILE_RE` directly so the
+two tools' naming conventions can never silently drift apart. Full suite 622 → 642 passing. Both
+READMEs and the three `extract_trace_*.py` tools' docstrings updated to name this tool as the
+conversion step, replacing the "out of scope" language that's now stale. See
+`docs/plans/3.10-proto-to-csv-converter.md` for the full accounting.

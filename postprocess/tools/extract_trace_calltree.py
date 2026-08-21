@@ -4,8 +4,8 @@ kernel data nested in at the exact CPU call site that launched it.
 
 Only reads the flat trace-CSV files this project's own convention documents (see
 stage4_rocprofsys_trace_ranks.py) -- a CSV export of a rocprof-sys trace-mode run, not the raw
-Perfetto `.proto` trace itself (that conversion step is a separate, user-run tool, out of scope
-here).
+Perfetto `.proto` trace itself (that conversion step is convert_trace_to_csv.py, a separate
+invocation from this tool).
 
 Unlike extract_calltree.py/extract_wallclock_calltree.py, GPU kernel placement here is exact, not
 a name-match-then-structural-guess: a trace's `corr_id` links each kernel dispatch to the exact

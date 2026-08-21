@@ -3,8 +3,8 @@
 
 Only reads the flat trace-CSV files this project's own convention documents (see
 stage4_rocprofsys_trace_ranks.py) -- a CSV export of a rocprof-sys trace-mode run, not the raw
-Perfetto `.proto` trace itself (that conversion step is a separate, user-run tool, out of scope
-here).
+Perfetto `.proto` trace itself (that conversion step is convert_trace_to_csv.py, a separate
+invocation from this tool).
 
 Functions: write_report(), main().
 """
