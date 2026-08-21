@@ -59,6 +59,7 @@
 | 2026-08-21 | Plan 3.9: final help-text/comment audit closing plan 3.1's roadmap (renumbered from 3.8, taken by the bug-fix plan above) -- rewrote 7 comments across the trace-family modules that had drifted into history/investigation language, most written during plan 3.8's own real-data debugging; both READMEs updated to cover the whole `3.x` trace pipeline for the first time, including fixing `postprocess/README.md`'s `stage4` write-up, which still attributed `merge_rank_trees()` and friends to `stage4_rocprofsys_sample_tree.py` after plan 3.5 had already split them out into `stage4_rocprofsys_common.py` -- see full accounting below |
 | 2026-08-21 | Plan 3.10: new `convert_trace_to_csv.py` -- converts a rocprof-sys trace-mode run's per-rank Perfetto `.proto` files into the trace-CSV format the `3.x` pipeline already consumes, closing the "conversion step deferred to a later plan" gap every prior `3.x` plan left open; design grounded in reading Perfetto's actual C++/SQL source directly rather than docs alone, surfacing a real correctness trap (`trace_processor_shell` prints SQL `NULL` as the literal string `"[NULL]"`, not a blank cell) that would have silently corrupted this pipeline's own blank-handling convention -- see full accounting below |
 | 2026-08-21 | Plan 3.11: new `scripts/profile_traced_hotspots.sh` chains `instrument_hotspots.sh trace` -> `convert_trace_to_csv.py` -> `extract_trace_hotspots.py`/`extract_trace_calltree.py` into one invocation, resolving a real flag-namespace collision between instrumentation-selection and final-report-selection flags by splitting them into bare vs `--instrument-*`-prefixed sets; also fixes a real `instrument_hotspots.sh` bug (the instrumented binary was never copied into the script's own output directory) -- see full accounting below |
+| 2026-08-21 | Plan 3.12: `select_hotspot_functions.py` renamed to `select_instrumented_functions.py` and widened -- a selected hotspot's immediate real caller is now pulled in by default (`--ancestor-depth`, via new generic `stage4_rocprofsys_common.expand_labels_with_ancestors()`), and a new `--gpu-output-dir` resolves hot GPU kernels into their real CPU owner (`resolve_kernel_owners()`), fixing GPU kernels/MPI calls losing their real caller's instrumentation regardless of that caller's own hotspot status; new `stage5_calltree_text_parser.py` lets `--report` mode support the same ancestor-pulling by reconstructing tree structure from a sibling `calltree.txt`'s rendered text -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -2731,3 +2732,65 @@ script partway through a dry-run preview. One real end-to-end run (against an ex
 test fixture, exercising the true `extract_trace_hotspots.py`/`extract_trace_calltree.py` tools for
 real, not mocked) confirmed the whole chain produces a real, correct report. See
 `docs/plans/3.11-profile-traced-hotspots.md` for the full accounting.
+
+## 2026-08-21 — Plan 3.12: ancestor- and GPU-owner-aware instrumentation selection
+
+Closes the gap plan 3.11 deferred: a hotspot's raw self/inclusive-time selection could leave a GPU
+kernel's real CPU owner, or an MPI call's real caller, uninstrumented even though the kernel/MPI
+call itself was expensive -- leaving it structurally disconnected in the resulting trace (nested
+under a generic OMPT/launch-site node instead of its real, specific position). Two new generic
+primitives in `stage4_rocprofsys_common.py` fix this: `expand_labels_with_ancestors(flat, labels,
+depth)` pulls in each selected label's N nearest real callers by walking the existing
+`caller_chains_for_label()`'s own chains; `resolve_kernel_owners(kernel_labels)` decodes a set of
+GPU kernel names into their real CPU owner names via the existing `kernel_owner_label()`. Both are
+plain, tree-shape-agnostic functions -- no hotspot/instrumentation concept baked in -- reusable by
+any future tool with a flat parent-linked row pool and a label set.
+
+Given how central this selection logic now is, `select_hotspot_functions.py` was renamed to
+`select_instrumented_functions.py` (per the user's own explicit request) and rebuilt as a thin
+composition over the new primitives: ancestor-pulling is on by default at depth 1 (no separate hard
+cap -- the depth limit plus a transparent stderr breakdown of how many functions were added by each
+mechanism already answers "weighed against its overhead" without a second, harder-to-reason-about
+knob); a new `--gpu-output-dir DIR` resolves GPU kernel hotspots from a paired rocprofv3 run into
+their real owners automatically. `instrument_hotspots.sh` now points at the renamed tool and passes
+`$OUTPUT_DIR/rocprofv3` (already produced by its own auto-profiling scan step) as
+`--gpu-output-dir`, at zero extra profiling cost.
+
+`--report FILE` mode needed its own path to the same ancestor data, since it never has the raw
+rocprof-sys output directory a live tree can be built from. New module
+`stage5_calltree_text_parser.py` (`flat_rows_from_calltree_text()`) reconstructs the same flat,
+parent-linked row shape directly from a *rendered* `calltree.txt`'s text -- the first parser in
+this codebase to turn a hierarchical indented tree back into structured data, everything else here
+only ever having parsed flat tables. Built by reading `stage5_tree_render.py`'s own exact rendering
+rules (a data row's fixed-width numeric suffix vs. a hard-wrapped label's bare continuation lines;
+tree-connector prefixes decoding directly to depth via a depth-tracked stack), so it stays exactly
+as forgiving as that renderer's real output, no more. `--report` mode requires a sibling
+`calltree.txt` next to the report when ancestor-pulling is active (the default) -- every launcher
+that writes a `hotspots.txt` already writes one alongside it -- and fails with a clear, actionable
+error rather than silently skipping ancestor expansion if it's missing.
+
+The first `ExitPlanMode` attempt was sent back twice by the user, both times sharpening the plan
+materially: first, a request to actually verify against this project's own real profiling output
+(`Heat_Convection_Solver/instrument_hotspots-scan-2026-08-10_12.55.53/`) rather than fixtures alone
+-- which surfaced a genuinely useful, unrelated discovery: the real `hotspots.txt`/`calltree.txt`
+already sitting in that directory were stale, written by an older code version with UPPERCASE
+column headers ("CALLS", "SELF-AVG(s)") that no longer match current (lowercase) rendering at all,
+confirmed by `grep`ing for `.upper()` and finding zero matches anywhere in current code. Both were
+regenerated in place from the same underlying raw data using current tools before being used as
+real fixtures. Second, a request that the new logic be built as generic, reusable primitives from
+the start rather than tool-specific code -- directly shaping the `stage4_rocprofsys_common.py`
+placement described above.
+
+Verification: full suite grew from 659 to 673 tests, all green, including hand-crafted fixtures for
+`stage5_calltree_text_parser.py` generated through the real `stage5_tree_render.py` rendering
+functions themselves (not hand-typed column alignment, which proved fragile the first time it was
+tried) so fixtures stay byte-exact to production output. Against the real, freshly-regenerated
+Heat_Convection_Solver data: `--output-dir` + `--gpu-output-dir` correctly resolved real GPU kernel
+owner names (including `convection_stable_dt$convection_time_integrator_mod_`, the exact owner
+plan 3.8 already confirmed for this dataset); `--report` mode correctly used its sibling
+`calltree.txt`; temporarily removing that file confirmed the documented clear error fires instead
+of silently skipping ancestor expansion. `bash -n` plus a manual `--dry-run` run of
+`instrument_hotspots.sh instrument --report` against the real regenerated report (with stub
+`rocprof-sys-instrument`/`rocprof-sys-run` on `PATH`, the standing technique for this sandbox)
+confirmed the renamed selector wires in correctly end to end. See
+`docs/plans/3.12-ancestor-aware-instrumentation-selection.md` for the full accounting.

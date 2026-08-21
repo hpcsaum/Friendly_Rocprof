@@ -12,8 +12,13 @@ no opinion on which nodes get rendered or how (see `stage5_tree_render.py`), or 
 node's real GPU-kernel/launch-site attachment is computed (each pipeline does that its own way
 before or independently of merging here).
 
+Also owns two small, generic label-selection helpers (expand_labels_with_ancestors(),
+resolve_kernel_owners()) built directly on top of the primitives above -- reusable by any future
+tool that needs "these labels plus enough of their real ancestry" or "these GPU kernel names'
+real CPU owners," not specific to any one selection tool's own reason for wanting them.
+
 Functions: merge_rank_trees(), flatten_tree(), caller_chains_for_label(), aggregate_node_stats(),
-make_node_values(), kernel_owner_label().
+make_node_values(), kernel_owner_label(), expand_labels_with_ancestors(), resolve_kernel_owners().
 """
 
 import re
@@ -84,6 +89,47 @@ def kernel_owner_label(kernel_name):
         return _demangle_omp_offload_name(m.group("mangled"))
 
     return kernel_name
+
+
+def expand_labels_with_ancestors(flat, labels, depth):
+    """Given flat (any parent-linked row list, e.g. flatten_tree()'s output) and a set of target
+    labels, returns the set of ADDITIONAL labels found within `depth` real ancestor levels of any
+    of them -- the immediate parent at depth 1, the parent's parent at depth 2, and so on. Uses
+    caller_chains_for_label() per label (every distinct root-to-target chain, since the same label
+    can be called from more than one real position), taking each chain's nearest `depth` entries
+    before the target itself. `depth` <= 0 returns an empty set -- no ancestors pulled in. A label
+    with no matching row anywhere contributes nothing, same "absence is a real fact, not an error"
+    precedent caller_chains_for_label() already establishes.
+
+    Generic across every consumer of this codebase's flat/parent-linked row shape -- no
+    hotspot/instrumentation concept here, just "give me real, nearby ancestors of these labels."
+    """
+    if depth <= 0:
+        return set()
+
+    added = set()
+    for label in labels:
+        for chain in caller_chains_for_label(flat, label):
+            # chain is root-first, ending with the target itself -- its nearest `depth`
+            # ancestors are the `depth` entries immediately before that last one.
+            for node in chain[:-1][-depth:]:
+                if node["label"] not in labels:
+                    added.add(node["label"])
+    return added
+
+
+def resolve_kernel_owners(kernel_labels):
+    """Given an iterable of GPU kernel names, returns the set of real CPU owner names
+    successfully decoded via kernel_owner_label() -- a kernel name matching neither convention
+    that function recognizes contributes nothing (kernel_owner_label() returns it unchanged in
+    that case, which is exactly how "no owner found" is represented; filtered out here rather
+    than added as a bogus self-referential "owner")."""
+    owners = set()
+    for kernel_label in kernel_labels:
+        owner = kernel_owner_label(kernel_label)
+        if owner != kernel_label:
+            owners.add(owner)
+    return owners
 
 
 def merge_rank_trees(ranks, label_key="label"):

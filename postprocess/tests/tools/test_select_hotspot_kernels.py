@@ -11,7 +11,7 @@ MODULE_PATH = os.path.join(POSTPROCESS_DIR, "tools", "select_hotspot_kernels.py"
 # select_hotspot_kernels.py does a plain top-level "import extract_GPU_hotspots", relying on
 # its own directory being on sys.path -- true automatically when run directly, but not when
 # loaded here by explicit file path, so replicate that manually (same technique as
-# test_select_hotspot_functions.py).
+# test_select_instrumented_functions.py).
 sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
 import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
 

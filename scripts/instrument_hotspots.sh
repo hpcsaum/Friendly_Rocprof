@@ -22,7 +22,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOTSPOTS_LAUNCHER="$SCRIPT_DIR/profile_hotspots.sh"
-SELECTOR="$SCRIPT_DIR/../postprocess/tools/select_hotspot_functions.py"
+SELECTOR="$SCRIPT_DIR/../postprocess/tools/select_instrumented_functions.py"
 
 usage_top() {
   cat <<'EOF'
@@ -313,7 +313,7 @@ if [[ -n "$REPORT" ]]; then
   [[ "$SELECTOR_EXIT" -eq 0 ]] || exit "$SELECTOR_EXIT"
 elif [[ "$DRY_RUN" -ne 1 ]]; then
   set +e
-  PAIRS_OUTPUT="$(python3 "$SELECTOR" --output-dir "$OUTPUT_DIR/rocprof-sys" "${SELECTION_ARGS[@]}" "${UNFILTERED_ARGS[@]}")"
+  PAIRS_OUTPUT="$(python3 "$SELECTOR" --output-dir "$OUTPUT_DIR/rocprof-sys" --gpu-output-dir "$OUTPUT_DIR/rocprofv3" "${SELECTION_ARGS[@]}" "${UNFILTERED_ARGS[@]}")"
   SELECTOR_EXIT=$?
   set -e
   [[ "$SELECTOR_EXIT" -eq 0 ]] || exit "$SELECTOR_EXIT"
@@ -328,8 +328,10 @@ if [[ -n "$PAIRS_OUTPUT" ]]; then
   done <<< "$PAIRS_OUTPUT"
 fi
 
+# The breakdown of raw hotspots vs. GPU-kernel-owner/ancestor additions is already printed to
+# stderr by $SELECTOR itself as it runs -- this is just the final, combined list to instrument.
 if [[ ${#LABELS[@]} -gt 0 ]]; then
-  echo "selected hotspot functions (${#LABELS[@]}):"
+  echo "functions to instrument (${#LABELS[@]}):"
   for l in "${LABELS[@]}"; do echo "  - $l"; done
 fi
 

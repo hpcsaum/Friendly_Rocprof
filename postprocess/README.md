@@ -194,7 +194,7 @@ assemble it through stage6, write the file. `extract_calltree.py`/`extract_wallc
 `extract_hotspots.py`/`extract_hotspot_callers.py` also import each other directly
 (`extract_CPU_hotspots`/`extract_GPU_hotspots` as `cpu_tool`/`gpu_tool`) to reuse their
 `gather_run_info()` rather than duplicating metadata-guessing logic. A few tools sit outside that
-shape entirely: `select_hotspot_functions.py`/`select_hotspot_kernels.py` don't assemble a stage6
+shape entirely: `select_instrumented_functions.py`/`select_hotspot_kernels.py` don't assemble a stage6
 report at all (they print label/regex pairs for `instrument_hotspots.sh` to consume), and
 `convert_trace_to_csv.py` doesn't touch stage1–6 at all -- it's the trace pipeline's own stage 0,
 producing the CSV files `stage1_rocprofsys_trace.py` reads, not consuming them.

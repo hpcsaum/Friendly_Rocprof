@@ -5,7 +5,7 @@ Read a hotspots report (written by extract_GPU_hotspots.py or extract_hotspots.p
 rocprofv3 output directory directly, and print one kernel name per line -- ready to feed
 into AMD's rocprof-compute as "-k" (kernel) filter arguments.
 
-Much simpler than select_hotspot_functions.py's CPU-side equivalent: rocprof-compute's "-k"
+Much simpler than select_instrumented_functions.py's CPU-side equivalent: rocprof-compute's "-k"
 takes plain substrings, not a regex, so no escaping is needed here. There's also no
 rocprof-sys-instrument-style rewrite step and no ground-truth "instrumented.json" to check
 requested kernels against, so this module has no "--check-instrumented" mode either.

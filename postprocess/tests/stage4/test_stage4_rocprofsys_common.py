@@ -202,5 +202,79 @@ class KernelOwnerLabelTests(unittest.TestCase):
         self.assertEqual(s4c.kernel_owner_label("stencil_kernel"), "stencil_kernel")
 
 
+class ExpandLabelsWithAncestorsTests(unittest.TestCase):
+    def test_depth_1_adds_only_the_immediate_parent(self):
+        main = make_row("main")
+        caller = make_row("caller", parent=main)
+        target = make_row("target", parent=caller)
+        rows = [main, caller, target]
+
+        added = s4c.expand_labels_with_ancestors(rows, {"target"}, depth=1)
+        self.assertEqual(added, {"caller"})
+
+    def test_depth_2_reaches_the_grandparent_too(self):
+        main = make_row("main")
+        caller = make_row("caller", parent=main)
+        target = make_row("target", parent=caller)
+        rows = [main, caller, target]
+
+        added = s4c.expand_labels_with_ancestors(rows, {"target"}, depth=2)
+        self.assertEqual(added, {"caller", "main"})
+
+    def test_depth_0_adds_nothing(self):
+        main = make_row("main")
+        target = make_row("target", parent=main)
+        added = s4c.expand_labels_with_ancestors([main, target], {"target"}, depth=0)
+        self.assertEqual(added, set())
+
+    def test_already_selected_ancestor_is_not_reported_twice(self):
+        main = make_row("main")
+        caller = make_row("caller", parent=main)
+        target = make_row("target", parent=caller)
+        rows = [main, caller, target]
+
+        # "caller" is already in the base selection -- expanding "target" must not re-report it,
+        # even though expansion also runs for "caller" itself and legitimately adds "main".
+        added = s4c.expand_labels_with_ancestors(rows, {"target", "caller"}, depth=1)
+        self.assertNotIn("caller", added)
+        self.assertEqual(added, {"main"})
+
+    def test_multiple_call_sites_each_contribute_their_own_immediate_parent(self):
+        main = make_row("main")
+        caller_a = make_row("caller_a", parent=main)
+        caller_b = make_row("caller_b", parent=main)
+        target_a = make_row("target", parent=caller_a)
+        target_b = make_row("target", parent=caller_b)
+        rows = [main, caller_a, caller_b, target_a, target_b]
+
+        added = s4c.expand_labels_with_ancestors(rows, {"target"}, depth=1)
+        self.assertEqual(added, {"caller_a", "caller_b"})
+
+    def test_label_never_sampled_contributes_nothing(self):
+        main = make_row("main")
+        added = s4c.expand_labels_with_ancestors([main], {"never_seen"}, depth=1)
+        self.assertEqual(added, set())
+
+
+class ResolveKernelOwnersTests(unittest.TestCase):
+    def test_decoded_owners_are_returned(self):
+        owners = s4c.resolve_kernel_owners([
+            "jacobi_sweep$pressure_solver_mod_$ck_L36_1_cce$noloop$form",
+            "__omp_offloading_4f_8fb8827_launch_omp_kernel_l6",
+        ])
+        self.assertEqual(owners, {"jacobi_sweep$pressure_solver_mod_", "launch_omp_kernel"})
+
+    def test_unrecognized_kernel_names_contribute_nothing(self):
+        owners = s4c.resolve_kernel_owners(["stencil_kernel", "JacobiIterationKernel"])
+        self.assertEqual(owners, set())
+
+    def test_duplicate_owners_collapse(self):
+        owners = s4c.resolve_kernel_owners([
+            "foo$mod_$ck_L1_1",
+            "foo$mod_$ck_L2_2",
+        ])
+        self.assertEqual(owners, {"foo$mod_"})
+
+
 if __name__ == "__main__":
     unittest.main()

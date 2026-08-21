@@ -205,14 +205,17 @@ scripts/instrument_hotspots.sh trace --mpi "mpirun -np 4" -- ./app arg1 arg2
 ```
 
 Auto-profiling picks hotspot functions by self time, same as the CPU hotspots tool — pass
-`--unfiltered` for the old inclusive-time selection. After the rewrite, this tool checks
-which requested functions actually made it into the binary and warns (without stopping
-anything) about any that didn't — inlining, optimization, or a name mismatch can all cause
-that.
+`--unfiltered` for the old inclusive-time selection. The raw selection is then widened a bit so
+the resulting trace's shape stays meaningful: each selected function's immediate real caller is
+pulled in too (`--ancestor-depth`, default 1; 0 disables it), and a hot GPU kernel's real CPU
+owner is pulled in even if that owner wasn't itself a hotspot (wired automatically from the
+auto-profiling scan's own `rocprofv3/` data). After the rewrite, this tool checks which requested
+functions actually made it into the binary and warns (without stopping anything) about any that
+didn't — inlining, optimization, or a name mismatch can all cause that.
 
 ```bash
-python3 postprocess/tools/select_hotspot_functions.py --output-dir <rocprof-sys-output-dir> [-n TOP_N | --threshold PCT | --all] [--unfiltered]
-python3 postprocess/tools/select_hotspot_functions.py --report results/run1/hotspots.txt
+python3 postprocess/tools/select_instrumented_functions.py --output-dir <rocprof-sys-output-dir> [-n TOP_N | --threshold PCT | --all] [--unfiltered] [--gpu-output-dir <rocprofv3-output-dir>] [--ancestor-depth N]
+python3 postprocess/tools/select_instrumented_functions.py --report results/run1/hotspots.txt
 ```
 
 If you also want automatic hotspots/calltree reports built from the trace instead of just the raw

@@ -1,27 +1,41 @@
 #!/usr/bin/env python3
 """Resolve CPU hotspot function names into rocprof-sys-instrument "-R" input.
 
-Two unrelated jobs live in this one module, both in service of
+Three unrelated jobs live in this one module, all in service of
 scripts/instrument_hotspots.sh:
 
 1. Resolve mode (default): read a hotspots report (written by
    extract_CPU_hotspots.py or extract_hotspots.py) or a rocprof-sys output
-   directory directly, and print "label<TAB>regex" pairs -- the regex being
-   an escaped, unanchored substring pattern safe to pass to
+   directory directly, select CPU hotspot function names, optionally widen
+   that selection (see below), and print "label<TAB>regex" pairs -- the
+   regex being an escaped, unanchored substring pattern safe to pass to
    rocprof-sys-instrument's "-R/--function-restrict".
 
-2. --check-instrumented mode: after rocprof-sys-instrument has produced its
+2. Selection-widening (on by default): a hotspot's raw self/inclusive-time
+   selection can leave a GPU kernel's real CPU owner, or an MPI call's real
+   caller, uninstrumented even though the kernel/MPI call itself is
+   expensive -- leaving it structurally disconnected in the resulting
+   trace. --gpu-output-dir resolves GPU kernel hotspots into their owning
+   CPU subroutine names (stage4_rocprofsys_common.resolve_kernel_owners());
+   --ancestor-depth pulls in each selected function's N nearest real
+   callers (stage4_rocprofsys_common.expand_labels_with_ancestors()) so its
+   position in the resulting tree stays meaningful. Both additions are
+   built from generic, reusable stage4/stage5 primitives -- this module is
+   just their one concrete consumer, feeding instrument_hotspots.sh.
+
+3. --check-instrumented mode: after rocprof-sys-instrument has produced its
    own instrumented.json (documenting exactly which functions actually got
    instrumented, post-filtering), compare it against the requested labels
    and warn about any that didn't make it in. Never fails -- a lost
    function is a warning, not an error.
 
-Only CPU-side function names are handled here. GPU kernel names (from a
-combined report's fused/GPU tables) are a different mechanism entirely and
-are never read by this module.
+Only CPU-side function names are ever selected for instrumentation --
+--gpu-output-dir only ever contributes a kernel's CPU *owner* name, never
+the kernel name itself, since kernel instrumentation is a different
+mechanism entirely.
 
 Functions: escape_for_instrument_regex(), labels_from_output_dir(), labels_from_report(),
-find_lost_functions(), main().
+flat_tree_for_ancestors(), find_lost_functions(), main().
 """
 
 import argparse
@@ -32,7 +46,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _stage_paths  # noqa: E402  (adds every stageN/ dir to sys.path)
 
+import select_hotspot_kernels
+from stage4_rocprofsys_common import expand_labels_with_ancestors, flatten_tree, merge_rank_trees, resolve_kernel_owners
 from stage4_rocprofsys_sample_flat import aggregate
+from stage4_rocprofsys_sample_tree import load_rank_trees
+from stage5_calltree_text_parser import flat_rows_from_calltree_text
+from stage5_calltree_view import strip_wrapper_noise
 from stage5_table_render import iter_table_rows, select_entries
 import stage6_cli_common
 import stage6_noise_config
@@ -45,9 +64,14 @@ list. This is what scripts/instrument_hotspots.sh uses to instrument only
 the functions that already showed up as hotspots, instead of every
 function in the binary.
 
-Only CPU-side functions are selected -- GPU kernel names from a combined
-report can't be targeted this way, since kernel instrumentation is a
-different mechanism entirely.
+By default, the raw hotspot selection is widened a bit so the resulting
+trace's shape still makes sense: each selected function's immediate real
+caller is pulled in too (--ancestor-depth, default 1; 0 disables it), and,
+when --gpu-output-dir points at a paired rocprofv3 run, a hot GPU kernel's
+real CPU owner is pulled in even if that owner wasn't itself a hotspot.
+Only CPU-side functions are ever selected -- GPU kernel names from a
+combined report can't be targeted this way, since kernel instrumentation
+is a different mechanism entirely.
 
 This tool also has a second, unrelated job: after rocprof-sys-instrument
 has run, --check-instrumented compares its own instrumented.json output
@@ -143,6 +167,31 @@ def labels_from_report(report_path):
     return sorted(set(labels))
 
 
+def flat_tree_for_ancestors(report_path, output_dir):
+    """The flat, parent-linked row pool expand_labels_with_ancestors() needs, built from
+    whichever source mode is active. --report mode requires a sibling 'calltree.txt' next to
+    the report (every launcher that writes a hotspots.txt also writes one, per this project's
+    own convention) parsed back into rows via flat_rows_from_calltree_text(); --output-dir mode
+    builds it directly via load_rank_trees()/merge_rank_trees()/flatten_tree(), the exact same
+    pipeline extract_hotspot_callers.py already uses for its own caller-chain lookups."""
+    if report_path:
+        calltree_path = os.path.join(os.path.dirname(os.path.abspath(report_path)), "calltree.txt")
+        if not os.path.isfile(calltree_path):
+            raise SystemExit(
+                f"error: --ancestor-depth > 0 with --report needs a sibling 'calltree.txt' next to "
+                f"{report_path!r}, but {calltree_path!r} wasn't found -- pass --ancestor-depth 0 to "
+                "skip ancestor expansion, or use --output-dir instead"
+            )
+        with open(calltree_path, errors="replace") as f:
+            text = f.read()
+        return flat_rows_from_calltree_text(text)
+
+    ranks = load_rank_trees(output_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt", postprocess=strip_wrapper_noise)
+    if not ranks:
+        return []
+    return flatten_tree(merge_rank_trees(ranks))
+
+
 def _iter_instrumented_entries(data):
     """instrumented.json's exact top-level shape (bare array vs. wrapped in an
     object) isn't independently confirmed beyond the per-entry field names --
@@ -184,7 +233,7 @@ def find_lost_functions(instrumented_json_path, requested_labels):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        prog="select_hotspot_functions.py",
+        prog="select_instrumented_functions.py",
         description=HELP_BLURB,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -201,6 +250,18 @@ def main(argv=None):
                               "self time -- can pick a function that just calls other functions "
                               "rather than one that does real work; ignored with --report (that "
                               "just reads whatever's in the file)")
+    parser.add_argument("--gpu-output-dir", dest="gpu_output_dir", default=None,
+                         help="rocprofv3 output directory paired with this run -- when given, GPU "
+                              "kernel hotspots are selected from it (same top/threshold/--all as "
+                              "the CPU side) and resolved into their real CPU owner subroutine "
+                              "names (stage4_rocprofsys_common.resolve_kernel_owners()), which are "
+                              "added to the selection even if the owner wasn't itself a hotspot")
+    parser.add_argument("--ancestor-depth", dest="ancestor_depth", type=int, default=None,
+                         help="pull in each selected function's N nearest real callers, so its "
+                              "position in the resulting trace stays meaningful (default: 1; pass "
+                              "0 to disable). With --report, requires a sibling 'calltree.txt' "
+                              "next to it (written automatically by every launcher that writes a "
+                              "hotspots.txt)")
     parser.add_argument("--check-instrumented", dest="check_instrumented", default=None,
                          help="switch to lost-function mode: read requested labels from stdin "
                               "(one per line) and warn about any missing from this "
@@ -219,8 +280,12 @@ def main(argv=None):
 
     if args.check_instrumented:
         if (args.report or args.output_dir or args.top is not None or args.threshold is not None
-                or args.show_all or args.unfiltered or args.extra_noise_config):
-            raise SystemExit("error: --check-instrumented can't be combined with --report/--output-dir/selection flags")
+                or args.show_all or args.unfiltered or args.extra_noise_config
+                or args.gpu_output_dir or args.ancestor_depth is not None):
+            raise SystemExit(
+                "error: --check-instrumented can't be combined with "
+                "--report/--output-dir/selection flags/--gpu-output-dir/--ancestor-depth"
+            )
         labels = [line.strip() for line in sys.stdin if line.strip()]
         try:
             lost = find_lost_functions(args.check_instrumented, labels)
@@ -242,23 +307,57 @@ def main(argv=None):
     if not args.report and not args.output_dir:
         raise SystemExit("error: one of --report or --output-dir is required")
 
+    if args.gpu_output_dir:
+        stage6_cli_common.require_directory(args.gpu_output_dir)
+
     if args.top is None and args.threshold is None and not args.show_all:
         args.threshold = 1.0
+    if args.ancestor_depth is None:
+        args.ancestor_depth = 1
 
     if args.report:
-        labels = labels_from_report(args.report)
+        hotspot_labels = labels_from_report(args.report)
     else:
         stage6_cli_common.require_directory(args.output_dir)
         stage6_noise_config.configure_from_args(args)
-        labels = labels_from_output_dir(
+        hotspot_labels = labels_from_output_dir(
             args.output_dir, top=args.top, threshold=args.threshold, show_all=args.show_all,
             unfiltered=args.unfiltered,
         )
 
-    if not labels:
+    if not hotspot_labels:
         raise SystemExit("error: no hotspot functions resolved -- nothing to instrument")
 
-    for label in labels:
+    print(
+        f"{len(hotspot_labels)} hotspot function(s) selected by "
+        f"{'inclusive' if args.unfiltered else 'self'} time", file=sys.stderr,
+    )
+    selected = set(hotspot_labels)
+
+    owner_labels = set()
+    if args.gpu_output_dir:
+        kernel_labels = select_hotspot_kernels.labels_from_output_dir(
+            args.gpu_output_dir, top=args.top, threshold=args.threshold, show_all=args.show_all,
+        )
+        owner_labels = resolve_kernel_owners(kernel_labels) - selected
+        if owner_labels:
+            print(
+                f"{len(owner_labels)} GPU-kernel-owner function(s) added from --gpu-output-dir",
+                file=sys.stderr,
+            )
+        selected |= owner_labels
+
+    if args.ancestor_depth > 0:
+        flat = flat_tree_for_ancestors(args.report, args.output_dir)
+        ancestor_labels = expand_labels_with_ancestors(flat, selected, args.ancestor_depth)
+        if ancestor_labels:
+            print(
+                f"{len(ancestor_labels)} ancestor function(s) added for tree connectivity "
+                f"(--ancestor-depth {args.ancestor_depth})", file=sys.stderr,
+            )
+        selected |= ancestor_labels
+
+    for label in sorted(selected):
         print(f"{label}\t{escape_for_instrument_regex(label)}")
 
 

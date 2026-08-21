@@ -10,20 +10,21 @@ import unittest.mock
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-MODULE_PATH = os.path.join(POSTPROCESS_DIR, "tools", "select_hotspot_functions.py")
+MODULE_PATH = os.path.join(POSTPROCESS_DIR, "tools", "select_instrumented_functions.py")
 
-# select_hotspot_functions.py does a plain top-level "import extract_CPU_hotspots",
+# select_instrumented_functions.py does a plain top-level "import extract_CPU_hotspots",
 # relying on its own directory being on sys.path -- true automatically when run
 # directly, but not when loaded here by explicit file path, so replicate that
 # manually (same technique as test_extract_hotspots.py).
 sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
 import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
 
-spec = importlib.util.spec_from_file_location("select_hotspot_functions", MODULE_PATH)
+spec = importlib.util.spec_from_file_location("select_instrumented_functions", MODULE_PATH)
 selector = importlib.util.module_from_spec(spec)
-sys.modules["select_hotspot_functions"] = selector
+sys.modules["select_instrumented_functions"] = selector
 spec.loader.exec_module(selector)
 
+import extract_calltree as calltree_tool  # noqa: E402
 import extract_CPU_hotspots as cpu_tool  # noqa: E402
 import extract_GPU_hotspots as gpu_tool  # noqa: E402
 import extract_hotspots as combined_tool  # noqa: E402
@@ -287,6 +288,129 @@ class MainCheckInstrumentedModeTests(unittest.TestCase):
             result = selector.main(["--check-instrumented", "/nonexistent/instrumented.json"])
         self.assertIsNone(result)
         self.assertIn("skipping lost-function check", stderr.getvalue())
+
+    def test_conflicts_with_gpu_output_dir(self):
+        with self.assertRaises(SystemExit):
+            selector.main(["--check-instrumented", "x.json", "--gpu-output-dir", "y"])
+
+    def test_conflicts_with_ancestor_depth(self):
+        with self.assertRaises(SystemExit):
+            selector.main(["--check-instrumented", "x.json", "--ancestor-depth", "2"])
+
+
+class FlatTreeForAncestorsTests(unittest.TestCase):
+    def test_output_dir_mode_builds_the_real_merged_tree(self):
+        flat = selector.flat_tree_for_ancestors(None, MPI_2RANK)
+        by_label = {r["label"]: r for r in flat}
+        self.assertIn("compute_stencil", by_label)
+        self.assertIs(by_label["compute_stencil"]["parent"], by_label["main"])
+
+    def test_report_mode_reads_sibling_calltree_txt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            hotspots = os.path.join(tmp, "hotspots.txt")
+            calltree = os.path.join(tmp, "calltree.txt")
+            cpu_tool.write_report(MPI_2RANK, hotspots)
+            calltree_tool.write_report(MPI_2RANK, None, calltree)
+
+            flat = selector.flat_tree_for_ancestors(hotspots, None)
+        by_label = {r["label"]: r for r in flat}
+        self.assertIn("compute_stencil", by_label)
+        self.assertIs(by_label["compute_stencil"]["parent"], by_label["main"])
+
+    def test_report_mode_missing_calltree_raises_a_clear_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            hotspots = os.path.join(tmp, "hotspots.txt")
+            with open(hotspots, "w") as f:
+                f.write("placeholder\n")
+            with self.assertRaisesRegex(SystemExit, "calltree.txt"):
+                selector.flat_tree_for_ancestors(hotspots, None)
+
+
+class MainAncestorExpansionTests(unittest.TestCase):
+    def test_default_depth_pulls_in_the_immediate_caller(self):
+        buf, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(stderr):
+            selector.main(["--output-dir", MPI_2RANK, "--top", "1"])
+        self.assertIn("compute_stencil\tcompute_stencil", buf.getvalue())
+        self.assertIn("main\tmain", buf.getvalue())
+        self.assertIn("ancestor function(s) added for tree connectivity (--ancestor-depth 1)", stderr.getvalue())
+
+    def test_ancestor_depth_zero_disables_expansion(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            selector.main(["--output-dir", MPI_2RANK, "--top", "1", "--ancestor-depth", "0"])
+        self.assertIn("compute_stencil\tcompute_stencil", buf.getvalue())
+        self.assertNotIn("main\tmain", buf.getvalue())
+
+    def test_report_mode_uses_sibling_calltree_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            hotspots = os.path.join(tmp, "hotspots.txt")
+            calltree = os.path.join(tmp, "calltree.txt")
+            cpu_tool.write_report(MPI_2RANK, hotspots)
+            calltree_tool.write_report(MPI_2RANK, None, calltree)
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                selector.main(["--report", hotspots])
+        self.assertIn("main\tmain", buf.getvalue())
+
+    def test_report_mode_missing_calltree_raises_with_default_depth(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            hotspots = os.path.join(tmp, "hotspots.txt")
+            cpu_tool.write_report(MPI_2RANK, hotspots)
+            with self.assertRaisesRegex(SystemExit, "calltree.txt"):
+                selector.main(["--report", hotspots])
+
+    def test_report_mode_missing_calltree_is_fine_with_depth_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            hotspots = os.path.join(tmp, "hotspots.txt")
+            cpu_tool.write_report(MPI_2RANK, hotspots)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                selector.main(["--report", hotspots, "--ancestor-depth", "0"])
+        self.assertIn("compute_stencil\tcompute_stencil", buf.getvalue())
+
+
+class MainGpuOutputDirTests(unittest.TestCase):
+    def _make_gpu_dir(self, tmp, kernel_name):
+        gpu_dir = os.path.join(tmp, "rocprofv3", "myhost")
+        os.makedirs(gpu_dir)
+        with open(os.path.join(gpu_dir, "1_kernel_stats.csv"), "w") as f:
+            f.write('"Name","Calls","TotalDurationNs","AverageNs","Percentage","MinNs","MaxNs","StdDev"\n')
+            f.write(f'"{kernel_name}",1000,900000000,900000.0,90.0,800000,1000000,5000.0\n')
+        return os.path.dirname(gpu_dir)
+
+    def test_decoded_kernel_owner_is_added_to_the_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gpu_dir = self._make_gpu_dir(tmp, "jacobi_sweep$pressure_solver_mod_$ck_L36_1_cce$noloop$form")
+            buf, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(stderr):
+                selector.main(["--output-dir", MPI_2RANK, "--top", "1", "--gpu-output-dir", gpu_dir])
+        self.assertIn("jacobi_sweep$pressure_solver_mod_", buf.getvalue())
+        self.assertIn("GPU-kernel-owner function(s) added from --gpu-output-dir", stderr.getvalue())
+
+    def test_unrecognized_kernel_names_add_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gpu_dir = self._make_gpu_dir(tmp, "JacobiIterationKernel")
+            buf, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(stderr):
+                selector.main(["--output-dir", MPI_2RANK, "--top", "1", "--gpu-output-dir", gpu_dir])
+        self.assertNotIn("GPU-kernel-owner function(s) added", stderr.getvalue())
+
+    def test_owner_already_selected_is_not_double_counted(self):
+        # compute_stencil's own kernel-owner decode would just be itself, if it happened to
+        # already be the hotspot pulled in -- confirms the "- selected" dedup in main() rather
+        # than asserting the exact resolved label, which is decode-scheme-specific.
+        with tempfile.TemporaryDirectory() as tmp:
+            gpu_dir = self._make_gpu_dir(tmp, "compute_stencil$ck_L1_1_cce$noloop$form")
+            buf, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(stderr):
+                selector.main(["--output-dir", MPI_2RANK, "--top", "1", "--gpu-output-dir", gpu_dir])
+        self.assertNotIn("GPU-kernel-owner function(s) added", stderr.getvalue())
+
+    def test_gpu_output_dir_requires_an_existing_directory(self):
+        with self.assertRaises(SystemExit):
+            selector.main(["--output-dir", MPI_2RANK, "--top", "1", "--gpu-output-dir", "/nonexistent/dir"])
 
 
 if __name__ == "__main__":
