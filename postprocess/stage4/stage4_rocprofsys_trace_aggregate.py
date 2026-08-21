@@ -178,11 +178,10 @@ def _reanchor_kernels_by_owner_and_time(rows):
 def build_rank_aggregate(csv_paths, rank_key):
     """The one expensive path for one rank: parse + ancestry (unchanged stage1), self time
     synthesis, the corr_id kernel join, tag_rows() (stage3), and the intra-rank merge_rank_trees()
-    collapse of repeated same-position calls -- confirmed directly against its source: nothing
-    about its loop structure requires more than one rank, so feeding it just this rank's own
-    (rank_key, rows, roots) performs exactly the same by-id(parent)+label merge it already does
-    across ranks. Returns the flat, parent-linked, tool-independent row list get_rank_aggregate()
-    caches.
+    collapse of repeated same-position calls -- a single-rank call is just merge_rank_trees() with
+    len(ranks) == 1, performing the same by-id(parent)+label merge it always does, whether merging
+    one rank's own repeated calls or several ranks' trees. Returns the flat, parent-linked,
+    tool-independent row list get_rank_aggregate() caches.
 
     tag_rows() runs AFTER both the corr_id join and the owner+time reanchor, not before -- a
     kernel-dispatch row is untethered (parent is None) until the join reparents it, and tag_rows()'s

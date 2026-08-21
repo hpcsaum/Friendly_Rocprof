@@ -56,6 +56,7 @@
 | 2026-08-20 | Plan 3.5+3.6 (merged): split `stage4_rocprofsys_common.py` out of `stage4_rocprofsys_sample_tree.py` (`merge_rank_trees`/`flatten_tree`/`caller_chains_for_label`/`aggregate_node_stats`/`make_node_values`, all format-agnostic); new `stage4_rocprofsys_trace_aggregate.py` builds and on-disk-caches one rank's canonical, tool-independent aggregate (self_sum synthesis, an exact `corr_id` kernel-to-launch-site join, intra-rank dedup via a single-rank `merge_rank_trees()` call); new thin `stage4_rocprofsys_trace_tree.py`/`stage4_rocprofsys_trace_flat.py` derive every stage5 view from that same aggregate, never re-parsing -- roadmap steps 3.5+3.6 of the plan-3.1 sequence, merged into one plan after a design correction -- see full accounting below |
 | 2026-08-20 | Plan 3.7: new `stage4_rocprofsys_trace_ranks.py` (multi-rank file discovery, confirmed against this project's own real trace-CSV export); new `stage5_trace_calltree_view.py` and three new CLI tools (`extract_trace_hotspots.py`/`extract_trace_calltree.py`/`extract_trace_pop_metrics.py`) completing plan 3.1's roadmap -- the manual smoke test against real 4-rank data caught two real bugs (a `tag_rows()`-vs-`corr_id`-join ordering bug in `build_rank_aggregate()`, and a wrong file-precedence assumption in `discover_ranks()` that silently disabled every `corr_id` join), both fixed and covered by new regression tests -- see full accounting below |
 | 2026-08-21 | Plan 3.8: fixed every GPU kernel collapsing under one shared `hipModuleLaunchKernel` node in the real `Heat_Convection_Solver` trace -- `build_rank_aggregate()` now reanchors a kernel sharing a generic OMPT launch entry point onto the exact real CPU call instance its own embedded owner name and the trace's own timestamps identify, exact rather than estimated; `kernel_owner_label()` generalized (via `test_apps/results/`) from Cray Fortran's `$ck_` marker to every compiler this project tests -- see full accounting below |
+| 2026-08-21 | Plan 3.9: final help-text/comment audit closing plan 3.1's roadmap (renumbered from 3.8, taken by the bug-fix plan above) -- rewrote 7 comments across the trace-family modules that had drifted into history/investigation language, most written during plan 3.8's own real-data debugging; both READMEs updated to cover the whole `3.x` trace pipeline for the first time, including fixing `postprocess/README.md`'s `stage4` write-up, which still attributed `merge_rank_trees()` and friends to `stage4_rocprofsys_sample_tree.py` after plan 3.5 had already split them out into `stage4_rocprofsys_common.py` -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -2586,3 +2587,48 @@ finalized in plan mode (the in-session design went through a build-time-vs-view-
 proportional-split detour abandoned once real-data testing showed it would be measurably wrong, and
 the generalization/HIP-scoping checks above, all before any code was written).
 
+A related but unfixable limitation surfaced while checking the fixed calltree against the real
+data: every MPI call in the same trace also nests under `ompt_implicit_task`, but unlike the kernel
+case there's no name or id to recover the true caller from -- the calling subroutine
+(`run_convection_case$case_setup_mod_`, the likely candidate, confirmed against both the trace-mode
+CSV and a separate sample-mode profile) simply has zero instrumented frames in the trace at all. No
+code fix is possible from the data alone; `extract_trace_calltree.py`'s help text now states this
+as a standing limitation (any CPU-side call made from an uninstrumented function nests under the
+nearest instrumented/OMPT-internal ancestor) rather than leaving it to look like a real call
+relationship.
+
+
+## 2026-08-21 — Plan 3.9: help text + final comment/docstring audit + README updates
+
+The last item in plan 3.1's original roadmap table, renumbered from 3.8 to 3.9 since that plan
+number was taken by the kernel-owner-reanchoring bug fix above. Two Explore agents swept every
+new/renamed file from the whole `3.x` trace-postprocessing effort against `CLAUDE.md`'s Code
+Comments rules and the `HELP_BLURB` convention, mirroring `docs/plans/2.13-comment-docstring-audit.md`'s
+identical audit for the `2.x` consolidation.
+
+As expected, plan 3.8 had written a fair amount of investigation-narrative prose directly into
+several docstrings while diagnosing the kernel-anchoring bug against real data -- 7 findings across
+`stage4_rocprofsys_common.py`, `stage4_rocprofsys_trace_aggregate.py`,
+`stage4_rocprofsys_trace_ranks.py`, `stage4_rocprofsys_trace_tree.py`, and
+`stage4_rocprofsys_sample_tree.py`, each rewritten to state the current standing fact/invariant
+directly instead of narrating how it was discovered. One audit agent's `HELP_BLURB`-length finding
+for the calltree tools didn't survive a check against the codebase's own established precedent
+(`extract_calltree.py` is already just as long, following the same "short jargon-free lead,
+followed by real technical detail" house pattern) -- recorded as checked-and-compliant rather than
+acted on.
+
+Also folded in: both `README.md` and `postprocess/README.md` were missing the entire `3.x` trace
+pipeline. `README.md` gained a "Trace-based tools" section for the 3 new CLI tools.
+`postprocess/README.md` needed more than new bullets -- its `stage4` write-up had drifted out of
+date on the architecture itself, still attributing `merge_rank_trees()` and the rest of the
+generic tree-merge engine to `stage4_rocprofsys_sample_tree.py` after plan 3.5 had already split
+them out into `stage4_rocprofsys_common.py` for both pipelines to share (the same common/specific
+split `stage3`'s own write-up already documented correctly). Fixed that attribution everywhere it
+appeared (the module list, the stage4→stage5 entry-contract shapes), added the trace-side modules
+throughout, and added a "Trace pipeline" companion to the existing "Kernel-to-CPU attachment"
+section describing the `corr_id`-join-plus-reanchor mechanism plan 3.8 built, alongside the sample
+pipeline's own two-tier description.
+
+Verification: comment/doc-only changes, so the full suite stays unchanged at 622 passing; every
+edited file re-imports cleanly. See `docs/plans/3.9-help-text-and-comment-audit.md` for the full
+accounting.

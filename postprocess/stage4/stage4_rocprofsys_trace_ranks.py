@@ -2,11 +2,11 @@
 
 Scope: turning a directory of trace-CSV files into the `rank_inputs` shape
 (stage4_rocprofsys_trace_tree.merge_ranks()/stage4_rocprofsys_trace_flat.*() already expect --
-a list of (rank_key, csv_paths) tuples) -- nothing else. This is *this project's own* assumed
-naming convention (the one real trace-CSV directory this project has produced so far,
-`perfetto-trace-<N>.csv` / `perfetto-trace-<N>-{gpu,mpi,other}.csv`), not something any upstream
-AMD tool guarantees -- the deferred .proto-to-CSV conversion step doesn't exist yet to lock any
-particular filename prefix in. A user with differently-named CSVs renames them to match.
+a list of (rank_key, csv_paths) tuples) -- nothing else. This is *this project's own* documented
+naming convention (`perfetto-trace-<N>.csv` / `perfetto-trace-<N>-{gpu,mpi,other}.csv`), not
+something any upstream AMD tool guarantees -- the `.proto`-to-CSV conversion step is a separate,
+user-run tool with no fixed filename convention of its own. A user with differently-named CSVs
+renames them to match.
 
 Functions: discover_ranks().
 """
@@ -26,16 +26,14 @@ def discover_ranks(trace_dir):
     gather_timing_summary_per_rank().
 
     Per rank: the category-partitioned trio (-gpu/-mpi/-other) is preferred over the single
-    unfiltered file when both exist for that rank, confirmed by direct inspection of this
-    project's own real trace-CSV export to be an exact row-for-row partition (their row counts sum
-    to the unfiltered file's own row count exactly) -- not a reason to prefer one over the other by
-    itself, EXCEPT that the same real export's unfiltered file turned out to carry a narrower
-    column set than the partitioned files (missing corr_id and the other wide GPU-arg columns
-    entirely) -- an artifact of how that file happened to be generated, not a documented guarantee
-    either form always has every column. Preferring the partitioned set when present avoids
-    silently degrading the corr_id join to "nothing ever joins" purely because of which file
-    happened to be picked. The unfiltered file is used only when no partitioned file exists for
-    that rank at all.
+    unfiltered file when both exist for that rank. The two forms are an exact row-for-row
+    partition of the same underlying data (the partitioned trio's row counts sum to the unfiltered
+    file's own row count), so that alone wouldn't justify a preference -- but the unfiltered file
+    isn't guaranteed to carry every column the partitioned files do (in particular, it can be
+    missing corr_id and the other wide GPU-arg columns). Preferring the partitioned set when
+    present avoids silently degrading the corr_id join to "nothing ever joins" purely because of
+    which file happened to be picked. The unfiltered file is used only when no partitioned file
+    exists for that rank at all.
 
     Raises SystemExit if nothing under trace_dir matches the naming convention at all.
     """

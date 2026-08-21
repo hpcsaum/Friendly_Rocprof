@@ -283,6 +283,46 @@ Not every POP metric is computable with this toolchain (some need hardware/netwo
 project doesn't collect) — see [docs/pop_metrics_reference.md](docs/pop_metrics_reference.md)
 for the full picture of what's computed and why.
 
+## Trace-based tools
+
+The tools above all read `rocprof-sys`'s and `rocprofv3`'s already-aggregated summary output. This
+project also has a second family of tools that reads a full **trace** instead: every individual
+call and GPU kernel dispatch, with real timestamps, not a pre-summed total. That gives some reports
+information the summary-based tools can't have (e.g. exact CPU-to-GPU kernel correlation, real
+per-event categories instead of a name-based guess) at the cost of needing a trace-mode run to
+begin with.
+
+A trace-mode run is produced by any `rocprof-sys` run with `ROCPROFSYS_TRACE=1` set -- `trace` mode
+in `instrument_hotspots.sh` above is one convenient way to get one, but not the only source; any
+`rocprof-sys` trace experiment works. Either way, the raw output is a Perfetto `.proto` trace, which
+still needs converting to the flat CSV files these tools read (a separate, user-run conversion
+step using Perfetto's own `trace_processor` -- see https://perfetto.dev/ -- out of scope for this
+project's own code). Once you have that CSV directory:
+
+```bash
+python3 postprocess/tools/extract_trace_hotspots.py <trace-csv-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all] [--unfiltered]
+python3 postprocess/tools/extract_trace_calltree.py <trace-csv-dir> [-o calltree.txt] [--max-depth N] \
+  [--show-gpu-api] [--show-rocprofsys-internals] [--show-mpi-internals] [--show-compiler-runtime] [--show-all-internals]
+python3 postprocess/tools/extract_trace_pop_metrics.py <trace-csv-dir> [<more-trace-csv-dirs>...] [--scaling {strong,weak}] [-o report.txt]
+```
+
+- **`extract_trace_hotspots.py`** — the trace-based equivalent of `extract_hotspots.py` above: one
+  combined CPU+GPU ranking, plus per-rank load imbalance. Since a trace already ties every kernel
+  dispatch to the exact host call that launched it, there's nothing to separately reconcile the way
+  the summary-based CPU/GPU tools have to.
+- **`extract_trace_calltree.py`** — the trace-based call tree: real function nesting like
+  `extract_calltree.py`/`extract_wallclock_calltree.py` above, but with GPU kernel dispatches
+  nested in at the exact CPU call site that launched them (a trace's own `corr_id` links each
+  dispatch to its host launch call directly, so this is never a guess). When that exact call site
+  turns out to be a generic entry point shared by every kernel launch in the program (common under
+  OpenMP `target` offloading), a kernel whose name embeds its owning function is instead placed at
+  the real CPU call instance that was actually running right before it, found via the trace's own
+  timestamps.
+- **`extract_trace_pop_metrics.py`** — the trace-based equivalent of `extract_pop_metrics.py`
+  above, with the same `--scaling {strong,weak}` convention for multi-run studies; GPU-specific
+  columns always appear here (a trace always has both CPU and GPU visibility from one source,
+  unlike the summary-based tool's paired-`rocprofv3`-directory case).
+
 ## Customizing noise filtering
 
 Most tools above that read CPU-side data (both hotspots extractors, both calltree tools, the

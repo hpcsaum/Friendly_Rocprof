@@ -26,9 +26,7 @@ _CRAY_CK_MARKER = "$ck_"
 
 # Every other compiler this project targets (AMD's amdclang/amdflang, Cray's own Clang-based C/C++
 # frontend) instead uses the standard LLVM OpenMP-offloading kernel name shape:
-# "__omp_offloading_<hex>_<hex>_<mangled-or-plain-name>_l<line>[_cce$noloop$form]" -- confirmed
-# against test_apps/results/'s real rocprofv3 kernel_stats.csv output for every language/compiler
-# combo this project already tests except Cray Fortran.
+# "__omp_offloading_<hex>_<hex>_<mangled-or-plain-name>_l<line>[_cce$noloop$form]".
 _OMP_OFFLOAD_RE = re.compile(
     r"^__omp_offloading_[0-9a-f]+_[0-9a-f]+_(?P<mangled>.+)_l\d+(?:_cce\$noloop\$form)?$",
 )
@@ -41,10 +39,10 @@ _FLANG_BARE_RE = re.compile(r"^_QP(\w+)$")
 
 def _demangle_omp_offload_name(mangled):
     """Best-effort recovery of the plain source function/subroutine name from the middle segment
-    of an "__omp_offloading_..." kernel name. Only decodes the simple, common shapes actually
-    observed in test_apps/results/ (a plain C name, a non-namespaced/non-templated Itanium-mangled
-    C++ name, or a Flang-mangled Fortran name) -- anything else (a namespaced or templated C++
-    symbol, for instance) is returned unchanged rather than guessed."""
+    of an "__omp_offloading_..." kernel name. Only decodes three simple shapes -- a plain C name, a
+    non-namespaced/non-templated Itanium-mangled C++ name, or a Flang-mangled Fortran name --
+    anything else (a namespaced or templated C++ symbol, for instance) is returned unchanged rather
+    than guessed."""
     m = _ITANIUM_RE.match(mangled)
     if m:
         n = int(m.group(1))

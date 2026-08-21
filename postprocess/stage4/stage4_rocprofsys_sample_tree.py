@@ -6,17 +6,16 @@ GPU kernel data (from rocprofv3) onto the CPU subroutine that actually launched 
 name-match-then-structural-proximity heuristic -- rocprofv3's kernel_stats.csv carries no tree
 position of its own, so this has to guess. (The trace-CSV pipeline's own build_rank_aggregate() in
 stage4_rocprofsys_trace_aggregate.py does the equivalent attachment via an exact `corr_id` join,
-plus the same name-based owner match this file uses as a second pass when `corr_id` alone lands a
-kernel at a structurally uninformative position -- see that module's own docstring.) The generic
-tree-merge/flatten/stats engine this file used to also hold (merge_rank_trees(), flatten_tree(),
-caller_chains_for_label(), aggregate_node_stats(), make_node_values()) moved to
-stage4_rocprofsys_common.py, since none of it was actually sample-format-specific and the trace
-pipeline needs it too -- kernel_owner_label() moved there alongside them for the same reason: a
-single-line, purely generic string function, needed by both pipelines' kernel-placement logic. Has
-no opinion on which nodes get rendered or how, or on any one tool's own pruning/collapsing rules --
-each tool injects its own is_pruned()/collapses_children() callables; see stage5_tree_render.py for
-the rendering side (including render_gpu_kernel_fallback(), the rendering half of what used to be
-one mixed attach-and-render function here).
+plus a similar name-based owner match refined with the trace's own per-thread timestamps to resolve
+a subroutine name matching more than one real position -- see that module's own docstring.) The
+generic tree-merge/flatten/stats engine both pipelines' tree-shaped tools need (merge_rank_trees(),
+flatten_tree(), caller_chains_for_label(), aggregate_node_stats(), make_node_values(),
+kernel_owner_label()) lives in stage4_rocprofsys_common.py, shared rather than duplicated here --
+none of it is sample-format-specific. Has no opinion on which nodes get rendered or how, or on any
+one tool's own pruning/collapsing rules -- each tool injects its own
+is_pruned()/collapses_children() callables; see stage5_tree_render.py for the rendering side
+(including render_gpu_kernel_fallback(), the fallback-table renderer for whatever this module's own
+attachment couldn't place).
 
 Functions: load_rank_trees(), kernel_totals_with_counts(), pair_gpu_per_rank(),
 attach_gpu_kernels(), attach_kernel_summaries(), find_kernel_anchors(),

@@ -4,12 +4,11 @@ Scope: given N per-rank canonical aggregates (each from
 stage4_rocprofsys_trace_aggregate.get_rank_aggregate() -- fresh or cached, indistinguishable here),
 merges them into one call tree across ranks. Genuinely thin: no kernel-attachment step of its own
 -- corr_id joining already happened per-rank inside build_rank_aggregate(), so by the time this
-runs, kernel-dispatch nodes are already ordinary children. No file discovery of its own either
-(rank_inputs is caller-supplied, explicit); a real directory-scan convention for multiple ranks'
-trace-CSV files is deferred to a later plan (see docs/plans/3.5-trace-aggregate-and-cache.md's
-"Explicitly out of scope" section) -- no real multi-rank trace data exists yet to confirm an actual
-naming scheme against. Feeds the unchanged stage5_tree_render.py rendering functions directly, same
-as the sample pipeline's calltree tools already do.
+runs, kernel-dispatch nodes are already ordinary children. No file discovery of its own either --
+rank_inputs is caller-supplied, explicit (stage4_rocprofsys_trace_ranks.discover_ranks() is the
+actual multi-rank file-discovery convention every current caller uses; this module stays
+unopinionated about how rank_inputs was built). Feeds the unchanged stage5_tree_render.py
+rendering functions directly, same as the sample pipeline's calltree tools already do.
 
 Functions: merge_ranks().
 """

@@ -27,7 +27,7 @@ postprocess/
   stage4/           -- aggregation
   stage5/           -- ranking, selection, and rendering
   stage6/           -- report assembly, run metadata, noise-config, shared CLI helpers
-  tools/            -- the 9 CLI entry points
+  tools/            -- the 12 CLI entry points
   tests/            -- mirrors the layout above, plus a shared tests/fixtures/
 ```
 
@@ -41,6 +41,11 @@ postprocess/
   `rocprofv3/` subdirectory, or be one of those directories directly) into the `(cpu_dir,
   gpu_dir_or_None)` pair every CPU+GPU-pairing tool needs — `resolve_run_dirs()` for the
   single-directory-argument case, `resolve_two_dirs()` for the optional-second-argument case.
+- `stage1_rocprofsys_trace.py` — parses a rocprof-sys **trace**-mode run's flat CSV export (already
+  converted from the raw Perfetto `.proto` trace, a separate user-run step) into row dicts, and
+  resolves each row's real `parent_slice_id` link into an object reference (`attach_ancestry()`) --
+  every column the CSV carries survives untouched; unlike the sample pipeline, no `label`/`count`/
+  `self_sum` shaping happens here, since that's a stage4 concern for this pipeline (see below).
 
 ### `stage2/` — ancestry linking
 
@@ -70,20 +75,42 @@ lookup (`gpu_api`, `gpu_kernel`, `gpu_memcpy`, `mpi_territory`, `other`) on top.
 ### `stage4/` — aggregation
 
 Two parallel merge strategies, because a ranked table and a call tree need fundamentally different
-shapes from the same underlying rows:
+shapes from the same underlying rows -- plus, for the tree strategy, a common engine shared by both
+the sample and trace pipelines, the same common/format-specific split `stage3` uses above:
 
+- `stage4_rocprofsys_common.py` — the generic tree-merge/flatten/stats engine both pipelines' tree
+  tools share: `merge_rank_trees()` (merge N per-rank trees into one **by tree position**),
+  `flatten_tree()`, `caller_chains_for_label()` (the inverse walk `extract_hotspot_callers.py`
+  uses), `aggregate_node_stats()`/`make_node_values()` (avg/std_dev/min/max-across-ranks per
+  node), and `kernel_owner_label()` (decodes a GPU kernel's compiler-embedded owner-subroutine
+  name — both pipelines' own kernel-attachment logic, see below, uses it). Nothing here is specific
+  to either backend or reads a file.
 - `stage4_rocprofsys_sample_flat.py` — merges rows **by label** across every rank into one flat pool
   (`aggregate()`), or keeps each rank's own per-label totals separate (`aggregate_per_rank()`, for
   load-imbalance tables). Destroys tree position on purpose — a hotspot table doesn't care where in
   the tree a function was called from, only its totals.
-- `stage4_rocprofsys_sample_tree.py` — merges N per-rank trees into one **by tree position**
-  (`merge_rank_trees()`), preserving structure; also owns per-rank loading (`load_rank_trees()`),
-  GPU-kernel-data pairing (`pair_gpu_per_rank()`) and GPU-kernel-to-CPU-launch-site attachment
-  (`attach_gpu_kernels()`, see below), and `caller_chains_for_label()`, the inverse walk (target
-  function → every distinct root-to-it ancestor chain) `extract_hotspot_callers.py` uses.
+- `stage4_rocprofsys_sample_tree.py` — per-rank loading (`load_rank_trees()`) plus the
+  sample-pipeline-specific half of GPU-kernel attachment: GPU-kernel-data pairing
+  (`pair_gpu_per_rank()`) and GPU-kernel-to-CPU-launch-site attachment (`attach_gpu_kernels()`/
+  `attach_kernel_summaries()`, see below) — the generic merge/flatten/stats engine it used to also
+  hold now lives in `stage4_rocprofsys_common.py` above.
 - `stage4_rocprofv3.py` — the equivalent by-kernel-name aggregation for `rocprofv3`'s own GPU data.
 - `stage4_rank_merge_math.py` — the shared avg/std_dev/min/max-across-ranks math both merge
   strategies' load-imbalance/load-balance columns use.
+- `stage4_rocprofsys_trace_aggregate.py` — the trace pipeline's one expensive per-rank path:
+  parses a rank's CSV(s), synthesizes `count`/`self_sum`/`sum`, joins each GPU kernel dispatch onto
+  its exact host launch call via `corr_id`, reanchors a kernel sharing a generic launch entry point
+  (see "Kernel-to-CPU attachment" below), tags (stage3), and collapses repeated same-position calls
+  via a single-rank `merge_rank_trees()` call (`build_rank_aggregate()`). `get_rank_aggregate()`
+  wraps this in an on-disk cache (`<rank_key>.agg.json`, mtime-checked) so a large trace-CSV is
+  parsed at most once per rank.
+- `stage4_rocprofsys_trace_flat.py`/`stage4_rocprofsys_trace_tree.py` — thin: both call
+  `get_rank_aggregate()` per rank and derive their own view (flat entries/per-rank
+  label→value/per-rank timing summary; a cross-rank merged tree, via `merge_rank_trees()` again)
+  purely from its output, with no aggregation logic of their own.
+- `stage4_rocprofsys_trace_ranks.py` — `discover_ranks()`: scans a directory for this project's
+  documented trace-CSV naming convention and groups files by rank, ready to feed the two modules
+  above.
 
 ### `stage5/` — ranking, selection, and rendering
 
@@ -98,9 +125,13 @@ column spec), plus the wrapping/legend-text helpers (`wrap_trailing_label()`, `p
 attachment is `stage4_rocprofsys_sample_tree.attach_gpu_kernels()`; this only renders whatever
 that couldn't place anywhere into the fallback table). Each `stage5_*_table.py` file is just a
 column spec (what a specific table looks like); each `stage5_calltree*_view.py`/
-`stage5_wallclock_calltree_view.py` file is a specific tool's own prune/collapse predicates plus
-whatever postprocessing step it needs, composed over stage4's loading/merging/attachment
-functions and stage5's rendering functions.
+`stage5_wallclock_calltree_view.py`/`stage5_trace_calltree_view.py` file is a specific tool's own
+prune/collapse predicates plus whatever postprocessing step it needs, composed over stage4's
+loading/merging/attachment functions and stage5's rendering functions -- `stage5_trace_calltree_view.py`
+is the trace pipeline's own composer, calling `stage4_rocprofsys_trace_tree.merge_ranks()` instead
+of the sample pipeline's `load_rank_trees()`/`merge_rank_trees()` pair, with no separate
+GPU-kernel-attachment step of its own (that already happened inside `merge_ranks()`'s own
+per-rank aggregate).
 
 ### The stage4 → stage5 entry contract
 
@@ -114,18 +145,20 @@ same. The shapes in use today:
 
 - **flat entry** (hotspots tables): `{label, count, sum, self_sum, pct_self, pct_total}`, plus an
   optional `domain` for a fused multi-source table. Produced by
-  `stage4_rocprofsys_sample_flat.aggregate()`/`stage4_rocprofv3.aggregate()`; consumed by
+  `stage4_rocprofsys_sample_flat.aggregate()`/`stage4_rocprofv3.aggregate()` (sample pipeline) or
+  `stage4_rocprofsys_trace_flat.aggregate()` (trace pipeline); consumed by
   `stage5_cpu_hotspots_table.py`/`stage5_gpu_hotspots_table.py`/`stage5_fused_hotspots_table.py`.
 - **tree node** (calltree): `{label, parent, children, per_rank, tags, structural_drop_tags,
-  static_children}`. Produced by `stage4_rocprofsys_sample_tree.merge_rank_trees()`; consumed by
-  `stage5_tree_render.py`'s rendering functions.
+  static_children}`. Produced by `stage4_rocprofsys_common.merge_rank_trees()`, shared by both
+  pipelines; consumed by `stage5_tree_render.py`'s rendering functions.
 - **per-rank label→value** (load imbalance): plain `{label: value}`, one dict per rank. Produced
-  by `stage4_*.aggregate_per_rank()`; consumed by
+  by `stage4_*.aggregate_per_rank()` (both pipelines); consumed by
   `stage5_load_imbalance_table.compute_load_imbalance()` — the simplest shape, already fully
   generic with no per-domain variation at all.
 - **per-rank timing summary** (POP metrics): `{rank_key, total_time, comm_time, useful_compute,
   cpu_only_time, gpu_busy_time}`, one dict per rank. Produced by
-  `stage5_pop_metrics_table.gather_timing_summary_per_rank()`; consumed by
+  `stage5_pop_metrics_table.gather_timing_summary_per_rank()` (sample pipeline) or
+  `stage4_rocprofsys_trace_flat.gather_timing_summary_per_rank()` (trace pipeline); consumed by
   `compute_metrics_from_per_rank()` in the same file.
 
 A new backend for one of these *existing* report kinds should emit one of these shapes and gets
@@ -154,7 +187,7 @@ existing shape.
 
 ### `tools/` — the CLI entry points
 
-Each of the 9 files here is a compose-and-print script: parse arguments (mostly via
+Each of the 12 files here is a compose-and-print script: parse arguments (mostly via
 `stage6_cli_common`), pull data through stage1→stage4, rank/render it through stage5, assemble it
 through stage6, write the file. `extract_calltree.py`/`extract_wallclock_calltree.py`/
 `extract_hotspots.py`/`extract_hotspot_callers.py` also import each other directly
@@ -197,8 +230,12 @@ reserved `other` tag starts empty (no bundled patterns) and exists specifically 
 
 ## Kernel-to-CPU attachment
 
-`stage4_rocprofsys_sample_tree.py`'s `attach_kernel_summaries()` places real GPU kernel data (from
-`rocprofv3`) onto the CPU call-tree node that actually launched it, two-tier:
+Placing real GPU kernel data onto the CPU call-tree node that actually launched it works
+differently in each pipeline, since the trace pipeline has evidence (exact host-to-device
+correlation and real timestamps) the sample pipeline's already-aggregated summary data never had.
+
+**Sample pipeline**: `stage4_rocprofsys_sample_tree.py`'s `attach_kernel_summaries()` places real
+GPU kernel data (from `rocprofv3`) onto the CPU call-tree node that actually launched it, two-tier:
 
 1. **Name match**: Cray's OpenACC/HIP-offload kernel naming embeds the enclosing Fortran
    subroutine's name directly in the kernel name (`kernel_owner_label()` strips the
@@ -215,6 +252,27 @@ reserved `other` tag starts empty (no bundled patterns) and exists specifically 
 A kernel matched (by either tier) becomes a synthetic node with a real `parent` link back to its
 attachment point, so `caller_chains_for_label()` can walk it like any other row — see
 `make_kernel_node()`'s and `attach_kernel_summaries()`'s own docstrings for exactly how.
+
+**Trace pipeline**: `stage4_rocprofsys_trace_aggregate.py`'s `build_rank_aggregate()` places kernel
+data exactly, in two steps, since a trace carries real per-event correlation IDs and timestamps a
+summary format never has:
+
+1. **Exact `corr_id` join** (`_attach_kernels_by_corr_id()`): a trace's own `corr_id` links each
+   GPU kernel dispatch to the exact host-side launch call that issued it — no guessing.
+2. **Owner-name-and-time reanchoring** (`_reanchor_kernels_by_owner_and_time()`): when that exact
+   launch call turns out to be a generic entry point shared by every kernel launch in the whole
+   program (common under OMPT-based `omp target` instrumentation), a kernel whose name embeds its
+   owning function (`kernel_owner_label()`, shared with the sample pipeline above) is instead
+   reanchored onto the real CPU call instance — on the same thread, found via a binary search over
+   that thread's own timestamps — that was actually running immediately before the kernel
+   dispatched. Scoping to the launching thread (`tid`), not just time, is what makes this exact
+   without assuming the whole rank's CPU side is single-threaded.
+
+Both steps reparent a kernel row onto a real row already in the trace (never a synthetic node),
+run before the intra-rank `merge_rank_trees()` collapse so a large number of raw instances resolve
+to their real tree position with exact counts, never an estimate. A kernel whose owner name can't
+be matched, or whose owning thread never ran an instance of it before the dispatch, stays exactly
+where the `corr_id` join alone placed it.
 
 ## Building a new tool
 
@@ -238,7 +296,11 @@ A new `tools/extract_X.py` typically needs, in order:
    noise-classified CPU data.
 
 None of this is enforced by an interface or base class — it's a convention every existing tool
-already follows, reusing the same functions rather than reimplementing them.
+already follows, reusing the same functions rather than reimplementing them. The trace pipeline's
+3 tools follow the identical shape, just swapping in their own stage1/stage4 modules throughout:
+`stage4_rocprofsys_trace_ranks.discover_ranks()` instead of `stage1_run_dirs`'s resolvers, and
+`stage4_rocprofsys_trace_flat.py`/`stage4_rocprofsys_trace_tree.py` (via
+`stage5_trace_calltree_view.py`) instead of the sample-pipeline stage4 modules.
 
 ## Tests
 
