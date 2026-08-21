@@ -5,18 +5,21 @@ Scope: per-rank loading (parse + ancestry + noise-tagging, load_rank_trees()) an
 GPU kernel data (from rocprofv3) onto the CPU subroutine that actually launched it, via a
 name-match-then-structural-proximity heuristic -- rocprofv3's kernel_stats.csv carries no tree
 position of its own, so this has to guess. (The trace-CSV pipeline's own build_rank_aggregate() in
-stage4_rocprofsys_trace_aggregate.py does the equivalent attachment via an exact `corr_id` join
-instead -- no heuristic needed there.) The generic tree-merge/flatten/stats engine this file used
-to also hold (merge_rank_trees(), flatten_tree(), caller_chains_for_label(),
-aggregate_node_stats(), make_node_values()) moved to stage4_rocprofsys_common.py, since none of it
-was actually sample-format-specific and the trace pipeline needs it too. Has no opinion on which
-nodes get rendered or how, or on any one tool's own pruning/collapsing rules -- each tool injects
-its own is_pruned()/collapses_children() callables; see stage5_tree_render.py for the rendering
-side (including render_gpu_kernel_fallback(), the rendering half of what used to be one mixed
-attach-and-render function here).
+stage4_rocprofsys_trace_aggregate.py does the equivalent attachment via an exact `corr_id` join,
+plus the same name-based owner match this file uses as a second pass when `corr_id` alone lands a
+kernel at a structurally uninformative position -- see that module's own docstring.) The generic
+tree-merge/flatten/stats engine this file used to also hold (merge_rank_trees(), flatten_tree(),
+caller_chains_for_label(), aggregate_node_stats(), make_node_values()) moved to
+stage4_rocprofsys_common.py, since none of it was actually sample-format-specific and the trace
+pipeline needs it too -- kernel_owner_label() moved there alongside them for the same reason: a
+single-line, purely generic string function, needed by both pipelines' kernel-placement logic. Has
+no opinion on which nodes get rendered or how, or on any one tool's own pruning/collapsing rules --
+each tool injects its own is_pruned()/collapses_children() callables; see stage5_tree_render.py for
+the rendering side (including render_gpu_kernel_fallback(), the rendering half of what used to be
+one mixed attach-and-render function here).
 
 Functions: load_rank_trees(), kernel_totals_with_counts(), pair_gpu_per_rank(),
-attach_gpu_kernels(), attach_kernel_summaries(), kernel_owner_label(), find_kernel_anchors(),
+attach_gpu_kernels(), attach_kernel_summaries(), find_kernel_anchors(),
 unattached_kernel_per_rank(), make_kernel_node(), nearest_visible_ancestor(), is_kernel_launch().
 """
 
@@ -27,6 +30,7 @@ from stage1_rocprofsys_sample import PID_SUFFIX_RE, parse_table_file
 from stage1_rocprofv3 import parse_kernel_stats_csv
 from stage2_rocprofsys_sample import attach_ancestry
 from stage3_rocprofsys_common import tag_rows
+from stage4_rocprofsys_common import kernel_owner_label
 from stage4_rocprofv3 import aggregate_per_rank
 
 
@@ -188,22 +192,6 @@ def find_kernel_anchors(rows, is_pruned):
             anchors[key] = [anchor, 0]
         anchors[key][1] += sum(v["count"] for v in row["per_rank"].values())
     return anchors
-
-
-def kernel_owner_label(kernel_name):
-    """Cray's OpenACC/HIP-offload kernel naming embeds the enclosing Fortran
-    subroutine -- the kernel's real "caller", from the compiler's own
-    perspective -- directly in the kernel name:
-    "<subroutine>$<module>_mod_$ck_L<line>_<n>[_cce$noloop$form]". The part
-    before "$ck_" is exactly the same "<subroutine>$<module>_mod_" label the
-    real CPU call-tree node for that subroutine carries -- so it can be
-    matched directly against the CPU tree instead of guessed via nearest
-    launch-call ancestor. A kernel name with no
-    "$ck_" marker (a different naming scheme, or a non-Cray compiler) is
-    returned unchanged -- unmatchable by name, falls through to
-    find_kernel_anchors()'s structural heuristic instead.
-    """
-    return kernel_name.split("$ck_", 1)[0]
 
 
 def _attach_kernel_group(anchor_weights, kernel_names, gpu_kernel_by_rank, collect_into=None):

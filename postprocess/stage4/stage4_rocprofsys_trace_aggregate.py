@@ -2,7 +2,9 @@
 pipeline.
 
 Scope: the ONE expensive path for one rank -- parse, synthesize count/self_sum/sum, attach
-kernel-dispatch rows to their exact launch site via corr_id, tag (stage3), and collapse repeated
+kernel-dispatch rows to their exact launch site via corr_id, further reanchor a kernel sharing a
+generic launch site with every other kernel in the program onto the real CPU call instance its own
+embedded owner name and the trace's timestamps identify, tag (stage3), and collapse repeated
 same-position calls within the rank (build_rank_aggregate()) -- plus an on-disk cache around it
 (get_rank_aggregate()) so a 10GB+ trace-CSV is parsed at most once per rank, ever. The result is a
 flat, parent-linked row list in the same canonical shape stage4_rocprofsys_common.merge_rank_trees()
@@ -13,14 +15,19 @@ NOT survive the merge -- once N raw launches at one call site collapse into one 
 single meaningful value to keep, and no current stage5 view consumes them anyway.
 
 Functions: build_rank_aggregate(), get_rank_aggregate().
+
+Deliberately excludes kernel-owner-name decoding itself (kernel_owner_label(),
+stage4_rocprofsys_common.py) -- that's a pure string transform with no trace-format dependency,
+shared with the sample pipeline.
 """
 
+import bisect
 import json
 import os
 
 from stage1_rocprofsys_trace import LABEL_KEY, attach_ancestry, parse_trace_csv
 from stage3_rocprofsys_trace import tag_for_category, tag_rows
-from stage4_rocprofsys_common import flatten_tree, merge_rank_trees
+from stage4_rocprofsys_common import flatten_tree, kernel_owner_label, merge_rank_trees
 
 
 def _synthesize_self_sum(rows):
@@ -111,6 +118,63 @@ def _flatten_rank_merge(merged_roots, rank_key):
     return rows
 
 
+def _reanchor_kernels_by_owner_and_time(rows):
+    """Reparents each gpu_kernel row onto the exact raw CPU call instance -- not merely a matching
+    label, a specific instance -- that was actually running on the same thread immediately before
+    the kernel dispatched, when its name embeds a recoverable owner name (kernel_owner_label()).
+    A further correction on top of the exact corr_id join above, for the case OMPT-based
+    instrumentation funnels every kernel launch in the whole program through the same generic
+    entry points (e.g. ompt_target -> hipModuleLaunchKernel for every omp target region), leaving
+    corr_id's own placement structurally uninformative even though it's exact.
+
+    Operates on RAW, per-instance rows (parse_trace_csv() + attach_ancestry()'s output, each still
+    carrying its own "ts"/"tid"), not the intra-rank-merged shape -- must run at this stage: only
+    here does each instance still have the timestamp this technique depends on. A single CPU
+    thread's own recorded call frames are strictly serial (one frame active at a time on that
+    thread), so "the same-owner-labeled instance on the same thread that started most recently
+    before this dispatch" identifies the exact real caller, not merely a plausible one -- exact,
+    not an estimate, unlike splitting time across multiple label-matched candidates would be.
+    Scoping to the launching thread's own tid (rather than searching every row in the rank) is
+    what makes this correct without requiring the whole rank's CPU side to be single-threaded; it
+    only relies on that one thread's own frames never overlapping in time, which is true for a
+    normal call stack (not for, e.g., coroutines/fibers/signal-handler reentrancy on one thread --
+    out of scope for this project's C/C++/Fortran + MPI/OpenMP target profile).
+
+    A row with no "$ck_"/"__omp_offloading_..." owner name, no corr_id-resolved parent (so no
+    known launching thread), or no owner-labeled candidate starting before it on that thread, is
+    left exactly where _attach_kernels_by_corr_id() already put it -- no guessing."""
+    candidates_by_owner_and_tid = {}
+    for row in rows:
+        candidates_by_owner_and_tid.setdefault((row["name"], row.get("tid")), []).append(row)
+    # Sorted once per (name, tid) group, not per kernel row below -- an owner subroutine called
+    # thousands of times (e.g. inside a timestep loop) would otherwise make this quadratic, since
+    # many kernel dispatches share the same owner+tid group.
+    starts_by_owner_and_tid = {}
+    for key, candidates in candidates_by_owner_and_tid.items():
+        candidates.sort(key=lambda r: r["ts"])
+        starts_by_owner_and_tid[key] = [c["ts"] for c in candidates]
+
+    for row in rows:
+        if tag_for_category(row.get("category")) != "gpu_kernel":
+            continue
+        owner = kernel_owner_label(row["name"])
+        if owner == row["name"]:
+            continue
+        launch_site = row["parent"]
+        if launch_site is None:
+            continue
+        launch_tid = launch_site.get("tid")
+
+        key = (owner, launch_tid)
+        starts = starts_by_owner_and_tid.get(key)
+        if not starts:
+            continue
+        idx = bisect.bisect_right(starts, row["ts"]) - 1
+        if idx < 0:
+            continue
+        row["parent"] = candidates_by_owner_and_tid[key][idx]
+
+
 def build_rank_aggregate(csv_paths, rank_key):
     """The one expensive path for one rank: parse + ancestry (unchanged stage1), self time
     synthesis, the corr_id kernel join, tag_rows() (stage3), and the intra-rank merge_rank_trees()
@@ -120,24 +184,32 @@ def build_rank_aggregate(csv_paths, rank_key):
     across ranks. Returns the flat, parent-linked, tool-independent row list get_rank_aggregate()
     caches.
 
-    tag_rows() runs AFTER the corr_id join, not before -- a kernel-dispatch row is untethered
-    (parent is None) until the join reparents it, and tag_rows()'s own sibling-group derivation
-    (for wrapper_branch_noise) compares every untethered row at the top level as if they were
-    siblings sharing one real parent. Running it before the join would compare a real CPU thread
-    root against an unrelated, still-untethered kernel-dispatch row as "siblings," and wrongly
-    flag the CPU thread's entire subtree as contaminated. The join itself only needs
-    tag_for_category() (a direct, stateless lookup -- see _attach_kernels_by_corr_id()), not the
-    full tag_rows() pass, so this ordering costs nothing."""
+    tag_rows() runs AFTER both the corr_id join and the owner+time reanchor, not before -- a
+    kernel-dispatch row is untethered (parent is None) until the join reparents it, and tag_rows()'s
+    own sibling-group derivation (for wrapper_branch_noise) compares every untethered row at the
+    top level as if they were siblings sharing one real parent. Running it before either
+    reparenting step would compare a real CPU thread root against an unrelated kernel-dispatch row
+    (still untethered, or not yet at its final position) as "siblings," and wrongly flag the CPU
+    thread's entire subtree as contaminated -- tag_rows() must see each row's FINAL structural
+    position. Both reparenting steps only need tag_for_category() (a direct, stateless lookup --
+    see _attach_kernels_by_corr_id()), not the full tag_rows() pass, so this ordering costs nothing.
+
+    _reanchor_kernels_by_owner_and_time() runs right after the corr_id join, on the still-raw,
+    per-instance rows -- before the intra-rank merge, not after (see its own docstring): only at
+    this stage does each instance still carry the "ts"/"tid" the technique depends on; merging
+    first would collapse exactly the timestamps it needs."""
     rows = parse_trace_csv(csv_paths)
     attach_ancestry(rows)
 
     _synthesize_self_sum(rows)
     _attach_kernels_by_corr_id(rows)
+    _reanchor_kernels_by_owner_and_time(rows)
     tag_rows(rows)
 
     roots = [r for r in rows if r["parent"] is None]  # recomputed AFTER reparenting above
     merged_roots = merge_rank_trees([(rank_key, rows, roots)], label_key=LABEL_KEY)
-    return _flatten_rank_merge(merged_roots, rank_key)
+    flat_rows = _flatten_rank_merge(merged_roots, rank_key)
+    return flat_rows
 
 
 def _cache_path(csv_paths, rank_key, cache_dir):

@@ -59,7 +59,32 @@ GPU kernel dispatches are nested into the tree at the exact CPU call site
 that launched them -- a trace's `corr_id` links each dispatch to its host
 launch call directly, so this is never a guess the way it is for a text-table
 profile (see extract_calltree.py) -- there is no "couldn't place this kernel"
-fallback section here at all.
+fallback section here at all. When that exact call site turns out to be a
+generic runtime entry point shared by every kernel launch in the whole
+program (common under OMPT-based `omp target` instrumentation), a kernel
+whose name embeds its owning function or subroutine (Cray Fortran's `$ck_`
+marker, or the LLVM OpenMP-offloading kernel name shape every other
+compiler this project targets uses) is instead reanchored onto the exact CPU
+call instance -- found via that owning name and the trace's own timestamps,
+not a guess -- that was actually running on the launching thread immediately
+before the kernel dispatched. This is exact, not an estimate, but relies on
+that one CPU thread's own recorded call frames never overlapping in time
+(true for a normal call stack). A kernel whose owning name doesn't appear on
+its launching thread at all, or whose name matches neither convention, still
+shows up at its exact `corr_id` position, unchanged.
+
+More generally, any CPU-side call -- not just a GPU kernel dispatch --
+nests under the nearest ancestor this trace actually captured a frame for,
+never a guess beyond that. rocprof-sys traces only the functions selected
+for instrumentation (see the project README's hotspot-selection step), so a
+call made from inside an uninstrumented function shows up nested directly
+under whichever instrumented (or OMPT-internal, e.g. `ompt_implicit_task`)
+frame was still open on that thread at the time -- which can look like it
+was "called by" that frame even though it wasn't. Unlike the kernel case
+above, there's no name or id to recover the true immediate caller from when
+this happens; the fix is adding that function to the instrumentation
+selection and re-profiling, not something this tool can reconstruct from
+the data it's given.
 
 Under the hood, this reads a CSV export of a Perfetto trace produced by
 AMD's rocprof-sys running in trace mode (ROCPROFSYS_TRACE=1) -- see
@@ -89,7 +114,7 @@ def write_report(trace_dir, dest_path, max_depth=None, show_gpu_api=False,
     sections = [(None, view["tree_text"] + "\n" + tree_notes)]
 
     footer = help_redirect(
-        "noise filtering and kernel-placement caveats",
+        "noise filtering and kernel/call-placement caveats",
         script_name="extract_trace_calltree.py",
     ) + command_line
 

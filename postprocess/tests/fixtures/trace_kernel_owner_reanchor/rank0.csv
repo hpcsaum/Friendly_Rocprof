@@ -1,0 +1,7 @@
+pid,process_name,tid,thread_name,slice_id,parent_slice_id,depth,name,category,ts,dur,corr_id,blockDimX,gridDimX,grid_size,workgroup_size
+1000,./app,1000,main,1,,0,main,host,0,1000000000,,,,,
+1000,./app,1000,main,2,1,1,convection_stable_dt$convection_time_integrator_mod_,host,10000000,200000000,,,,,
+1000,./app,1000,main,3,2,2,ompt_implicit_task,ompt,20000000,180000000,,,,,
+1000,./app,1000,main,4,3,3,ompt_target,ompt,30000000,170000000,,,,,
+1000,./app,1000,main,5,4,4,hipModuleLaunchKernel,rocm_hip_api,40000000,10000000,55,64,256,,
+1000,./app,,,6,,0,convection_stable_dt$convection_time_integrator_mod_$ck_L558_99.kd,rocm_kernel_dispatch,45000000,5000000,55,,,"(256,1,1)","(64,1,1)"

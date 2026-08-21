@@ -55,6 +55,7 @@
 | 2026-08-20 | Plan 3.4: renamed `stage3_rocprofsys_sample.py` to `stage3_rocprofsys_common.py` (it turned out to have no sample-specific logic at all) and gave `tag_rows()` a `label_key` parameter instead of hardcoding `"label"`; new `stage3_rocprofsys_trace.py` -- an exact `{category: tag}` lookup (`gpu_api`/`gpu_kernel`/`gpu_memcpy`/`mpi_territory`/`other`) built from AMD's `categories.h` enum, plus a delegated, unmodified reuse of `wrapper_noise`/`compiler_runtime_noise`/`wrapper_branch_noise` for trace rows' CPU-side names -- roadmap step 3 of the plan-3.1 sequence -- see full accounting below |
 | 2026-08-20 | Plan 3.5+3.6 (merged): split `stage4_rocprofsys_common.py` out of `stage4_rocprofsys_sample_tree.py` (`merge_rank_trees`/`flatten_tree`/`caller_chains_for_label`/`aggregate_node_stats`/`make_node_values`, all format-agnostic); new `stage4_rocprofsys_trace_aggregate.py` builds and on-disk-caches one rank's canonical, tool-independent aggregate (self_sum synthesis, an exact `corr_id` kernel-to-launch-site join, intra-rank dedup via a single-rank `merge_rank_trees()` call); new thin `stage4_rocprofsys_trace_tree.py`/`stage4_rocprofsys_trace_flat.py` derive every stage5 view from that same aggregate, never re-parsing -- roadmap steps 3.5+3.6 of the plan-3.1 sequence, merged into one plan after a design correction -- see full accounting below |
 | 2026-08-20 | Plan 3.7: new `stage4_rocprofsys_trace_ranks.py` (multi-rank file discovery, confirmed against this project's own real trace-CSV export); new `stage5_trace_calltree_view.py` and three new CLI tools (`extract_trace_hotspots.py`/`extract_trace_calltree.py`/`extract_trace_pop_metrics.py`) completing plan 3.1's roadmap -- the manual smoke test against real 4-rank data caught two real bugs (a `tag_rows()`-vs-`corr_id`-join ordering bug in `build_rank_aggregate()`, and a wrong file-precedence assumption in `discover_ranks()` that silently disabled every `corr_id` join), both fixed and covered by new regression tests -- see full accounting below |
+| 2026-08-21 | Plan 3.8: fixed every GPU kernel collapsing under one shared `hipModuleLaunchKernel` node in the real `Heat_Convection_Solver` trace -- `build_rank_aggregate()` now reanchors a kernel sharing a generic OMPT launch entry point onto the exact real CPU call instance its own embedded owner name and the trace's own timestamps identify, exact rather than estimated; `kernel_owner_label()` generalized (via `test_apps/results/`) from Cray Fortran's `$ck_` marker to every compiler this project tests -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -2522,4 +2523,66 @@ plus the manual real-data smoke test described above. See
 `docs/plans/3.7-rank-discovery-and-cli-tools.md` for the full accounting, written before
 implementation (with two header-note divergences recorded there and in plan 3.5's own file, per
 `CLAUDE.md`'s convention).
+
+## 2026-08-21 — Plan 3.8: time-ordering-based kernel re-anchoring
+
+Running the three new plan-3.7 tools against the real `Heat_Convection_Solver` trace surfaced a
+real usability problem: `extract_trace_calltree.py`'s output showed every GPU kernel nested under
+one shared `hipModuleLaunchKernel` node, losing which real Fortran subroutine each kernel belonged
+to. Traced directly rather than guessed: rocprof-sys's OMPT-based instrumentation registers one
+generic callback per `omp target` region across the *entire* program, so `corr_id`'s join (exact by
+construction) correctly finds that shared entry point -- it just isn't a structurally informative
+position, since every kernel launch in the program shares it.
+
+Cray Fortran's kernel names embed the real owning subroutine (`$ck_` marker,
+`stage4_rocprofsys_sample_tree.kernel_owner_label()`), matched directly against a real CPU tree node
+carrying that label -- but a first, conservative design (reanchor only on an unambiguous single
+match) produced *zero* visible improvement against the real data: every one of the 26 real kernels
+in rank 0 had either 0 or 2+ label-matching candidates, never exactly 1. Rather than fall back to
+splitting a kernel's time proportionally across ambiguous candidates (the sample pipeline's own
+`_attach_kernel_group()` approach for its equivalent problem), direct real-data testing showed a
+better answer was available: a rank's CPU side runs on one thread per call stack, so the real caller
+of a kernel dispatch isn't actually ambiguous in the trace's own timestamps, even when it's
+ambiguous by label alone. Checked directly: `jacobi_sweep$pressure_solver_mod_`'s 24,000 raw call
+instances split across two real parent chains, and all 3,000 real kernel dispatches for it resolved,
+via nearest-preceding-instance-in-time, to the *same* one of the two positions every time, with
+gaps of 49-478 microseconds -- the other position never launched a single kernel in the real data,
+so a proportional split would have been a measurably wrong estimate, not an approximation.
+
+Checked against `test_apps/results/`'s real `rocprofv3` output for all 6 language/compiler combos
+this project already tests: Cray's Fortran frontend is the *only* one using the `$ck_` marker --
+AMD's C/C++/Fortran toolchain and Cray's own C/C++ frontend all use the standard LLVM
+OpenMP-offloading kernel name shape (`__omp_offloading_<hex>_<hex>_<mangled>_l<line>`) instead, with
+`<mangled>` recoverable via a small Itanium/Flang demangle step -- `kernel_owner_label()`
+generalized to decode both conventions, at no cost to the Cray-Fortran case. Also checked directly
+that `test_apps`'s native HIP kernels are unaffected by this bug at all: a HIP API call is
+intercepted at its real, already call-site-unique caller (unlike OMPT's single, program-wide
+callback), confirmed by the existing `trace_single_rank` fixture already modeling exactly that
+shape.
+
+**As built**: `stage4_rocprofsys_trace_aggregate._reanchor_kernels_by_owner_and_time(rows)` runs
+right after the `corr_id` join, on raw per-instance rows (before the intra-rank merge collapses
+away the timestamps it needs) -- for each `gpu_kernel` row with a decodable owner name, it scopes
+candidate CPU instances to the *same thread* (`tid`) that issued the launch (not the whole rank),
+then binary-searches for the one that started most recently before the kernel dispatched. Scoping by
+thread, not just time, is what makes this correct without assuming the whole rank's CPU side is
+single-threaded -- it only relies on one thread's own recorded frames never overlapping, true for a
+normal call stack, called out explicitly in code comments and `extract_trace_calltree.py`'s help
+text as a stated, not-solved-here limitation. A first version rebuilt each candidate group's sorted
+timestamp list inside the per-kernel loop, making it accidentally quadratic for a subroutine called
+thousands of times (79s for one rank's reanchor step alone against the real data); fixed by
+precomputing each group's sorted list once up front (9s for the same rank, full pipeline).
+
+Verification: `test_stage4_rocprofsys_common.py` gained 6 new `kernel_owner_label()` cases (one per
+`test_apps/results/` combo actually observed, plus the HIP no-match case);
+`test_stage4_rocprofsys_trace_aggregate.py`'s reanchor tests were rewritten for the raw-row,
+time-ordering shape (9 cases, including the same-label-different-thread collision proving
+`tid`-scoping is load-bearing, not just time). Full suite 607 → 622 passing. Re-ran all three plan-3.7
+tools against the real 4-rank `Heat_Convection_Solver` trace after deleting the stale `.agg.json`
+caches: `jacobi_sweep`'s kernel and both `convection_stable_dt` kernels now nest under their real
+owning subroutine's exact call instance, not collapsed under `hipModuleLaunchKernel`. See
+`docs/plans/3.8-kernel-owner-reanchoring.md` for the full accounting, written after the design was
+finalized in plan mode (the in-session design went through a build-time-vs-view-time correction, a
+proportional-split detour abandoned once real-data testing showed it would be measurably wrong, and
+the generalization/HIP-scoping checks above, all before any code was written).
 

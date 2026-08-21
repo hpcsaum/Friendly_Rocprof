@@ -13,10 +13,79 @@ node's real GPU-kernel/launch-site attachment is computed (each pipeline does th
 before or independently of merging here).
 
 Functions: merge_rank_trees(), flatten_tree(), caller_chains_for_label(), aggregate_node_stats(),
-make_node_values().
+make_node_values(), kernel_owner_label().
 """
 
+import re
+
 from stage4_rank_merge_math import stats_across_ranks
+
+# Cray's Fortran frontend embeds the enclosing subroutine directly in a kernel's name:
+# "<subroutine>$<module>_mod_$ck_L<line>_<n>[_cce$noloop$form]".
+_CRAY_CK_MARKER = "$ck_"
+
+# Every other compiler this project targets (AMD's amdclang/amdflang, Cray's own Clang-based C/C++
+# frontend) instead uses the standard LLVM OpenMP-offloading kernel name shape:
+# "__omp_offloading_<hex>_<hex>_<mangled-or-plain-name>_l<line>[_cce$noloop$form]" -- confirmed
+# against test_apps/results/'s real rocprofv3 kernel_stats.csv output for every language/compiler
+# combo this project already tests except Cray Fortran.
+_OMP_OFFLOAD_RE = re.compile(
+    r"^__omp_offloading_[0-9a-f]+_[0-9a-f]+_(?P<mangled>.+)_l\d+(?:_cce\$noloop\$form)?$",
+)
+# Itanium C++ mangling of a simple (non-namespaced, non-templated) free function: "_Z<len><name>...".
+_ITANIUM_RE = re.compile(r"^_Z(\d+)")
+# Flang's Fortran module-procedure / bare-procedure mangling: "_QM<module>P<name>" / "_QP<name>".
+_FLANG_MODULE_RE = re.compile(r"^_QM\w+?P(\w+)$")
+_FLANG_BARE_RE = re.compile(r"^_QP(\w+)$")
+
+
+def _demangle_omp_offload_name(mangled):
+    """Best-effort recovery of the plain source function/subroutine name from the middle segment
+    of an "__omp_offloading_..." kernel name. Only decodes the simple, common shapes actually
+    observed in test_apps/results/ (a plain C name, a non-namespaced/non-templated Itanium-mangled
+    C++ name, or a Flang-mangled Fortran name) -- anything else (a namespaced or templated C++
+    symbol, for instance) is returned unchanged rather than guessed."""
+    m = _ITANIUM_RE.match(mangled)
+    if m:
+        n = int(m.group(1))
+        rest = mangled[m.end():]
+        if len(rest) >= n:
+            return rest[:n]
+        return mangled
+
+    m = _FLANG_MODULE_RE.match(mangled)
+    if m:
+        return m.group(1)
+
+    m = _FLANG_BARE_RE.match(mangled)
+    if m:
+        return m.group(1)
+
+    return mangled
+
+
+def kernel_owner_label(kernel_name):
+    """Recovers the real CPU-side owning function/subroutine name embedded in a GPU kernel's own
+    name, so it can be matched directly against a CPU call-tree node carrying that same label,
+    instead of guessed via nearest launch-call ancestor. Decodes two conventions, tried in order:
+
+    1. Cray Fortran's "$ck_" marker: "<subroutine>$<module>_mod_$ck_L<line>_<n>[_cce$noloop$form]"
+       -- the part before "$ck_" is exactly the "<subroutine>$<module>_mod_" label the real CPU
+       tree node carries.
+    2. The generic LLVM OpenMP-offloading shape every other compiler this project targets uses:
+       "__omp_offloading_<hex>_<hex>_<mangled-or-plain-name>_l<line>[_cce$noloop$form]" -- the
+       middle segment is demangled (see _demangle_omp_offload_name()) to recover the plain name.
+
+    A kernel name matching neither convention is returned unchanged -- unmatchable by name, left
+    for whatever structural fallback the calling pipeline uses instead."""
+    if _CRAY_CK_MARKER in kernel_name:
+        return kernel_name.split(_CRAY_CK_MARKER, 1)[0]
+
+    m = _OMP_OFFLOAD_RE.match(kernel_name)
+    if m:
+        return _demangle_omp_offload_name(m.group("mangled"))
+
+    return kernel_name
 
 
 def merge_rank_trees(ranks, label_key="label"):

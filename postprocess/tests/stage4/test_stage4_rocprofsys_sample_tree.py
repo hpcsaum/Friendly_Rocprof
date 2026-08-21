@@ -117,15 +117,6 @@ class KernelAnchorAttributionTests(unittest.TestCase):
         self.assertEqual(unattached, {"K"})
         self.assertEqual(main["static_children"], [])
 
-    def test_kernel_owner_label_strips_ck_suffix(self):
-        self.assertEqual(
-            s4t.kernel_owner_label("jacobi_sweep$pressure_solver_mod_$ck_L36_1_cce$noloop$form"),
-            "jacobi_sweep$pressure_solver_mod_",
-        )
-
-    def test_kernel_owner_label_unchanged_without_ck_marker(self):
-        self.assertEqual(s4t.kernel_owner_label("JacobiIterationKernel"), "JacobiIterationKernel")
-
     def test_kernel_attaches_to_exact_owner_subroutine_not_launch_anchor(self):
         # A CPU tree node named exactly after the kernel's compiler-embedded
         # owner subroutine exists, but it sits far from the nearest
