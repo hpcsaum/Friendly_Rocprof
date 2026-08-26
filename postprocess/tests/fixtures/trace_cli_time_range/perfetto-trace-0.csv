@@ -1,0 +1,8 @@
+pid,process_name,tid,thread_name,slice_id,parent_slice_id,depth,name,category,ts,dur,corr_id,blockDimX,gridDimX,grid_size,workgroup_size
+1000,./app,1000,main,1,,0,main,host,0,100000000000,,,,,
+1000,./app,1000,main,2,1,1,init_phase,host,0,20000000000,,,,,
+1000,./app,1000,main,3,1,1,compute_phase,ompt,20000000000,60000000000,,,,,
+1000,./app,1000,main,4,3,2,hipLaunchKernel,rocm_hip_api,22000000000,3000000000,1,64,256,,
+1000,./app,1000,main,5,3,2,mpi_call,mpi,50000000000,5000000000,,,,,
+1000,./app,1000,main,6,1,1,teardown_phase,host,80000000000,20000000000,,,,,
+1000,./app,,,7,,0,jacobi_kernel.kd,rocm_kernel_dispatch,22000000000,40000000000,1,,,"(256,1,1)","(64,1,1)"

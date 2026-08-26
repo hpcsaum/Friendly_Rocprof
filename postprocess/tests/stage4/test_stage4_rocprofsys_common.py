@@ -276,5 +276,77 @@ class ResolveKernelOwnersTests(unittest.TestCase):
         self.assertEqual(owners, {"foo$mod_"})
 
 
+def make_merge_row(label, parent=None, self_sum=0.0):
+    return {"label": label, "parent": parent, "count": 1, "self_sum": self_sum, "sum": self_sum}
+
+
+class MakeZeroTimePrunedTests(unittest.TestCase):
+    def test_entirely_zero_leaf_subtree_is_pruned(self):
+        main = make_merge_row("main", self_sum=2.0)
+        other_func = make_merge_row("other_func", parent=main, self_sum=0.0)
+        rows = [main, other_func]
+        merged_roots = s4c.merge_rank_trees([("r0", rows, [main])])
+        by_label = {n["label"]: n for n in merged_roots[0]["children"].values()}
+        by_label["main"] = merged_roots[0]
+
+        is_pruned = s4c.make_zero_time_pruned(merged_roots)
+        self.assertTrue(is_pruned(by_label["other_func"]))
+        self.assertFalse(is_pruned(by_label["main"]))
+
+    def test_zero_launch_call_with_a_nonzero_descendant_is_not_pruned(self):
+        # The corr_id/owner-reanchored-kernel case: a launch call's own contribution is zero, but
+        # a real, independently-timed descendant (a concurrently-executing GPU kernel) is not --
+        # the whole chain down to it must stay visible.
+        main = make_merge_row("main", self_sum=1.0)
+        launch_call = make_merge_row("hipLaunchKernel", parent=main, self_sum=0.0)
+        kernel = make_merge_row("jacobi_kernel.kd", parent=launch_call, self_sum=5.0)
+        rows = [main, launch_call, kernel]
+        merged_roots = s4c.merge_rank_trees([("r0", rows, [main])])
+        merged_main = merged_roots[0]
+        merged_launch = merged_main["children"]["hipLaunchKernel"]
+        merged_kernel = merged_launch["children"]["jacobi_kernel.kd"]
+
+        is_pruned = s4c.make_zero_time_pruned(merged_roots)
+        self.assertFalse(is_pruned(merged_main))
+        self.assertFalse(is_pruned(merged_launch))
+        self.assertFalse(is_pruned(merged_kernel))
+
+    def test_sibling_after_a_zero_subtree_is_still_visited_and_correctly_judged(self):
+        # Regression: an early implementation used all(visit(c) for c in children) directly in a
+        # generator, which short-circuits on the first False and skips visit() on later siblings
+        # entirely -- silently leaving them out of the pruned-id set (so they'd wrongly render as
+        # "not pruned" even when genuinely fully zero) instead of ever really judging them.
+        main = make_merge_row("main", self_sum=1.0)
+        zero_first = make_merge_row("zero_first", parent=main, self_sum=0.0)
+        zero_second = make_merge_row("zero_second", parent=main, self_sum=0.0)
+        rows = [main, zero_first, zero_second]
+        merged_roots = s4c.merge_rank_trees([("r0", rows, [main])])
+        merged_main = merged_roots[0]
+
+        is_pruned = s4c.make_zero_time_pruned(merged_roots)
+        self.assertTrue(is_pruned(merged_main["children"]["zero_first"]))
+        self.assertTrue(is_pruned(merged_main["children"]["zero_second"]))
+
+    def test_entire_tree_zero_prunes_every_node_including_the_root(self):
+        main = make_merge_row("main", self_sum=0.0)
+        leaf = make_merge_row("leaf", parent=main, self_sum=0.0)
+        rows = [main, leaf]
+        merged_roots = s4c.merge_rank_trees([("r0", rows, [main])])
+
+        is_pruned = s4c.make_zero_time_pruned(merged_roots)
+        self.assertTrue(is_pruned(merged_roots[0]))
+        self.assertTrue(is_pruned(merged_roots[0]["children"]["leaf"]))
+
+    def test_no_zero_time_anywhere_prunes_nothing(self):
+        main = make_merge_row("main", self_sum=1.0)
+        child = make_merge_row("child", parent=main, self_sum=2.0)
+        rows = [main, child]
+        merged_roots = s4c.merge_rank_trees([("r0", rows, [main])])
+
+        is_pruned = s4c.make_zero_time_pruned(merged_roots)
+        self.assertFalse(is_pruned(merged_roots[0]))
+        self.assertFalse(is_pruned(merged_roots[0]["children"]["child"]))
+
+
 if __name__ == "__main__":
     unittest.main()

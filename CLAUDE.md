@@ -31,6 +31,7 @@ Since real rocprof tooling isn't available here, prefer:
 - `bash -n <script>` / `shellcheck <script>` for syntax and lint checks
 - Exercising script logic against small hand-crafted fixture files that mimic real rocprof output formats (documented schema, not invented), placed under a fixtures/test directory
 - Making dependencies on external tools (`rocprofv3`, `rocprof-compute`, MPI launchers, etc.) explicit and checked at script startup, with a clear error if missing, so failures on the target machine are diagnosable
+- When real profiling output already exists under a sibling `Heat_Convection_Solver/` directory (or another real test-app output tree), include a real-data verification pass against it, not fixture-testing alone — this is a default step for new work, not a one-off
 
 ## Plan documentation
 

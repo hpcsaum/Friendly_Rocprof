@@ -60,6 +60,7 @@
 | 2026-08-21 | Plan 3.10: new `convert_trace_to_csv.py` -- converts a rocprof-sys trace-mode run's per-rank Perfetto `.proto` files into the trace-CSV format the `3.x` pipeline already consumes, closing the "conversion step deferred to a later plan" gap every prior `3.x` plan left open; design grounded in reading Perfetto's actual C++/SQL source directly rather than docs alone, surfacing a real correctness trap (`trace_processor_shell` prints SQL `NULL` as the literal string `"[NULL]"`, not a blank cell) that would have silently corrupted this pipeline's own blank-handling convention -- see full accounting below |
 | 2026-08-21 | Plan 3.11: new `scripts/profile_traced_hotspots.sh` chains `instrument_hotspots.sh trace` -> `convert_trace_to_csv.py` -> `extract_trace_hotspots.py`/`extract_trace_calltree.py` into one invocation, resolving a real flag-namespace collision between instrumentation-selection and final-report-selection flags by splitting them into bare vs `--instrument-*`-prefixed sets; also fixes a real `instrument_hotspots.sh` bug (the instrumented binary was never copied into the script's own output directory) -- see full accounting below |
 | 2026-08-21 | Plan 3.12: `select_hotspot_functions.py` renamed to `select_instrumented_functions.py` and widened -- a selected hotspot's immediate real caller is now pulled in by default (`--ancestor-depth`, via new generic `stage4_rocprofsys_common.expand_labels_with_ancestors()`), and a new `--gpu-output-dir` resolves hot GPU kernels into their real CPU owner (`resolve_kernel_owners()`), fixing GPU kernels/MPI calls losing their real caller's instrumentation regardless of that caller's own hotspot status; new `stage5_calltree_text_parser.py` lets `--report` mode support the same ancestor-pulling by reconstructing tree structure from a sibling `calltree.txt`'s rendered text -- see full accounting below |
+| 2026-08-26 | Plan 3.13: new `--time-range` flag on all three trace-CSV report tools -- restricts hotspots/pop-metrics/calltree output to one or more time windows (comma-separated, open-ended halves allowed), clipping a straddling call's duration to its in-window portion and cutting a call-tree subtree with zero overlap anywhere within it while keeping the ancestor chain to any surviving descendant intact; new `stage6_time_range_config.py` (mirroring `stage6_noise_config.py`'s process-wide-singleton pattern) also builds every report's now-always-printed "time range: ..." header note, the first instance of a deliberate new `stage6 -> stage4` import exception for non-table report output -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -2794,3 +2795,66 @@ of silently skipping ancestor expansion. `bash -n` plus a manual `--dry-run` run
 `rocprof-sys-instrument`/`rocprof-sys-run` on `PATH`, the standing technique for this sandbox)
 confirmed the renamed selector wires in correctly end to end. See
 `docs/plans/3.12-ancestor-aware-instrumentation-selection.md` for the full accounting.
+
+## 2026-08-26 — Plan 3.13: `--time-range` filtering for the trace-CSV report tools
+
+Lets a user restrict `extract_trace_hotspots.py`/`extract_trace_calltree.py`/`extract_trace_pop_metrics.py`
+to one or more time windows -- excluding startup/teardown, or isolating a single iteration -- with
+two precise requirements from the user: a call straddling a window boundary still contributes its
+in-window portion of time, not all-or-nothing; a call-tree subtree with zero overlap anywhere
+within it is cut from the tree, while the ancestor chain to any surviving descendant stays intact.
+
+Design grounded in one key finding: raw per-call `ts`/`dur` only exist, per rank, up through
+`stage4_rocprofsys_trace_aggregate.build_rank_aggregate()` -- specifically everything before its
+`merge_rank_trees()` call, the one point per-call rows collapse into the pre-summed
+`count`/`self_sum`/`sum` every downstream consumer (hotspots' `pct_total` denominator, pop metrics'
+`total_time`/`comm_time`/`gpu_busy_time`, load imbalance, the calltree) reads from then on. Clipping
+durations to the active range at that one point -- via a new `_clip_rows_to_time_ranges()`, mutating
+only `"dur"`, never `"ts"` (`_reanchor_kernels_by_owner_and_time()` runs later in the same function
+and depends on real, unclamped start times for its bisect-based search) -- makes every downstream
+report automatically range-scoped with no changes needed to `stage4_rocprofsys_trace_flat.py`'s
+math or any stage5 table module.
+
+Per the user's explicit direction, the active range is threaded through as process-wide global
+state rather than a parameter passed down through every intervening function -- mirroring
+`stage6_noise_config.py`'s own precedent for `--extra-noise-config` (plan 2.12) exactly. New
+`stage6_time_range_config.py` owns parsing/storing the range (`--time-range START:END`, either half
+optional, comma-separated windows merged into a canonical disjoint list) and is read directly by
+`stage4_rocprofsys_trace_aggregate.py` and `stage5_trace_calltree_view.py` -- meaning
+`stage4_rocprofsys_trace_flat.py`/`stage4_rocprofsys_trace_tree.py` needed no changes at all.
+
+The user separately asked that every report always show which window it reflects (the real full
+run span by default, or the requested window with any open bound resolved against that real span)
+-- and, on review, redirected the design twice: first, that the real run extent should be a stage4
+fact computed independently of whether any range was requested (not folded into the filtering
+logic itself); then, once a first draft had each of the three tools separately combining per-rank
+extents and formatting the note, that this was "a new path in the architecture" -- a stage4 fact
+flowing straight into a report header/footer, bypassing stage5's rendering entirely -- that
+deserved one common function, not three duplicated call sites. The result:
+`stage6_time_range_config.describe_time_range()` is a deliberate, documented exception to this
+codebase's usual stage6-never-imports-stage4 layering (see `postprocess/README.md`'s "Cross-stage
+imports" section), calling the new `stage4_rocprofsys_trace_aggregate.get_rank_time_extent()`
+directly -- the first instance of a pattern now written up for reuse, not a one-off.
+
+The on-disk per-rank cache (`<rank_key>.agg.json`) needed its own real design decision: the user
+explicitly wanted the active range folded into the same cache file rather than one file per
+distinct range. `get_rank_aggregate()`'s cache payload gained a `"ranges"` field (alongside the new
+`"extent"`); a cache hit now also requires the stored ranges to match the currently active one --
+any mismatch (including an old, pre-this-plan bare-JSON-array cache file) rebuilds and overwrites
+the *same* file, never creating a second one.
+
+Real bug caught during implementation, not by design review: the first version of the new
+`stage4_rocprofsys_common.make_zero_time_pruned()` bottom-up subtree-zero-check used
+`all(visit(child) for child in ...)` directly in a generator -- `all()` short-circuits on the first
+`False`, silently skipping `visit()` (and thus ever recording a verdict for) every later sibling
+once one sibling's subtree turned out non-zero. Caught immediately by a direct smoke test with two
+sibling subtrees, one zero and one not; fixed by forcing a list comprehension before calling `all()`
+so every child is genuinely visited regardless of its siblings' results.
+
+Verification: full suite grew from 673 to 736 tests, all green, including a new hand-crafted
+`trace_time_range` fixture specifically designed to exercise a partial-overlap clip, a call
+entirely outside every given range, and -- the one case that actually required the bottom-up
+(rather than per-node) zero-time check -- a `corr_id`-reparented GPU kernel dispatch whose own span
+extends beyond its (entirely-out-of-range) launch call's span, confirming the launch call stays
+visible as the connecting ancestor rather than being wrongly pruned. See
+`docs/plans/3.13-time-range-filtering.md` for the full accounting.

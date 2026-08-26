@@ -25,6 +25,7 @@ from stage5_pop_metrics_table import compute_metrics_from_per_rank, format_metri
 import stage6_cli_common
 import stage6_noise_config
 from stage6_report_builder import command_header, help_redirect, render_report, standard_header, write_report_file
+import stage6_time_range_config
 
 SHORT_DESCRIPTION = (
     "Computes POP-inspired parallel efficiency metrics (Load Balance, Communication/Parallel/\n"
@@ -71,6 +72,7 @@ def _compute_trace_run_metrics(trace_dir):
         "run_dir": trace_dir,
         "num_ranks": len(per_rank),
         "per_rank": per_rank,
+        "rank_inputs": rank_inputs,
         **metrics,
     }
 
@@ -84,7 +86,10 @@ def write_report(run_dirs, dest_path, scaling=None, command_line=""):
         label = "reference run" if i == 0 else f"scaling run {i + 1} ({run_label(m['run_dir'])})"
         runs.append({
             "directories": [(label, m["run_dir"])], "num_ranks": m["num_ranks"],
-            "extra_lines": ["  pool: CPU+GPU, single unified trace source\n"],
+            "extra_lines": [
+                "  pool: CPU+GPU, single unified trace source\n",
+                stage6_time_range_config.describe_time_range(m["rank_inputs"]),
+            ],
         })
     header = standard_header("extract_trace_pop_metrics.py", SHORT_DESCRIPTION, runs)
 
@@ -111,6 +116,7 @@ def main(argv=None):
     parser.add_argument("-o", "--output", dest="dest", default=None,
                          help="path to write the report (default: <reference_dir>/pop_metrics.txt)")
     stage6_noise_config.add_cli_argument(parser)
+    stage6_time_range_config.add_cli_argument(parser)
     args = parser.parse_args(argv)
 
     run_dirs = [args.reference_dir] + args.scaled_dirs
@@ -120,6 +126,7 @@ def main(argv=None):
         raise SystemExit("error: --scaling {strong,weak} is required when scaled_dirs are given")
 
     stage6_noise_config.configure_from_args(args)
+    stage6_time_range_config.configure_from_args(args)
 
     dest = stage6_cli_common.resolve_dest(args.dest, args.reference_dir, "pop_metrics.txt")
     tokens = [os.path.abspath(d) for d in run_dirs]
@@ -129,6 +136,8 @@ def main(argv=None):
         tokens += ["-o", os.path.abspath(args.dest)]
     if args.extra_noise_config:
         tokens += ["--extra-noise-config", os.path.abspath(args.extra_noise_config)]
+    if args.time_range:
+        tokens += ["--time-range", args.time_range]
     command_line = command_header(sys.argv[0], tokens)
 
     write_report(run_dirs, dest, scaling=args.scaling, command_line=command_line)

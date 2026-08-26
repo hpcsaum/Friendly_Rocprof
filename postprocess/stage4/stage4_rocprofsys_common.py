@@ -17,8 +17,14 @@ resolve_kernel_owners()) built directly on top of the primitives above -- reusab
 tool that needs "these labels plus enough of their real ancestry" or "these GPU kernel names'
 real CPU owners," not specific to any one selection tool's own reason for wanting them.
 
+Also owns make_zero_time_pruned(), an is_pruned(node)-compatible predicate factory (same shape as
+stage3_rocprofsys_common.make_is_pruned()) for a --time-range-filtered trace calltree: hides a
+merged node's whole subtree when NONE of it -- neither the node itself nor any descendant --
+overlapped the active window, while keeping ancestors of a surviving descendant visible.
+
 Functions: merge_rank_trees(), flatten_tree(), caller_chains_for_label(), aggregate_node_stats(),
-make_node_values(), kernel_owner_label(), expand_labels_with_ancestors(), resolve_kernel_owners().
+make_node_values(), kernel_owner_label(), expand_labels_with_ancestors(), resolve_kernel_owners(),
+make_zero_time_pruned().
 """
 
 import re
@@ -286,3 +292,44 @@ def make_node_values(rank_keys):
             stats["self_min"], stats["self_max"], stats["total_avg"],
         )
     return node_values
+
+
+def make_zero_time_pruned(merged_roots):
+    """An is_pruned(node)-compatible closure (see stage3_rocprofsys_common.make_is_pruned()) over
+    every merged node whose own contribution AND every one of its descendants' is exactly zero --
+    for hiding a --time-range-filtered calltree's subtrees that have no overlap with the active
+    window anywhere within them, while keeping the chain to any surviving descendant intact.
+
+    Bottom-up (post-order) over each node's own "children" dict -- merge_rank_trees()'s native
+    output shape, no auxiliary children-map needed. Per node, sums "self_sum" (not "sum") across
+    every rank in "per_rank": self_sum is the minimal, non-redundant "did THIS node itself
+    contribute" signal -- the recursion already accounts for descendants, so using the inclusive
+    "sum" here would double-count them. A node counts as zero only if its own sum is zero AND every
+    child's own bottom-up result is also zero.
+
+    This must walk the whole subtree bottom-up rather than checking each node in isolation,
+    specifically because a GPU kernel-dispatch row reparented onto its launch call (corr_id- or
+    owner+time-reanchored, see stage4_rocprofsys_trace_aggregate.py) can run concurrently with that
+    launch call rather than strictly nested inside its wall-clock span -- so a brief launch call's
+    own instant can fall entirely outside a window while the kernel it dispatched, independently
+    timed, falls inside it. A per-node-only check would wrongly prune that whole branch, hiding a
+    genuinely in-window kernel and breaking the "ancestor chain stays intact" requirement. Every
+    other structural relationship in this pipeline nests properly, so this exception is also the
+    only reason a bottom-up walk is needed at all rather than a plain per-node check."""
+    zero_ids = set()
+
+    def visit(node):
+        own_zero = sum(entry["self_sum"] for entry in node["per_rank"].values()) <= 0
+        # A list comprehension, not all(visit(c) for c in ...) -- all() short-circuits on the
+        # first False, which would skip visit() on later siblings entirely and leave their own
+        # (and their descendants') zero/non-zero status never recorded in zero_ids.
+        child_results = [visit(child) for child in node["children"].values()]
+        result = own_zero and all(child_results)
+        if result:
+            zero_ids.add(id(node))
+        return result
+
+    for root in merged_roots:
+        visit(root)
+
+    return lambda node: id(node) in zero_ids

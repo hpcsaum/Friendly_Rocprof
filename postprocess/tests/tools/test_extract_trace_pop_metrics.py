@@ -17,17 +17,21 @@ pop_metrics = importlib.util.module_from_spec(spec)
 sys.modules["extract_trace_pop_metrics"] = pop_metrics
 spec.loader.exec_module(pop_metrics)
 
+import stage6_time_range_config as trc  # noqa: E402
+
 TWO_RANK_DIR = os.path.join(FIXTURES, "trace_cli_two_rank")
+TIME_RANGE_DIR = os.path.join(FIXTURES, "trace_cli_time_range")
 
 
-def _clear_cache():
-    for f in glob.glob(os.path.join(TWO_RANK_DIR, "*.agg.json")):
+def _clear_cache(directory=TWO_RANK_DIR):
+    for f in glob.glob(os.path.join(directory, "*.agg.json")):
         os.remove(f)
 
 
 class WriteReportTests(unittest.TestCase):
     def tearDown(self):
         _clear_cache()
+        trc.configure(None)
 
     def test_single_run_reports_gpu_columns(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -38,10 +42,19 @@ class WriteReportTests(unittest.TestCase):
             self.assertIn("pool: CPU+GPU, single unified trace source", report)
             self.assertIn("MPI ranks: 2", report)
 
+    def test_run_header_always_shows_a_time_range_note(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "pop_metrics.txt")
+            report = pop_metrics.write_report([TWO_RANK_DIR], dest)
+            self.assertIn("time range:", report)
+            self.assertIn("(full run)", report)
+
 
 class MainCliTests(unittest.TestCase):
     def tearDown(self):
         _clear_cache()
+        _clear_cache(TIME_RANGE_DIR)
+        trc.configure(None)
 
     def test_main_requires_scaling_flag_with_scaled_dirs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -56,6 +69,14 @@ class MainCliTests(unittest.TestCase):
             with open(dest) as f:
                 report = f.read()
         self.assertIn("=== Metrics ===", report)
+
+    def test_time_range_flag_restricts_the_metrics_and_notes_the_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "pop_metrics.txt")
+            pop_metrics.main([TIME_RANGE_DIR, "--time-range", "30:70", "-o", dest])
+            with open(dest) as f:
+                report = f.read()
+        self.assertIn("time range: 30.000s-70.000s", report)
 
 
 if __name__ == "__main__":

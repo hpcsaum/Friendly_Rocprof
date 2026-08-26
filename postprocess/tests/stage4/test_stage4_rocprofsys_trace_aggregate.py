@@ -1,6 +1,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import shutil
 import sys
@@ -20,6 +21,8 @@ agg = importlib.util.module_from_spec(spec)
 sys.modules["stage4_rocprofsys_trace_aggregate"] = agg
 spec.loader.exec_module(agg)
 
+import stage6_time_range_config as trc  # noqa: E402
+
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 SINGLE_RANK_CSV = os.path.join(FIXTURES, "trace_single_rank", "rank0.csv")
 MULTI_INSTANCE_CSV = os.path.join(FIXTURES, "trace_multi_instance", "rank0.csv")
@@ -27,6 +30,7 @@ NO_MATCH_CSV = os.path.join(FIXTURES, "trace_corr_id_no_match", "rank0.csv")
 AMBIGUOUS_CSV = os.path.join(FIXTURES, "trace_corr_id_ambiguous", "rank0.csv")
 NOISE_CSV = os.path.join(FIXTURES, "trace_calltree_noise", "rank0.csv")
 OWNER_REANCHOR_CSV = os.path.join(FIXTURES, "trace_kernel_owner_reanchor", "rank0.csv")
+TIME_RANGE_CSV = os.path.join(FIXTURES, "trace_time_range", "rank0.csv")
 
 SINGLE_RANK_LABELS = {"main", "jacobi_sweep", "hipLaunchKernel", "MPI_Barrier", "jacobi_kernel.kd"}
 
@@ -37,7 +41,7 @@ def by_label(rows, label):
 
 class BuildRankAggregateTests(unittest.TestCase):
     def test_self_sum_subtracts_only_structural_children(self):
-        rows = agg.build_rank_aggregate(SINGLE_RANK_CSV, "r0")
+        rows, _extent = agg.build_rank_aggregate(SINGLE_RANK_CSV, "r0")
         main = by_label(rows, "main")
         sweep = by_label(rows, "jacobi_sweep")
         launch = by_label(rows, "hipLaunchKernel")
@@ -48,21 +52,21 @@ class BuildRankAggregateTests(unittest.TestCase):
         self.assertAlmostEqual(launch["self_sum"], 0.05)
 
     def test_corr_id_exact_match_reparents_kernel_onto_launch_row(self):
-        rows = agg.build_rank_aggregate(SINGLE_RANK_CSV, "r0")
+        rows, _extent = agg.build_rank_aggregate(SINGLE_RANK_CSV, "r0")
         launch = by_label(rows, "hipLaunchKernel")
         kernel = by_label(rows, "jacobi_kernel.kd")
         self.assertIs(kernel["parent"], launch)
         self.assertIn("gpu_kernel", kernel["tags"])
 
     def test_corr_id_no_match_leaves_kernel_as_its_own_root(self):
-        rows = agg.build_rank_aggregate(NO_MATCH_CSV, "r0")
+        rows, _extent = agg.build_rank_aggregate(NO_MATCH_CSV, "r0")
         kernel = by_label(rows, "jacobi_kernel.kd")
         self.assertIsNone(kernel["parent"])
 
     def test_corr_id_ambiguous_warns_once_and_leaves_unattached(self):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            rows = agg.build_rank_aggregate(AMBIGUOUS_CSV, "r0")
+            rows, _extent = agg.build_rank_aggregate(AMBIGUOUS_CSV, "r0")
         kernel = by_label(rows, "jacobi_kernel.kd")
         self.assertIsNone(kernel["parent"])
         warnings = [line for line in buf.getvalue().splitlines() if line.startswith("warning:")]
@@ -70,7 +74,7 @@ class BuildRankAggregateTests(unittest.TestCase):
         self.assertIn("1 kernel-dispatch row(s)", warnings[0])
 
     def test_repeated_same_position_calls_collapse_into_one_merged_row(self):
-        rows = agg.build_rank_aggregate(MULTI_INSTANCE_CSV, "r0")
+        rows, _extent = agg.build_rank_aggregate(MULTI_INSTANCE_CSV, "r0")
         launch = by_label(rows, "hipLaunchKernel")
         self.assertEqual(launch["count"], 3)
         self.assertAlmostEqual(launch["self_sum"], 0.06)
@@ -79,7 +83,7 @@ class BuildRankAggregateTests(unittest.TestCase):
     def test_no_row_dropped_and_every_tag_kept(self):
         # tool-independent: nothing filtered even though a tool's own flags might later hide
         # some of these -- that's a stage5/6 decision, never baked in here.
-        rows = agg.build_rank_aggregate(SINGLE_RANK_CSV, "r0")
+        rows, _extent = agg.build_rank_aggregate(SINGLE_RANK_CSV, "r0")
         self.assertEqual({r["label"] for r in rows}, SINGLE_RANK_LABELS)
 
     def test_untethered_kernel_dispatch_row_does_not_contaminate_the_real_root_via_tag_rows(self):
@@ -90,7 +94,7 @@ class BuildRankAggregateTests(unittest.TestCase):
         # never matches wrapper_noise) wrongly flag the CPU root's entire subtree as
         # wrapper_branch_noise-contaminated, even though nothing about that CPU subtree is
         # genuinely contaminated relative to a real sibling.
-        rows = agg.build_rank_aggregate(NOISE_CSV, "r0")
+        rows, _extent = agg.build_rank_aggregate(NOISE_CSV, "r0")
         main = by_label(rows, "main")
         self.assertEqual(main["structural_drop_tags"], set())
         # And the kernel is exactly where the corr_id join should have put it.
@@ -136,7 +140,7 @@ class GetRankAggregateCacheTests(unittest.TestCase):
         self.assertEqual({r["label"] for r in rows}, SINGLE_RANK_LABELS)
 
     def test_decoded_cache_matches_a_fresh_build_field_by_field(self):
-        fresh = agg.build_rank_aggregate(self.csv_path, "r0")
+        fresh, _extent = agg.build_rank_aggregate(self.csv_path, "r0")
         agg.get_rank_aggregate(self.csv_path, "r0")  # cache miss -- writes the cache
         cached = agg.get_rank_aggregate(self.csv_path, "r0")  # cache hit -- decodes it back
 
@@ -252,10 +256,201 @@ class ReanchorKernelsByOwnerAndTimeTests(unittest.TestCase):
         # ompt_implicit_task -> ompt_target -> hipModuleLaunchKernel chain) is structurally
         # uninformative, but its own name still identifies the real owning subroutine, which
         # exists as its own CPU row elsewhere in the tree, and started before the kernel dispatched.
-        rows = agg.build_rank_aggregate(OWNER_REANCHOR_CSV, "r0")
+        rows, _extent = agg.build_rank_aggregate(OWNER_REANCHOR_CSV, "r0")
         kernel = by_label(rows, "convection_stable_dt$convection_time_integrator_mod_$ck_L558_99.kd")
         owner = by_label(rows, "convection_stable_dt$convection_time_integrator_mod_")
         self.assertIs(kernel["parent"], owner)
+
+
+class OverlapWithRangesTests(unittest.TestCase):
+    def test_fully_inside_a_range_keeps_the_whole_width(self):
+        width, touches = agg._overlap_with_ranges(5.0, 2.0, [(0.0, 10.0)])
+        self.assertAlmostEqual(width, 2.0)
+        self.assertTrue(touches)
+
+    def test_fully_outside_every_range_is_zero_and_does_not_touch(self):
+        width, touches = agg._overlap_with_ranges(20.0, 2.0, [(0.0, 10.0)])
+        self.assertEqual(width, 0.0)
+        self.assertFalse(touches)
+
+    def test_straddling_a_boundary_clips_to_the_overlapping_portion(self):
+        width, touches = agg._overlap_with_ranges(8.0, 5.0, [(0.0, 10.0)])  # [8,13) vs [0,10)
+        self.assertAlmostEqual(width, 2.0)
+        self.assertTrue(touches)
+
+    def test_zero_duration_event_exactly_on_a_boundary_touches_but_has_no_width(self):
+        width, touches = agg._overlap_with_ranges(10.0, 0.0, [(0.0, 10.0)])
+        self.assertEqual(width, 0.0)
+        self.assertTrue(touches)
+
+    def test_open_start_and_open_end_bounds_are_honored(self):
+        width, touches = agg._overlap_with_ranges(-100.0, 5.0, [(None, 0.0)])
+        self.assertAlmostEqual(width, 5.0)
+        self.assertTrue(touches)
+        width2, touches2 = agg._overlap_with_ranges(1000.0, 5.0, [(500.0, None)])
+        self.assertAlmostEqual(width2, 5.0)
+        self.assertTrue(touches2)
+
+    def test_multiple_disjoint_ranges_sum_their_own_overlaps(self):
+        width, touches = agg._overlap_with_ranges(0.0, 20.0, [(2.0, 5.0), (10.0, 12.0)])
+        self.assertAlmostEqual(width, 5.0)
+        self.assertTrue(touches)
+
+
+class TimeRangeClippingAndExtentTests(unittest.TestCase):
+    def tearDown(self):
+        trc.configure(None)
+
+    def test_extent_reflects_the_real_unfiltered_span_regardless_of_active_range(self):
+        trc.configure("30:70")
+        _rows, extent = agg.build_rank_aggregate(TIME_RANGE_CSV, "r0")
+        self.assertEqual(extent, (0.0, 100.0))
+
+    def test_extent_with_no_range_active_matches_ranged_extent(self):
+        trc.configure(None)
+        _rows, extent_unranged = agg.build_rank_aggregate(TIME_RANGE_CSV, "r0")
+        trc.configure("30:70")
+        _rows2, extent_ranged = agg.build_rank_aggregate(TIME_RANGE_CSV, "r0")
+        self.assertEqual(extent_unranged, extent_ranged)
+
+    def test_straddling_function_keeps_only_its_in_range_portion(self):
+        # compute_phase spans [20,80]; range [30,70] clips it to width 40.
+        trc.configure("30:70")
+        rows, _extent = agg.build_rank_aggregate(TIME_RANGE_CSV, "r0")
+        compute_phase = by_label(rows, "compute_phase")
+        self.assertAlmostEqual(compute_phase["sum"], 40.0)
+        # self_sum = clipped width (40) minus its clipped structural children (hipLaunchKernel: 0,
+        # mpi_call: 5) = 35.
+        self.assertAlmostEqual(compute_phase["self_sum"], 35.0)
+        self.assertEqual(compute_phase["count"], 1)
+
+    def test_call_entirely_outside_every_range_gets_zero_count_and_zero_time(self):
+        trc.configure("30:70")
+        rows, _extent = agg.build_rank_aggregate(TIME_RANGE_CSV, "r0")
+        init_phase = by_label(rows, "init_phase")
+        teardown_phase = by_label(rows, "teardown_phase")
+        for row in (init_phase, teardown_phase):
+            self.assertEqual(row["count"], 0)
+            self.assertEqual(row["self_sum"], 0.0)
+            self.assertEqual(row["sum"], 0.0)
+
+    def test_concurrently_executing_reanchored_kernel_keeps_its_own_in_range_time(self):
+        # jacobi_kernel.kd is reparented onto hipLaunchKernel via corr_id, but its raw span
+        # [22,62] extends well beyond hipLaunchKernel's own [22,25] -- concurrent GPU execution.
+        # hipLaunchKernel's own span never touches [30,70] at all; the kernel's does.
+        trc.configure("30:70")
+        rows, _extent = agg.build_rank_aggregate(TIME_RANGE_CSV, "r0")
+        launch = by_label(rows, "hipLaunchKernel")
+        kernel = by_label(rows, "jacobi_kernel.kd")
+        self.assertEqual(launch["count"], 0)
+        self.assertEqual(launch["self_sum"], 0.0)
+        self.assertIs(kernel["parent"], launch)
+        self.assertAlmostEqual(kernel["self_sum"], 32.0)  # overlap([22,62], [30,70]) = 32
+
+    def test_ts_is_never_mutated_by_clipping(self):
+        # _reanchor_kernels_by_owner_and_time() depends on real, unclamped ts values -- confirmed
+        # indirectly here by checking the reanchored parent is still correct under an active range
+        # covering only PART of the owner/kernel timeline (a clamped ts would corrupt the
+        # bisect-based ordering this depends on).
+        trc.configure("30:70")
+        rows, _extent = agg.build_rank_aggregate(OWNER_REANCHOR_CSV, "r0")
+        kernel = by_label(rows, "convection_stable_dt$convection_time_integrator_mod_$ck_L558_99.kd")
+        owner = by_label(rows, "convection_stable_dt$convection_time_integrator_mod_")
+        self.assertIs(kernel["parent"], owner)
+
+    def test_no_active_range_leaves_count_self_sum_sum_unchanged(self):
+        trc.configure(None)
+        unranged, _extent = agg.build_rank_aggregate(TIME_RANGE_CSV, "r0")
+        by_label_unranged = {r["label"]: r for r in unranged}
+        main = by_label_unranged["main"]
+        self.assertEqual(main["count"], 1)
+        self.assertAlmostEqual(main["sum"], 100.0)
+
+
+class RangeAwareCacheTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.csv_path = os.path.join(self.tmp, "rank0.csv")
+        shutil.copy(TIME_RANGE_CSV, self.csv_path)
+        self.cache_path = os.path.join(self.tmp, "r0.agg.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+        trc.configure(None)
+
+    def test_switching_ranges_rebuilds_and_overwrites_the_same_file_not_a_new_one(self):
+        trc.configure(None)
+        agg.get_rank_aggregate(self.csv_path, "r0")
+        self.assertEqual(sorted(os.listdir(self.tmp)), ["r0.agg.json", "rank0.csv"])
+
+        trc.configure("30:70")
+        rows = agg.get_rank_aggregate(self.csv_path, "r0")
+        self.assertEqual(sorted(os.listdir(self.tmp)), ["r0.agg.json", "rank0.csv"])  # still just one
+        by_label_ranged = {r["label"]: r for r in rows}
+        self.assertAlmostEqual(by_label_ranged["compute_phase"]["sum"], 40.0)
+
+    def test_same_range_requested_twice_is_a_cache_hit(self):
+        trc.configure("30:70")
+        agg.get_rank_aggregate(self.csv_path, "r0")
+        with mock.patch.object(agg, "build_rank_aggregate") as mocked:
+            agg.get_rank_aggregate(self.csv_path, "r0")
+            mocked.assert_not_called()
+
+    def test_different_range_requested_is_a_cache_miss(self):
+        trc.configure("30:70")
+        agg.get_rank_aggregate(self.csv_path, "r0")
+        trc.configure("0:10")
+        with mock.patch.object(agg, "build_rank_aggregate", wraps=agg.build_rank_aggregate) as mocked:
+            agg.get_rank_aggregate(self.csv_path, "r0")
+            mocked.assert_called_once()
+
+    def test_ranged_cache_then_no_range_request_is_also_a_cache_miss(self):
+        trc.configure("30:70")
+        agg.get_rank_aggregate(self.csv_path, "r0")
+        trc.configure(None)
+        with mock.patch.object(agg, "build_rank_aggregate", wraps=agg.build_rank_aggregate) as mocked:
+            agg.get_rank_aggregate(self.csv_path, "r0")
+            mocked.assert_called_once()
+
+    def test_old_bare_array_cache_format_degrades_gracefully_to_a_rebuild(self):
+        trc.configure(None)
+        with open(self.cache_path, "w") as f:
+            json.dump([{
+                "label": "stale", "tags": [], "structural_drop_tags": [],
+                "count": 1, "self_sum": 1.0, "sum": 1.0, "parent_index": None,
+            }], f)
+        rows = agg.get_rank_aggregate(self.csv_path, "r0")
+        labels = {r["label"] for r in rows}
+        self.assertNotEqual(labels, {"stale"})
+        self.assertIn("main", labels)
+
+
+class GetRankTimeExtentTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.csv_path = os.path.join(self.tmp, "rank0.csv")
+        shutil.copy(TIME_RANGE_CSV, self.csv_path)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+        trc.configure(None)
+
+    def test_returns_the_real_extent_with_no_range_active(self):
+        trc.configure(None)
+        extent = agg.get_rank_time_extent(self.csv_path, "r0")
+        self.assertEqual(extent, (0.0, 100.0))
+
+    def test_returns_the_real_extent_even_with_a_range_active(self):
+        trc.configure("30:70")
+        extent = agg.get_rank_time_extent(self.csv_path, "r0")
+        self.assertEqual(extent, (0.0, 100.0))
+
+    def test_falls_back_to_a_fresh_build_if_the_cache_file_is_missing(self):
+        trc.configure(None)
+        agg.get_rank_aggregate(self.csv_path, "r0")
+        os.remove(os.path.join(self.tmp, "r0.agg.json"))
+        extent = agg.get_rank_time_extent(self.csv_path, "r0")
+        self.assertEqual(extent, (0.0, 100.0))
 
 
 if __name__ == "__main__":

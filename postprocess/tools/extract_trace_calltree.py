@@ -29,6 +29,7 @@ from stage5_tree_render import aggregation_note, tree_view_note
 import stage6_cli_common
 import stage6_noise_config
 from stage6_report_builder import command_header, help_redirect, render_report, standard_header, write_report_file
+import stage6_time_range_config
 
 SHORT_DESCRIPTION = (
     "Renders an aggregated call tree from a rocprof-sys Perfetto trace-CSV export, across\n"
@@ -106,6 +107,7 @@ def write_report(trace_dir, dest_path, max_depth=None, show_gpu_api=False,
 
     header = standard_header("extract_trace_calltree.py", SHORT_DESCRIPTION, [{
         "directories": [("trace directory", trace_dir)], "num_ranks": len(rank_keys),
+        "extra_lines": [stage6_time_range_config.describe_time_range(rank_inputs)],
     }])
     tree_notes = aggregation_note() + tree_view_note(
         rank_keys, max_depth, show_gpu_api, show_rocprofsys_internals, show_mpi_internals,
@@ -132,10 +134,12 @@ def main(argv=None):
         all_shorthand=True,
     )
     stage6_noise_config.add_cli_argument(parser)
+    stage6_time_range_config.add_cli_argument(parser)
     args = parser.parse_args(argv)
 
     stage6_cli_common.require_directory(args.trace_dir)
     stage6_noise_config.configure_from_args(args)
+    stage6_time_range_config.configure_from_args(args)
 
     dest = stage6_cli_common.resolve_dest(args.dest, args.trace_dir, "calltree.txt")
     tokens = [os.path.abspath(args.trace_dir)]
@@ -156,6 +160,8 @@ def main(argv=None):
             tokens.append("--show-compiler-runtime")
     if args.extra_noise_config:
         tokens += ["--extra-noise-config", os.path.abspath(args.extra_noise_config)]
+    if args.time_range:
+        tokens += ["--time-range", args.time_range]
     command_line = command_header(sys.argv[0], tokens)
 
     write_report(

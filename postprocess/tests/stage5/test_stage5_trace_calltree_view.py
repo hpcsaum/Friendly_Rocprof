@@ -1,3 +1,4 @@
+import glob
 import importlib.util
 import os
 import sys
@@ -14,9 +15,13 @@ view = importlib.util.module_from_spec(spec)
 sys.modules["stage5_trace_calltree_view"] = view
 spec.loader.exec_module(view)
 
+import stage6_time_range_config as trc  # noqa: E402
+
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 NOISE_DIR = os.path.join(FIXTURES, "trace_calltree_noise")
 RANK_INPUTS = [("r0", os.path.join(NOISE_DIR, "rank0.csv"))]
+TIME_RANGE_DIR = os.path.join(FIXTURES, "trace_time_range")
+TIME_RANGE_RANK_INPUTS = [("r0", os.path.join(TIME_RANGE_DIR, "rank0.csv"))]
 
 
 class BuildCalltreeViewTests(unittest.TestCase):
@@ -68,6 +73,46 @@ class BuildCalltreeViewTests(unittest.TestCase):
     def test_return_shape_has_no_fallback_text_key(self):
         result = view.build_calltree_view(RANK_INPUTS)
         self.assertEqual(set(result.keys()), {"rank_keys", "tree_text"})
+
+
+class TimeRangePruningTests(unittest.TestCase):
+    def tearDown(self):
+        trc.configure(None)
+        for f in glob.glob(os.path.join(TIME_RANGE_DIR, "*.agg.json")):
+            os.remove(f)
+
+    def test_no_active_range_leaves_zero_time_subtrees_untouched(self):
+        # Not that there'd be any zero-time subtrees without a range active -- confirms the
+        # pruning predicate simply isn't composed in at all when there's nothing to filter.
+        trc.configure(None)
+        text = view.build_calltree_view(TIME_RANGE_RANK_INPUTS)["tree_text"]
+        self.assertIn("init_phase", text)
+        self.assertIn("teardown_phase", text)
+        self.assertIn("compute_phase", text)
+
+    def test_entirely_out_of_range_subtrees_are_cut(self):
+        trc.configure("30:70")
+        text = view.build_calltree_view(TIME_RANGE_RANK_INPUTS)["tree_text"]
+        self.assertNotIn("init_phase", text)
+        self.assertNotIn("teardown_phase", text)
+        self.assertIn("compute_phase", text)
+        self.assertIn("main", text)
+
+    def test_ancestor_chain_to_a_surviving_descendant_stays_intact(self):
+        # hipLaunchKernel's own span never touches [30,70], but the kernel it dispatched
+        # (reparented via corr_id, independently timed) does -- the launch call must stay visible
+        # as the connecting ancestor, not be pruned just because its OWN contribution is zero.
+        trc.configure("30:70")
+        text = view.build_calltree_view(TIME_RANGE_RANK_INPUTS, show_gpu_api=True)["tree_text"]
+        self.assertIn("hipLaunchKernel", text)
+        self.assertIn("jacobi_kernel.kd", text)
+
+    def test_pruning_composes_with_existing_tag_based_pruning(self):
+        # gpu_api noise stays hidden by default, independent of the new range-based predicate --
+        # the two compose via OR, neither one disabling the other.
+        trc.configure("30:70")
+        text = view.build_calltree_view(TIME_RANGE_RANK_INPUTS)["tree_text"]
+        self.assertNotIn("hipLaunchKernel", text)
 
 
 if __name__ == "__main__":

@@ -180,6 +180,12 @@ existing shape.
   user's `--extra-noise-config`/`$FRIENDLY_ROCPROF_NOISE_CONFIG` file. A module-level singleton,
   not threaded as a parameter — every real invocation of these tools is a single, one-shot CLI
   process with exactly one active noise configuration for its whole run.
+- `stage6_time_range_config.py` — the trace-CSV report tools' equivalent process-wide singleton,
+  for `--time-range`: parses/stores the active window(s), and — the one place this codebase has a
+  stage6 module import directly from stage4 — builds each report's always-printed "time range: ..."
+  header note by combining `stage4_rocprofsys_trace_aggregate.get_rank_time_extent()`'s real,
+  unfiltered per-rank span with whatever window is currently active. See "Cross-stage imports"
+  below for why that particular dependency direction is allowed here.
 - `stage6_cli_common.py` — the argparse/validation boilerplate most tools share: directory
   existence checks (`require_directory()`/`require_directories()`), `-o`/`--output` resolution
   (`resolve_dest()`), the `-n/--top`/`--threshold`/`--all` selection group
@@ -203,7 +209,14 @@ producing the CSV files `stage1_rocprofsys_trace.py` reads, not consuming them.
 
 A report tool typically touches most of the six stages at once (a calltree tool alone spans
 stage1, stage2, stage3, stage4, and stage5), and several stages import from each other too
-(stage4/stage5 import from stage1-3, stage3 imports from stage6). Every module keeps its plain,
+(stage4/stage5 import from stage1-3, stage3 imports from stage6). One deliberate exception runs the
+other direction: a stage6 module may import directly from stage4 when producing a
+**non-table-specific** report output — a header/footer note built from a stage4 fact, not a
+rendered table or tree, so there's no reason to route it through stage5's rendering machinery at
+all. `stage6_time_range_config.describe_time_range()` (calling
+`stage4_rocprofsys_trace_aggregate.get_rank_time_extent()` to build the "time range: ..." note
+every trace report tool's header shares) is the first instance of this pattern — reusable the next
+time a report needs a stage4-derived fact that isn't a table. Every module keeps its plain,
 flat import style regardless — `from stage1_rocprofsys_sample import parse_table_file`, not a
 package-qualified path — so `postprocess/_stage_paths.py` puts every `stageN/` and `tools/`
 directory on `sys.path` once; import it (after putting `postprocess/`'s own path on `sys.path` —
@@ -320,11 +333,17 @@ stages/tools at once). Two module-loading styles are in use, both preceded by th
   instance) use `importlib.util.spec_from_file_location()` instead, registering the loaded module
   under `sys.modules` — necessary since tools are meant to be run as scripts, not imported.
 
-`stage6_noise_config`'s `_TAG_DEFS` is the one real piece of cross-module mutable state in this
-codebase (a deliberate process-wide singleton, see its own module docstring); a test that loads an
-isolated copy of it via `spec_from_file_location` must restore the previous `sys.modules` entry
-afterward (see `tests/stage6/test_stage6_noise_config.py`), or it will silently detach every other
-module's already-captured reference to the shared instance for the rest of the test process.
+`stage6_noise_config`'s `_TAG_DEFS` and `stage6_time_range_config`'s `_RANGES` are this codebase's
+two real pieces of cross-module mutable state (deliberate process-wide singletons, see each
+module's own docstring). Only `stage6_noise_config` needs the extra `spec_from_file_location`
+restore-previous-`sys.modules`-entry dance its own test file uses (see
+`tests/stage6/test_stage6_noise_config.py`): `stage3_rocprofsys_common.py` captures a bare
+`tag_defs` function reference from it at import time, which an isolated test copy would silently
+detach for the rest of the test process if not restored. `stage6_time_range_config` has no such
+hazard — every consumer does a plain `import stage6_time_range_config` and resolves attributes at
+call time, never `from stage6_time_range_config import X` — so its own tests
+(`tests/stage6/test_stage6_time_range_config.py`) just use the normal shared import and reset the
+active range in `tearDown()` (`trc.configure(None)`) instead.
 
 ## Further reading
 

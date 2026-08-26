@@ -1,20 +1,24 @@
 """Stage 4 (build + cache the canonical per-rank aggregate) for rocprof-sys's Perfetto trace-CSV
 pipeline.
 
-Scope: the ONE expensive path for one rank -- parse, synthesize count/self_sum/sum, attach
-kernel-dispatch rows to their exact launch site via corr_id, further reanchor a kernel sharing a
-generic launch site with every other kernel in the program onto the real CPU call instance its own
-embedded owner name and the trace's timestamps identify, tag (stage3), and collapse repeated
-same-position calls within the rank (build_rank_aggregate()) -- plus an on-disk cache around it
-(get_rank_aggregate()) so a 10GB+ trace-CSV is parsed at most once per rank, ever. The result is a
-flat, parent-linked row list in the same canonical shape stage4_rocprofsys_common.merge_rank_trees()
-already produces for one rank (label/parent/tags/structural_drop_tags/count/self_sum/sum) --
-tool-independent: every row and every tag stays, nothing is dropped or renamed for any particular
-tool's convenience. GPU-dispatch-detail columns (grid_size, workgroup_size, ...) deliberately do
-NOT survive the merge -- once N raw launches at one call site collapse into one count, there's no
-single meaningful value to keep, and no current stage5 view consumes them anyway.
+Scope: the ONE expensive path for one rank -- parse, compute this rank's real unfiltered time
+extent, optionally clip every row to the currently active --time-range (stage6_time_range_config),
+synthesize count/self_sum/sum, attach kernel-dispatch rows to their exact launch site via corr_id,
+further reanchor a kernel sharing a generic launch site with every other kernel in the program onto
+the real CPU call instance its own embedded owner name and the trace's timestamps identify, tag
+(stage3), and collapse repeated same-position calls within the rank (build_rank_aggregate()) --
+plus an on-disk cache around it (get_rank_aggregate()) so a 10GB+ trace-CSV is parsed at most once
+per rank, ever (per currently active --time-range: switching ranges rebuilds and overwrites the
+same cache file, it never proliferates into one file per range -- see get_rank_aggregate()). The
+result is a flat, parent-linked row list in the same canonical shape
+stage4_rocprofsys_common.merge_rank_trees() already produces for one rank
+(label/parent/tags/structural_drop_tags/count/self_sum/sum) -- tool-independent: every row and
+every tag stays, nothing is dropped or renamed for any particular tool's convenience.
+GPU-dispatch-detail columns (grid_size, workgroup_size, ...) deliberately do NOT survive the merge
+-- once N raw launches at one call site collapse into one count, there's no single meaningful value
+to keep, and no current stage5 view consumes them anyway.
 
-Functions: build_rank_aggregate(), get_rank_aggregate().
+Functions: build_rank_aggregate(), get_rank_aggregate(), get_rank_time_extent().
 
 Deliberately excludes kernel-owner-name decoding itself (kernel_owner_label(),
 stage4_rocprofsys_common.py) -- that's a pure string transform with no trace-format dependency,
@@ -28,16 +32,65 @@ import os
 from stage1_rocprofsys_trace import LABEL_KEY, attach_ancestry, parse_trace_csv
 from stage3_rocprofsys_trace import tag_for_category, tag_rows
 from stage4_rocprofsys_common import flatten_tree, kernel_owner_label, merge_rank_trees
+import stage6_time_range_config
+
+
+def _compute_time_extent(rows):
+    """(start, end) -- this rank's true, UNFILTERED time extent (the earliest ts and the latest
+    ts+dur across every raw call instance), or (0.0, 0.0) for an empty rows list. Must be called on
+    the raw rows before any --time-range clipping runs (_clip_rows_to_time_ranges() below) --
+    that's the whole point: this fact stays independent of whatever range is currently active, so a
+    report can always show the real, full span a trace covers, not just whatever window it was
+    asked to filter down to."""
+    if not rows:
+        return (0.0, 0.0)
+    return (min(r["ts"] for r in rows), max(r["ts"] + r["dur"] for r in rows))
+
+
+def _overlap_with_ranges(ts, dur, ranges):
+    """(clipped_width, touches) -- clipped_width is the total duration of [ts, ts+dur) that falls
+    within any of the given (already-canonical, disjoint) ranges; touches is a separate closed-
+    interval intersection test, True even for a single touching instant (ts == some range's start
+    or end) where clipped_width would otherwise be 0 -- needed so a zero-duration event landing
+    exactly on a range boundary isn't misclassified as "never touched the range" just because it
+    has no width to clip."""
+    row_end = ts + dur
+    width = 0.0
+    touches = False
+    for start, end in ranges:
+        lo = float("-inf") if start is None else start
+        hi = float("inf") if end is None else end
+        overlap_start = max(ts, lo)
+        overlap_end = min(row_end, hi)
+        if overlap_end > overlap_start:
+            width += overlap_end - overlap_start
+            touches = True
+        elif overlap_end == overlap_start:
+            touches = True
+    return width, touches
+
+
+def _clip_rows_to_time_ranges(rows, ranges):
+    """Mutates every row's "dur" down to its total overlap with `ranges`, and stamps a transient
+    "_touches_range" bool _synthesize_self_sum() below reads to decide "count". Deliberately never
+    touches "ts" -- _reanchor_kernels_by_owner_and_time() (below, later in build_rank_aggregate())
+    depends on every row's real, unclamped start time for its bisect-based "most recent same-owner
+    instance on this thread" search; clamping ts here would corrupt that chronological ordering."""
+    for row in rows:
+        width, touches = _overlap_with_ranges(row["ts"], row["dur"], ranges)
+        row["dur"] = width
+        row["_touches_range"] = touches
 
 
 def _synthesize_self_sum(rows):
-    """Sets count=1, sum=dur, self_sum=dur minus the sum of *structural* children's dur (children
-    as Perfetto/stage1 already resolved them via parent_slice_id) on every row. Must run before
-    any corr_id-based reparenting (_attach_kernels_by_corr_id()) -- a kernel-dispatch row about to
-    be reparented onto its launch site isn't nested in wall-clock time the way a true structural
-    child is (the GPU dispatch typically executes concurrently with, not strictly inside, the host
-    launch call), so computing self_sum afterward would wrongly subtract a concurrently-running
-    kernel's duration from its launcher's own self time."""
+    """Sets count=1 (0 if a --time-range is active and this row never overlapped it -- see
+    _clip_rows_to_time_ranges() above), sum=dur, self_sum=dur minus the sum of *structural*
+    children's dur (children as Perfetto/stage1 already resolved them via parent_slice_id) on every
+    row. Must run before any corr_id-based reparenting (_attach_kernels_by_corr_id()) -- a
+    kernel-dispatch row about to be reparented onto its launch site isn't nested in wall-clock time
+    the way a true structural child is (the GPU dispatch typically executes concurrently with, not
+    strictly inside, the host launch call), so computing self_sum afterward would wrongly subtract
+    a concurrently-running kernel's duration from its launcher's own self time."""
     children_by_parent_id = {}
     for row in rows:
         parent = row["parent"]
@@ -45,7 +98,7 @@ def _synthesize_self_sum(rows):
             children_by_parent_id.setdefault(id(parent), []).append(row)
 
     for row in rows:
-        row["count"] = 1
+        row["count"] = 0 if row.pop("_touches_range", True) is False else 1
         row["sum"] = row["dur"]
         children_dur = sum(child["dur"] for child in children_by_parent_id.get(id(row), []))
         row["self_sum"] = row["dur"] - children_dur
@@ -176,12 +229,19 @@ def _reanchor_kernels_by_owner_and_time(rows):
 
 
 def build_rank_aggregate(csv_paths, rank_key):
-    """The one expensive path for one rank: parse + ancestry (unchanged stage1), self time
-    synthesis, the corr_id kernel join, tag_rows() (stage3), and the intra-rank merge_rank_trees()
-    collapse of repeated same-position calls -- a single-rank call is just merge_rank_trees() with
-    len(ranks) == 1, performing the same by-id(parent)+label merge it always does, whether merging
-    one rank's own repeated calls or several ranks' trees. Returns the flat, parent-linked,
-    tool-independent row list get_rank_aggregate() caches.
+    """The one expensive path for one rank: parse + ancestry (unchanged stage1), this rank's real
+    unfiltered time extent, an optional clip to the currently active --time-range
+    (stage6_time_range_config.active_ranges()), self time synthesis, the corr_id kernel join,
+    tag_rows() (stage3), and the intra-rank merge_rank_trees() collapse of repeated same-position
+    calls -- a single-rank call is just merge_rank_trees() with len(ranks) == 1, performing the
+    same by-id(parent)+label merge it always does, whether merging one rank's own repeated calls or
+    several ranks' trees. Returns (flat_rows, extent): flat_rows is the flat, parent-linked,
+    tool-independent row list get_rank_aggregate() caches; extent is this rank's real, unfiltered
+    (start, end) span from _compute_time_extent(), also cached alongside it.
+
+    The time-range clip runs right after the extent is computed and before self-time synthesis --
+    clipping "dur" first means self_sum/sum naturally reflect only the in-range portion of each
+    call once synthesized, with no separate range-awareness needed anywhere downstream.
 
     tag_rows() runs AFTER both the corr_id join and the owner+time reanchor, not before -- a
     kernel-dispatch row is untethered (parent is None) until the join reparents it, and tag_rows()'s
@@ -196,9 +256,16 @@ def build_rank_aggregate(csv_paths, rank_key):
     _reanchor_kernels_by_owner_and_time() runs right after the corr_id join, on the still-raw,
     per-instance rows -- before the intra-rank merge, not after (see its own docstring): only at
     this stage does each instance still carry the "ts"/"tid" the technique depends on; merging
-    first would collapse exactly the timestamps it needs."""
+    first would collapse exactly the timestamps it needs. It depends on every row's real,
+    UNCLAMPED "ts", which is why the time-range clip above only ever touches "dur"."""
     rows = parse_trace_csv(csv_paths)
     attach_ancestry(rows)
+
+    extent = _compute_time_extent(rows)
+
+    ranges = stage6_time_range_config.active_ranges()
+    if ranges:
+        _clip_rows_to_time_ranges(rows, ranges)
 
     _synthesize_self_sum(rows)
     _attach_kernels_by_corr_id(rows)
@@ -208,7 +275,7 @@ def build_rank_aggregate(csv_paths, rank_key):
     roots = [r for r in rows if r["parent"] is None]  # recomputed AFTER reparenting above
     merged_roots = merge_rank_trees([(rank_key, rows, roots)], label_key=LABEL_KEY)
     flat_rows = _flatten_rank_merge(merged_roots, rank_key)
-    return flat_rows
+    return flat_rows, extent
 
 
 def _cache_path(csv_paths, rank_key, cache_dir):
@@ -254,34 +321,80 @@ def _decode_rows(encoded):
     return rows
 
 
+def _encode_ranges(ranges):
+    """None (no --time-range active) stays None; otherwise the canonical [(start_or_None,
+    end_or_None), ...] tuple list becomes a JSON-safe [[start_or_None, end_or_None], ...] -- the
+    exact shape stored in the cache and compared against on every read (see get_rank_aggregate())."""
+    if not ranges:
+        return None
+    return [[start, end] for start, end in ranges]
+
+
 def get_rank_aggregate(csv_paths, rank_key, cache_dir=None):
     """The cache-aware wrapper every other trace-pipeline module calls instead of
     build_rank_aggregate() directly. cache_dir defaults to the directory of the first csv_paths
     entry (cached alongside the raw CSV). Cache file: <cache_dir>/<rank_key>.agg.json -- keyed on
     rank_key, not source filename(s), since one rank's input can be a single file or a
-    category-partitioned set and rank_key is the one identity stable across either shape. A valid
-    cache (exists, mtime >= every csv_paths entry's mtime) is decoded and returned; missing, stale,
-    or unreadable (corrupt JSON, unexpected schema) falls back to a fresh build_rank_aggregate()
-    call, matching stage6_run_metadata.load_json_file()'s "best-effort, never raises" convention --
-    a cache-read problem should never be the reason this function fails. The freshly-built result
-    is written back to the cache (silently skipped on a write failure -- the cache is a pure
-    performance optimization, never required for correctness)."""
+    category-partitioned set and rank_key is the one identity stable across either shape -- always
+    this same one file, never one per distinct --time-range (see below).
+
+    A valid cache hit requires: the file exists, its mtime >= every csv_paths entry's mtime, its
+    payload is a dict (not this module's own pre-this-plan bare-array shape, which is treated as a
+    graceful miss and rebuilt rather than crashing), and its stored "ranges" matches the currently
+    active one exactly. That last check means switching --time-range (or moving between a range and
+    no range at all) always rebuilds -- but always overwrites this SAME file, never creates a
+    second one: the cache holds at most one rank's aggregate for whichever range was used most
+    recently, on purpose, so repeat runs against one range (the common case -- e.g. running the
+    hotspots/calltree/pop-metrics tools back to back against the same window) stay fast without the
+    cache directory accumulating one file per range ever tried.
+
+    Any cache problem (missing, stale, wrong range, corrupt JSON, unexpected schema) falls back to
+    a fresh build_rank_aggregate() call, matching stage6_run_metadata.load_json_file()'s
+    "best-effort, never raises" convention -- a cache-read problem should never be the reason this
+    function fails. The freshly-built result is written back to the cache (silently skipped on a
+    write failure -- the cache is a pure performance optimization, never required for correctness).
+    Returns just the row list -- the same public contract as before this plan; get_rank_time_extent()
+    below is the accessor for the extent this now also computes and caches."""
     paths = [csv_paths] if isinstance(csv_paths, str) else csv_paths
     cache_file = _cache_path(csv_paths, rank_key, cache_dir)
+    active_ranges = stage6_time_range_config.active_ranges()
+    encoded_ranges = _encode_ranges(active_ranges)
 
     if os.path.exists(cache_file):
         try:
             source_mtime = max(os.path.getmtime(p) for p in paths)
             if os.path.getmtime(cache_file) >= source_mtime:
                 with open(cache_file) as f:
-                    return _decode_rows(json.load(f))
+                    payload = json.load(f)
+                if isinstance(payload, dict) and payload.get("ranges") == encoded_ranges:
+                    return _decode_rows(payload["rows"])
         except (OSError, json.JSONDecodeError, KeyError, IndexError, TypeError):
             pass
 
-    rows = build_rank_aggregate(csv_paths, rank_key)
+    rows, extent = build_rank_aggregate(csv_paths, rank_key)
     try:
         with open(cache_file, "w") as f:
-            json.dump(_encode_rows(rows), f)
+            json.dump({"ranges": encoded_ranges, "extent": list(extent), "rows": _encode_rows(rows)}, f)
     except OSError:
         pass
     return rows
+
+
+def get_rank_time_extent(csv_paths, rank_key, cache_dir=None):
+    """(start, end) -- this rank's real, UNFILTERED time extent, independent of any active
+    --time-range (see _compute_time_extent()). Calls get_rank_aggregate() first, which usually
+    guarantees a fresh cache file exists on disk (a hit, or a fresh build+write) by the time it
+    returns, then re-reads that same file's "extent" field directly rather than duplicating
+    get_rank_aggregate()'s own cache-freshness logic. get_rank_aggregate()'s own cache WRITE is
+    itself best-effort (silently skipped on a write failure -- see its docstring), so this file
+    might still not exist or might not decode; either falls back to building fresh directly, same
+    "a cache problem is never the reason this fails" convention as get_rank_aggregate() itself."""
+    get_rank_aggregate(csv_paths, rank_key, cache_dir=cache_dir)
+    cache_file = _cache_path(csv_paths, rank_key, cache_dir)
+    try:
+        with open(cache_file) as f:
+            payload = json.load(f)
+        return tuple(payload["extent"])
+    except (OSError, json.JSONDecodeError, KeyError, IndexError, TypeError):
+        _rows, extent = build_rank_aggregate(csv_paths, rank_key)
+        return extent

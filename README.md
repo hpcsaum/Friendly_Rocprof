@@ -345,10 +345,10 @@ https://perfetto.dev/docs/analysis/trace-processor for how to obtain it. Once yo
 directory:
 
 ```bash
-python3 postprocess/tools/extract_trace_hotspots.py <trace-csv-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all] [--unfiltered]
-python3 postprocess/tools/extract_trace_calltree.py <trace-csv-dir> [-o calltree.txt] [--max-depth N] \
+python3 postprocess/tools/extract_trace_hotspots.py <trace-csv-dir> [-o report.txt] [-n TOP_N | --threshold PCT | --all] [--unfiltered] [--time-range RANGE]
+python3 postprocess/tools/extract_trace_calltree.py <trace-csv-dir> [-o calltree.txt] [--max-depth N] [--time-range RANGE] \
   [--show-gpu-api] [--show-rocprofsys-internals] [--show-mpi-internals] [--show-compiler-runtime] [--show-all-internals]
-python3 postprocess/tools/extract_trace_pop_metrics.py <trace-csv-dir> [<more-trace-csv-dirs>...] [--scaling {strong,weak}] [-o report.txt]
+python3 postprocess/tools/extract_trace_pop_metrics.py <trace-csv-dir> [<more-trace-csv-dirs>...] [--scaling {strong,weak}] [-o report.txt] [--time-range RANGE]
 ```
 
 - **`extract_trace_hotspots.py`** — the trace-based equivalent of `extract_hotspots.py` above: one
@@ -367,6 +367,14 @@ python3 postprocess/tools/extract_trace_pop_metrics.py <trace-csv-dir> [<more-tr
   above, with the same `--scaling {strong,weak}` convention for multi-run studies; GPU-specific
   columns always appear here (a trace always has both CPU and GPU visibility from one source,
   unlike the summary-based tool's paired-`rocprofv3`-directory case).
+
+All three tools above also share `--time-range RANGE`, e.g. `--time-range 5:12.5` or
+`--time-range 0:5,20:` (comma-separated, each half optional: `START:` runs to the end, `:END` runs
+from the start) — restricts the report to one or more time windows, in seconds, letting you exclude
+startup/teardown or focus on a single iteration. A function straddling a window boundary still
+counts for the portion of its duration inside the window; `extract_trace_calltree.py`'s tree cuts a
+subtree with no overlap anywhere within it, while keeping the chain to any surviving descendant
+intact. Every report's header always states the window it reflects (the full run by default).
 
 ## Customizing noise filtering
 
