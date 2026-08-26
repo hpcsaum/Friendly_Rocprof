@@ -107,8 +107,9 @@ the sample and trace pipelines, the same common/format-specific split `stage3` u
   parsed at most once per rank.
 - `stage4_rocprofsys_trace_flat.py`/`stage4_rocprofsys_trace_tree.py` — thin: both call
   `get_rank_aggregate()` per rank and derive their own view (flat entries/per-rank
-  label→value/per-rank timing summary; a cross-rank merged tree, via `merge_rank_trees()` again)
-  purely from its output, with no aggregation logic of their own.
+  label→value/per-rank timing summary/GPU-kernel-only flat entries, via `aggregate_gpu_kernels()`;
+  a cross-rank merged tree, via `merge_rank_trees()` again) purely from its output, with no
+  aggregation logic of their own.
 - `stage4_rocprofsys_trace_ranks.py` — `discover_ranks()`: scans a directory for this project's
   documented trace-CSV naming convention and groups files by rank, ready to feed the two modules
   above.
@@ -149,6 +150,11 @@ same. The shapes in use today:
   `stage4_rocprofsys_sample_flat.aggregate()`/`stage4_rocprofv3.aggregate()` (sample pipeline) or
   `stage4_rocprofsys_trace_flat.aggregate()` (trace pipeline); consumed by
   `stage5_cpu_hotspots_table.py`/`stage5_gpu_hotspots_table.py`/`stage5_fused_hotspots_table.py`.
+  `stage4_rocprofsys_trace_flat.aggregate_gpu_kernels()` produces the same shape (no `domain`
+  field, since every entry is already GPU-kernel-only), consumed directly by
+  `select_hotspot_kernels.py`'s `--trace-dir` source via `stage5_table_render.select_entries()`
+  instead of a stage5 table view -- kernel-name selection for `rocprof-compute`, not a rendered
+  report.
 - **tree node** (calltree): `{label, parent, children, per_rank, tags, structural_drop_tags,
   static_children}`. Produced by `stage4_rocprofsys_common.merge_rank_trees()`, shared by both
   pipelines; consumed by `stage5_tree_render.py`'s rendering functions.
@@ -204,6 +210,12 @@ shape entirely: `select_instrumented_functions.py`/`select_hotspot_kernels.py` d
 report at all (they print label/regex pairs for `instrument_hotspots.sh` to consume), and
 `convert_trace_to_csv.py` doesn't touch stage1–6 at all -- it's the trace pipeline's own stage 0,
 producing the CSV files `stage1_rocprofsys_trace.py` reads, not consuming them.
+`select_hotspot_kernels.py` has a third source alongside `--report`/`--output-dir`: `--trace-dir`
+reads GPU-kernel-only labels straight from the trace-CSV aggregation pipeline (via
+`stage4_rocprofsys_trace_flat.aggregate_gpu_kernels()`), independent of any rendered report --
+needed because `extract_trace_hotspots.py`'s own CPU+GPU-fused report layout isn't the
+`GPU_HOTSPOTS_COLUMNS` format its other two sources parse. This is what
+`scripts/profile_traced_hotspot_kernels.sh` uses.
 
 ## Cross-stage imports and `_stage_paths.py`
 

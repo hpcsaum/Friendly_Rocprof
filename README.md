@@ -287,6 +287,32 @@ python3 postprocess/tools/select_hotspot_kernels.py --output-dir <rocprofv3-outp
 python3 postprocess/tools/select_hotspot_kernels.py --report results/run1/hotspots.txt
 ```
 
+### Kernel deep-dive from an existing trace — `profile_traced_hotspot_kernels.sh`
+
+Combines the two tools above: if you already have a trace directory (from `instrument_hotspots.sh
+trace` or `profile_traced_hotspots.sh`), this skips the fresh `rocprofv3` scan
+`profile_hotspot_kernels.sh` would otherwise run — it resolves the biggest GPU kernels straight
+from the trace's own recorded data, then profiles just those with `rocprof-compute`, the same way.
+
+```bash
+# resolve hotspot kernels from an existing trace, then profile them in detail
+scripts/profile_traced_hotspot_kernels.sh --trace-dir results/run1/trace -- ./app arg1 arg2
+
+# restrict kernel selection to one window of the trace (e.g. a steady-state iteration)
+scripts/profile_traced_hotspot_kernels.sh --trace-dir results/run1/trace --time-range 20:45 -- ./app arg1 arg2
+
+# MPI: same --mpi convention as the other tools
+scripts/profile_traced_hotspot_kernels.sh --trace-dir results/run1/trace --mpi "mpirun -np 4" -- ./app arg1 arg2
+```
+
+Same `--top`/`--threshold`/`--all`, `--all-dispatches` (2nd-call-only by default), `--no-summary`,
+and MPI-safety-gate behavior as `profile_hotspot_kernels.sh`. If the trace directory doesn't have
+converted CSVs yet, they're produced first (via `convert_trace_to_csv.py`).
+
+```bash
+python3 postprocess/tools/select_hotspot_kernels.py --trace-dir results/run1/trace [-n TOP_N | --threshold PCT | --all] [--all-dispatches] [--time-range 20:45]
+```
+
 ### Computing POP metrics — `extract_pop_metrics.py`
 
 Post-processing only, no launcher script: point this at output directories you've already

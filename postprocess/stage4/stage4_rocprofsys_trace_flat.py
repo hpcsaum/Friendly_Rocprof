@@ -10,7 +10,8 @@ stage5_pop_metrics_table.compute_metrics_from_per_rank(), all three unchanged. U
 pipeline's paired-rocprofv3 case, GPU visibility is always built into the same trace -- gpu_busy_time
 is never None here, it just may be 0.0 when a rank has no gpu_kernel-tagged rows.
 
-Functions: aggregate(), aggregate_per_rank(), gather_timing_summary_per_rank().
+Functions: aggregate(), aggregate_per_rank(), gather_timing_summary_per_rank(),
+aggregate_gpu_kernels().
 """
 
 from stage4_rocprofsys_trace_aggregate import get_rank_aggregate
@@ -87,6 +88,45 @@ def aggregate_per_rank(rank_inputs, cache_dir=None, unfiltered=False):
         per_rank_totals.append(totals)
 
     return per_rank_totals, [rank_key for rank_key, _rows in ranks]
+
+
+def aggregate_gpu_kernels(rank_inputs, cache_dir=None):
+    """GPU-kernel-only by-label totals across every rank -- returns (entries, total_kernel_time),
+    entries being [{"label", "count", "sum", "self_sum", "pct_self", "pct_total"}]. Unlike
+    aggregate(), rows are filtered to "gpu_kernel" in row["tags"] before accumulating -- aggregate()
+    itself can't be post-filtered for this: its own "domain" field collapses gpu_kernel together
+    with gpu_api/gpu_memcpy, so a launch call like hipLaunchKernel would wrongly survive a
+    domain=="GPU" filter. pct_total is against total_kernel_time (the sum of self_sum across these
+    kernel-only entries), not total application runtime -- the same convention
+    stage4_rocprofv3.aggregate() already uses to rank kernels for select_hotspot_kernels.py's
+    rocprofv3-output-dir path."""
+    ranks = _rank_rows(rank_inputs, cache_dir)
+
+    totals = {}
+    for _rank_key, rows in ranks:
+        for row in rows:
+            if "gpu_kernel" not in row["tags"]:
+                continue
+            entry = totals.setdefault(row["label"], {"count": 0, "sum": 0.0, "self_sum": 0.0})
+            entry["count"] += row["count"]
+            entry["sum"] += row["sum"]
+            entry["self_sum"] += row["self_sum"]
+
+    total_kernel_time = sum(entry["self_sum"] for entry in totals.values())
+
+    entries = []
+    for label, entry in totals.items():
+        pct_total = (entry["self_sum"] / total_kernel_time * 100.0) if total_kernel_time > 0 else None
+        pct_self = (entry["self_sum"] / entry["sum"] * 100.0) if entry["sum"] > 0 else None
+        entries.append({
+            "label": label,
+            "count": entry["count"],
+            "sum": entry["sum"],
+            "self_sum": entry["self_sum"],
+            "pct_self": pct_self,
+            "pct_total": pct_total,
+        })
+    return entries, total_kernel_time
 
 
 def gather_timing_summary_per_rank(rank_inputs, cache_dir=None):

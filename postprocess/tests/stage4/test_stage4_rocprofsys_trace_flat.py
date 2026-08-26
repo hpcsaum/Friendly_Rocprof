@@ -24,6 +24,11 @@ RANK_INPUTS = [
     ("r1", os.path.join(TWO_RANK_DIR, "rank1.csv")),
 ]
 
+KERNEL_SELECTION_DIR = os.path.join(FIXTURES, "trace_gpu_kernel_selection")
+KERNEL_SELECTION_RANK_INPUTS = [
+    ("r0", os.path.join(KERNEL_SELECTION_DIR, "perfetto-trace-0.csv")),
+]
+
 
 def by_label(entries, label):
     return next(e for e in entries if e["label"] == label)
@@ -111,6 +116,42 @@ class GatherTimingSummaryPerRankTests(unittest.TestCase):
         metrics = compute_metrics_from_per_rank(summary)
         self.assertAlmostEqual(metrics["load_balance"], 19.0 / 2 / 10.0)
         self.assertIsNotNone(metrics["gpu_utilization"])
+
+
+class AggregateGpuKernelsTests(unittest.TestCase):
+    def test_only_gpu_kernel_tagged_labels_are_included(self):
+        entries, _total = flat.aggregate_gpu_kernels(KERNEL_SELECTION_RANK_INPUTS)
+        self.assertEqual(
+            {e["label"] for e in entries}, {"kernel_a.kd", "kernel_b.kd", "kernel_c.kd"}
+        )
+
+    def test_cpu_and_gpu_api_labels_are_excluded_even_when_bigger(self):
+        # cpu_heavy_function's self_sum (60.0) dwarfs every kernel's, and hipLaunchKernel is
+        # domain-GPU in aggregate() despite being a launch call, not a dispatch -- neither may
+        # leak into a kernel-only result.
+        entries, _total = flat.aggregate_gpu_kernels(KERNEL_SELECTION_RANK_INPUTS)
+        labels = {e["label"] for e in entries}
+        self.assertNotIn("cpu_heavy_function", labels)
+        self.assertNotIn("hipLaunchKernel", labels)
+        self.assertNotIn("main", labels)
+
+    def test_counts_and_sums_add_up_per_kernel(self):
+        entries, _total = flat.aggregate_gpu_kernels(KERNEL_SELECTION_RANK_INPUTS)
+        kernel_a = by_label(entries, "kernel_a.kd")
+        self.assertEqual(kernel_a["count"], 2)
+        self.assertAlmostEqual(kernel_a["self_sum"], 20.0)
+        kernel_b = by_label(entries, "kernel_b.kd")
+        self.assertEqual(kernel_b["count"], 1)
+        self.assertAlmostEqual(kernel_b["self_sum"], 5.0)
+
+    def test_pct_total_is_against_kernel_only_time_not_app_runtime(self):
+        # Total kernel-only time is 20 (kernel_a) + 5 (kernel_b) + 2 (kernel_c) = 27, NOT the
+        # ~100s the app's own "main" root spans -- ranking kernels against each other, not
+        # diluted by CPU-side time.
+        entries, total_kernel_time = flat.aggregate_gpu_kernels(KERNEL_SELECTION_RANK_INPUTS)
+        self.assertAlmostEqual(total_kernel_time, 27.0)
+        kernel_a = by_label(entries, "kernel_a.kd")
+        self.assertAlmostEqual(kernel_a["pct_total"], 20.0 / 27.0 * 100.0)
 
 
 if __name__ == "__main__":

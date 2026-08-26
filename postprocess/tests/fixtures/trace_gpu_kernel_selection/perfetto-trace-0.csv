@@ -1,0 +1,13 @@
+pid,process_name,tid,thread_name,slice_id,parent_slice_id,depth,name,category,ts,dur,corr_id,blockDimX,gridDimX,grid_size,workgroup_size
+1000,./app,1000,main,1,,0,main,host,0,100000000000,,,,,
+1000,./app,1000,main,2,1,1,cpu_heavy_function,ompt,0,60000000000,,,,,
+1000,./app,1000,main,3,1,1,hipLaunchKernel,rocm_hip_api,60000000000,1000000000,1,64,256,,
+1000,./app,1000,main,4,1,1,hipLaunchKernel,rocm_hip_api,61000000000,1000000000,2,64,256,,
+1000,./app,1000,main,5,1,1,hipLaunchKernel,rocm_hip_api,62000000000,1000000000,3,64,256,,
+1000,./app,1000,main,6,1,1,hipLaunchKernel,rocm_hip_api,63000000000,1000000000,4,64,256,,
+1000,./app,1000,main,7,1,1,hipLaunchKernel,rocm_hip_api,64000000000,1000000000,5,64,256,,
+1000,./app,,,8,,0,kernel_a.kd,rocm_kernel_dispatch,60500000000,10000000000,1,,,"(256,1,1)","(64,1,1)"
+1000,./app,,,9,,0,kernel_a.kd,rocm_kernel_dispatch,61500000000,10000000000,2,,,"(256,1,1)","(64,1,1)"
+1000,./app,,,10,,0,kernel_b.kd,rocm_kernel_dispatch,62500000000,5000000000,3,,,"(256,1,1)","(64,1,1)"
+1000,./app,,,11,,0,kernel_c.kd,rocm_kernel_dispatch,63500000000,1000000000,4,,,"(256,1,1)","(64,1,1)"
+1000,./app,,,12,,0,kernel_c.kd,rocm_kernel_dispatch,64500000000,1000000000,5,,,"(256,1,1)","(64,1,1)"

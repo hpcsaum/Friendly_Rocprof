@@ -61,6 +61,7 @@
 | 2026-08-21 | Plan 3.11: new `scripts/profile_traced_hotspots.sh` chains `instrument_hotspots.sh trace` -> `convert_trace_to_csv.py` -> `extract_trace_hotspots.py`/`extract_trace_calltree.py` into one invocation, resolving a real flag-namespace collision between instrumentation-selection and final-report-selection flags by splitting them into bare vs `--instrument-*`-prefixed sets; also fixes a real `instrument_hotspots.sh` bug (the instrumented binary was never copied into the script's own output directory) -- see full accounting below |
 | 2026-08-21 | Plan 3.12: `select_hotspot_functions.py` renamed to `select_instrumented_functions.py` and widened -- a selected hotspot's immediate real caller is now pulled in by default (`--ancestor-depth`, via new generic `stage4_rocprofsys_common.expand_labels_with_ancestors()`), and a new `--gpu-output-dir` resolves hot GPU kernels into their real CPU owner (`resolve_kernel_owners()`), fixing GPU kernels/MPI calls losing their real caller's instrumentation regardless of that caller's own hotspot status; new `stage5_calltree_text_parser.py` lets `--report` mode support the same ancestor-pulling by reconstructing tree structure from a sibling `calltree.txt`'s rendered text -- see full accounting below |
 | 2026-08-26 | Plan 3.13: new `--time-range` flag on all three trace-CSV report tools -- restricts hotspots/pop-metrics/calltree output to one or more time windows (comma-separated, open-ended halves allowed), clipping a straddling call's duration to its in-window portion and cutting a call-tree subtree with zero overlap anywhere within it while keeping the ancestor chain to any surviving descendant intact; new `stage6_time_range_config.py` (mirroring `stage6_noise_config.py`'s process-wide-singleton pattern) also builds every report's now-always-printed "time range: ..." header note, the first instance of a deliberate new `stage6 -> stage4` import exception for non-table report output -- see full accounting below |
+| 2026-08-26 | Plan 3.14: new `scripts/profile_traced_hotspot_kernels.sh` runs a `rocprof-compute` kernel deep-dive from a trace directory that already exists, instead of paying for a fresh `rocprofv3` scan -- new `select_hotspot_kernels.py --trace-dir` source (backed by new `stage4_rocprofsys_trace_flat.aggregate_gpu_kernels()`) resolves hot kernel names straight from the trace-CSV pipeline, since the trace tools' own CPU+GPU-fused report layout isn't parseable by the existing `--report` source; also gains `--time-range` for scoping kernel selection to one window of the trace -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -2858,3 +2859,61 @@ entirely outside every given range, and -- the one case that actually required t
 extends beyond its (entirely-out-of-range) launch call's span, confirming the launch call stays
 visible as the connecting ancestor rather than being wrongly pruned. See
 `docs/plans/3.13-time-range-filtering.md` for the full accounting.
+
+## 2026-08-26 — Plan 3.14: `profile_traced_hotspot_kernels.sh`, a `rocprof-compute` deep-dive fed by an existing trace directory
+
+`scripts/profile_hotspot_kernels.sh` (plan 1.5) resolves hot GPU kernels by running its own fresh
+`rocprofv3` auto-profiling scan before handing them to `rocprof-compute` -- redundant if a
+`rocprof-sys` trace directory (from `instrument_hotspots.sh trace` or `profile_traced_hotspots.sh`,
+plan 3.11) already exists and already has everything needed to identify the same hot kernels. This
+plan combines the two: a new `scripts/profile_traced_hotspot_kernels.sh` starts from an existing
+trace directory, resolves its hottest kernels straight from the trace's own recorded data, and runs
+the same `rocprof-compute profile`/`analyze` pipeline `profile_hotspot_kernels.sh` already uses.
+
+The one real design gap: `select_hotspot_kernels.py` (the shared kernel-name resolver both scripts
+use) only understood two sources going in -- a `GPU_HOTSPOTS_COLUMNS`-format report or a raw
+`rocprofv3` output directory -- and neither fits a trace directory. `extract_trace_hotspots.py`'s
+own `hotspots.txt` uses a different, CPU+GPU-fused column layout (`FUSED_HOTSPOTS_COLUMNS`) with no
+per-section "GPU kernel hotspots" header the existing report parser looks for, so it can't just be
+pointed at that report. The fix is a third source, `--trace-dir`, that reads kernel names directly
+from the trace-CSV aggregation pipeline instead of any rendered report text: a new
+`stage4_rocprofsys_trace_flat.aggregate_gpu_kernels()` filters raw per-rank rows to
+`"gpu_kernel" in row["tags"]` *before* accumulating into per-label totals -- necessary because the
+existing `aggregate()`'s own `"domain"` field collapses `gpu_kernel` together with `gpu_api`/
+`gpu_memcpy`, so a launch call like `hipLaunchKernel` would wrongly survive a `domain=="GPU"`
+post-filter. `pct_total` on these entries is computed against the kernel-only total, not total
+application runtime, matching how the existing rocprofv3-based selector already ranks kernels
+against total kernel-dispatch time. The new function feeds directly into the same
+`stage5_table_render.select_entries()` helper the rocprofv3 path already uses, since both shapes
+match the same `{label, count, sum, self_sum, pct_self, pct_total}` flat-entry contract.
+
+Per the user's explicit direction, `--time-range` (plan 3.13) is in scope here too: both the new
+script and `select_hotspot_kernels.py --trace-dir` accept it, so kernel selection can be scoped to
+e.g. a single steady-state iteration instead of diluting the ranking with init/teardown time. This
+required no new plumbing beyond wiring `stage6_time_range_config.add_cli_argument()`/
+`configure_from_args()` into `select_hotspot_kernels.py`'s own `main()` -- the process-wide global
+config `get_rank_aggregate()` already reads (plan 3.13's whole point) means `aggregate_gpu_kernels()`
+automatically respects whatever range is active, with no time-range-specific code of its own. The
+on-disk `.agg.json` cache is shared safely across every consumer (`aggregate()`,
+`aggregate_per_rank()`, `gather_timing_summary_per_rank()`, and this new function): each reads the
+same cached, unfiltered row set and applies its own in-memory filter afterward.
+
+The new script itself mirrors `profile_hotspot_kernels.sh`'s structure and MPI multi-rank safety
+gate verbatim (rocprof-compute's own multi-rank output isolation is confirmed absent through
+rocprofiler-compute 3.4.0/ROCm 7.2.x, so the gate probes the installed tool's own `--help` output
+and the actual `--mpi` launch command's rank count before proceeding), and reuses
+`profile_traced_hotspots.sh`'s "trace dir, convert CSVs if not already present" pattern for its
+required `--trace-dir` argument -- unlike that script's own non-fatal report steps, a conversion
+failure here is fatal, since kernel selection has nothing to read without it.
+
+Verification: full suite grew to 750 tests, all green, including a new hand-crafted
+`trace_gpu_kernel_selection` fixture with a CPU function whose self-time dwarfs every kernel's (to
+prove the tag filter, not a `domain`/magnitude heuristic, is what excludes it), a kernel dispatched
+only once (default-exclusion / `--all-dispatches` case), and two more kernels at different self-time
+weights (for `--top`/`--threshold` ranking). Real-data verification against the same 4-rank
+`Heat_Convection_Solver` trace plan 3.13 used: `select_hotspot_kernels.py --trace-dir` resolved real
+kernel names (e.g. `jacobi_residual$pressure_solver_mod_$ck_L69_8.kd`) with no CPU-side labels ever
+appearing, and a `--time-range` window covering roughly the middle third of the real trace's
+~92-second span visibly changed the top-5 ranking relative to the whole-run selection --
+`rocprof-compute profile`/`analyze` themselves remain unverifiable on this CPU-only dev machine, per
+`CLAUDE.md`'s standing environment-constraints note.
