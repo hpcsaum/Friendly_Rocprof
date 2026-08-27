@@ -1,18 +1,11 @@
-import importlib.util
 import os
 import sys
 import unittest
 
-POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-MODULE_PATH = os.path.join(POSTPROCESS_DIR, "stage4", "stage4_rocprofsys_sample_tree.py")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
-import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
-
-spec = importlib.util.spec_from_file_location("stage4_rocprofsys_sample_tree", MODULE_PATH)
-s4t = importlib.util.module_from_spec(spec)
-sys.modules["stage4_rocprofsys_sample_tree"] = s4t
-spec.loader.exec_module(s4t)
+s4t = load_module_by_path("stage4_rocprofsys_sample_tree", "stage4", "stage4_rocprofsys_sample_tree.py")
 
 from stage1_run_dirs import resolve_run_dirs  # noqa: E402  (needs sys.path insert above first)
 from stage4_rocprofsys_common import caller_chains_for_label, flatten_tree, merge_rank_trees  # noqa: E402
@@ -26,7 +19,7 @@ SAMPLING_FALLBACK_DIR = os.path.join(FIXTURES, "calltree_sampling_fallback")
 RANK = "r0"  # every hand-built test tree in this file simulates one rank
 
 
-def make_row(label, parent=None, count=1, self_sum=0.0, total_sum=None, gpu=False):
+def make_merged_tree_node(label, parent=None, count=1, self_sum=0.0, total_sum=None, gpu=False):
     """A minimal hand-built merged-tree node -- same shape merge_rank_trees()
     produces (a "per_rank" dict, not flat count/self_sum/sum fields), without
     needing a fixture file or a real multi-rank merge. Every test in this
@@ -79,9 +72,9 @@ class IsKernelLaunchTests(unittest.TestCase):
 
 class KernelAnchorAttributionTests(unittest.TestCase):
     def test_single_anchor_gets_full_attribution(self):
-        main = make_row("main")
-        compute = make_row("compute", parent=main)
-        launch = make_row("hipLaunchKernel", parent=compute, count=100)
+        main = make_merged_tree_node("main")
+        compute = make_merged_tree_node("compute", parent=main)
+        launch = make_merged_tree_node("hipLaunchKernel", parent=compute, count=100)
         rows = [main, compute, launch]
 
         unattached = s4t.attach_kernel_summaries(rows, {RANK: {"MyKernel": (100, 5.0)}}, NEVER_PRUNED)
@@ -95,11 +88,11 @@ class KernelAnchorAttributionTests(unittest.TestCase):
         self.assertEqual(kernel_node["static_children"][0]["label"], "MyKernel")
 
     def test_multiple_anchors_split_proportionally_by_launch_count(self):
-        main = make_row("main")
-        compute_a = make_row("compute_a", parent=main)
-        compute_b = make_row("compute_b", parent=main)
-        launch_a = make_row("hipLaunchKernel", parent=compute_a, count=300)
-        launch_b = make_row("hipLaunchKernel", parent=compute_b, count=200)
+        main = make_merged_tree_node("main")
+        compute_a = make_merged_tree_node("compute_a", parent=main)
+        compute_b = make_merged_tree_node("compute_b", parent=main)
+        launch_a = make_merged_tree_node("hipLaunchKernel", parent=compute_a, count=300)
+        launch_b = make_merged_tree_node("hipLaunchKernel", parent=compute_b, count=200)
         rows = [main, compute_a, compute_b, launch_a, launch_b]
 
         s4t.attach_kernel_summaries(rows, {RANK: {"K": (500, 10.0)}}, NEVER_PRUNED)
@@ -111,7 +104,7 @@ class KernelAnchorAttributionTests(unittest.TestCase):
         self.assertIn("~40% estimate: this site issued 200/500", node_b["label"])
 
     def test_no_launch_call_anywhere_returns_remainder_unattached(self):
-        main = make_row("main")
+        main = make_merged_tree_node("main")
         rows = [main]
         unattached = s4t.attach_kernel_summaries(rows, {RANK: {"K": (1, 1.0)}}, NEVER_PRUNED)
         self.assertEqual(unattached, {"K"})
@@ -122,10 +115,10 @@ class KernelAnchorAttributionTests(unittest.TestCase):
         # owner subroutine exists, but it sits far from the nearest
         # hipLaunchKernel call (a different, unrelated subroutine) -- the
         # kernel must attach to its real owner, not the launch-call anchor.
-        main = make_row("main")
-        unrelated_caller = make_row("unrelated_caller", parent=main)
-        launch = make_row("hipLaunchKernel", parent=unrelated_caller, count=1)
-        jacobi_sweep = make_row("jacobi_sweep$pressure_solver_mod_", parent=main, count=716)
+        main = make_merged_tree_node("main")
+        unrelated_caller = make_merged_tree_node("unrelated_caller", parent=main)
+        launch = make_merged_tree_node("hipLaunchKernel", parent=unrelated_caller, count=1)
+        jacobi_sweep = make_merged_tree_node("jacobi_sweep$pressure_solver_mod_", parent=main, count=716)
         rows = [main, unrelated_caller, launch, jacobi_sweep]
 
         kernels = {RANK: {"jacobi_sweep$pressure_solver_mod_$ck_L36_1_cce$noloop$form": (716, 7.25)}}
@@ -135,9 +128,9 @@ class KernelAnchorAttributionTests(unittest.TestCase):
         self.assertEqual(unrelated_caller["static_children"], [])
 
     def test_unmatched_kernel_falls_back_to_launch_anchor(self):
-        main = make_row("main")
-        compute = make_row("compute", parent=main)
-        launch = make_row("hipLaunchKernel", parent=compute, count=5)
+        main = make_merged_tree_node("main")
+        compute = make_merged_tree_node("compute", parent=main)
+        launch = make_merged_tree_node("hipLaunchKernel", parent=compute, count=5)
         rows = [main, compute, launch]
 
         unattached = s4t.attach_kernel_summaries(rows, {RANK: {"UnnamedKernel": (5, 1.0)}}, NEVER_PRUNED)
@@ -145,10 +138,10 @@ class KernelAnchorAttributionTests(unittest.TestCase):
         self.assertNotEqual(compute["static_children"], [])
 
     def test_mixed_named_and_unmatched_kernels_split_correctly(self):
-        main = make_row("main")
-        unrelated_caller = make_row("unrelated_caller", parent=main)
-        launch = make_row("hipLaunchKernel", parent=unrelated_caller, count=1)
-        jacobi_sweep = make_row("jacobi_sweep$pressure_solver_mod_", parent=main, count=1)
+        main = make_merged_tree_node("main")
+        unrelated_caller = make_merged_tree_node("unrelated_caller", parent=main)
+        launch = make_merged_tree_node("hipLaunchKernel", parent=unrelated_caller, count=1)
+        jacobi_sweep = make_merged_tree_node("jacobi_sweep$pressure_solver_mod_", parent=main, count=1)
         rows = [main, unrelated_caller, launch, jacobi_sweep]
 
         kernels = {RANK: {
@@ -166,9 +159,9 @@ class KernelAnchorAttributionTests(unittest.TestCase):
         # Two ranks contribute very different amounts of the same kernel --
         # the synthetic node's own per_rank dict must keep them distinct
         # (for later load-balance columns), not collapse to one combined sum.
-        main = make_row("main")
-        compute = make_row("compute", parent=main)
-        launch = make_row("hipLaunchKernel", parent=compute, count=1)
+        main = make_merged_tree_node("main")
+        compute = make_merged_tree_node("compute", parent=main)
+        launch = make_merged_tree_node("hipLaunchKernel", parent=compute, count=1)
         rows = [main, compute, launch]
 
         gpu_kernel_by_rank = {"r0": {"K": (10, 1.0)}, "r1": {"K": (30, 3.0)}}
@@ -180,9 +173,9 @@ class KernelAnchorAttributionTests(unittest.TestCase):
     def test_anchor_resolution_skips_pruned_ancestors(self):
         # hipLaunchKernel's immediate parent is itself pruned (e.g. GPU-API
         # noise) -- the anchor must be the nearest VISIBLE ancestor instead.
-        main = make_row("main")
-        noisy_wrapper = make_row("hipStreamCreate", parent=main, gpu=True)
-        launch = make_row("hipLaunchKernel", parent=noisy_wrapper, count=10)
+        main = make_merged_tree_node("main")
+        noisy_wrapper = make_merged_tree_node("hipStreamCreate", parent=main, gpu=True)
+        launch = make_merged_tree_node("hipLaunchKernel", parent=noisy_wrapper, count=10)
         rows = [main, noisy_wrapper, launch]
 
         is_pruned = lambda node: node.get("gpu", False)  # noqa: E731
@@ -197,25 +190,25 @@ class MakeKernelNodeParentTests(unittest.TestCase):
         self.assertIsNone(node["parent"])
 
     def test_parent_is_set_when_given(self):
-        anchor = make_row("compute")
+        anchor = make_merged_tree_node("compute")
         node = s4t.make_kernel_node("K", {}, parent=anchor)
         self.assertIs(node["parent"], anchor)
 
 
 class AttachKernelSummariesCollectIntoTests(unittest.TestCase):
     def test_omitting_collect_into_changes_nothing(self):
-        main = make_row("main")
-        compute = make_row("compute", parent=main)
-        launch = make_row("hipLaunchKernel", parent=compute, count=1)
+        main = make_merged_tree_node("main")
+        compute = make_merged_tree_node("compute", parent=main)
+        launch = make_merged_tree_node("hipLaunchKernel", parent=compute, count=1)
         rows = [main, compute, launch]
         unattached = s4t.attach_kernel_summaries(rows, {RANK: {"K": (1, 1.0)}}, NEVER_PRUNED)
         self.assertEqual(unattached, set())
         self.assertNotEqual(compute["static_children"], [])
 
     def test_collect_into_gathers_group_and_kernel_leaf_single_anchor(self):
-        main = make_row("main")
-        compute = make_row("compute", parent=main)
-        launch = make_row("hipLaunchKernel", parent=compute, count=1)
+        main = make_merged_tree_node("main")
+        compute = make_merged_tree_node("compute", parent=main)
+        launch = make_merged_tree_node("hipLaunchKernel", parent=compute, count=1)
         rows = [main, compute, launch]
         collected = []
         s4t.attach_kernel_summaries(rows, {RANK: {"K": (1, 1.0)}}, NEVER_PRUNED, collect_into=collected)
@@ -227,11 +220,11 @@ class AttachKernelSummariesCollectIntoTests(unittest.TestCase):
         self.assertIs(kernel_node["parent"], group_node)
 
     def test_collect_into_gathers_every_group_across_multiple_anchors(self):
-        main = make_row("main")
-        compute_a = make_row("compute_a", parent=main)
-        compute_b = make_row("compute_b", parent=main)
-        launch_a = make_row("hipLaunchKernel", parent=compute_a, count=1)
-        launch_b = make_row("hipLaunchKernel", parent=compute_b, count=1)
+        main = make_merged_tree_node("main")
+        compute_a = make_merged_tree_node("compute_a", parent=main)
+        compute_b = make_merged_tree_node("compute_b", parent=main)
+        launch_a = make_merged_tree_node("hipLaunchKernel", parent=compute_a, count=1)
+        launch_b = make_merged_tree_node("hipLaunchKernel", parent=compute_b, count=1)
         rows = [main, compute_a, compute_b, launch_a, launch_b]
         collected = []
         s4t.attach_kernel_summaries(rows, {RANK: {"K": (2, 2.0)}}, NEVER_PRUNED, collect_into=collected)
@@ -247,9 +240,9 @@ class AttachKernelSummariesCollectIntoTests(unittest.TestCase):
         # The actual point of Phase B: once a kernel is attached with collect_into, its own
         # synthetic leaf node is walkable by caller_chains_for_label() exactly like any real
         # CPU function -- no new tree-walking code needed for this to work.
-        main = make_row("main")
-        compute = make_row("compute", parent=main)
-        launch = make_row("hipLaunchKernel", parent=compute, count=1)
+        main = make_merged_tree_node("main")
+        compute = make_merged_tree_node("compute", parent=main)
+        launch = make_merged_tree_node("hipLaunchKernel", parent=compute, count=1)
         rows = [main, compute, launch]
         collected = []
         s4t.attach_kernel_summaries(rows, {RANK: {"MyKernel": (1, 5.0)}}, NEVER_PRUNED, collect_into=collected)
@@ -261,7 +254,7 @@ class AttachKernelSummariesCollectIntoTests(unittest.TestCase):
         self.assertEqual(labels, ["main", "compute", "[GPU kernels -- rocprofv3]", "MyKernel"])
 
     def test_unattached_kernel_never_collected(self):
-        main = make_row("main")
+        main = make_merged_tree_node("main")
         rows = [main]
         collected = []
         unattached = s4t.attach_kernel_summaries(rows, {RANK: {"K": (1, 1.0)}}, NEVER_PRUNED, collect_into=collected)

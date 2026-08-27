@@ -1,33 +1,19 @@
-import importlib.util
 import os
 import sys
 import unittest
 
-POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
-import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
-
-spec = importlib.util.spec_from_file_location(
-    "stage5_tree_render", os.path.join(POSTPROCESS_DIR, "stage5", "stage5_tree_render.py")
-)
-tr = importlib.util.module_from_spec(spec)
-sys.modules["stage5_tree_render"] = tr
-spec.loader.exec_module(tr)
+tr = load_module_by_path("stage5_tree_render", "stage5", "stage5_tree_render.py")
 
 # render_forest() takes a node_values(node) callable -- in real usage this always
 # comes from stage4_rocprofsys_common.make_node_values(), so the fixture here uses the
 # same real function rather than a stand-in, mirroring production code's own
 # dependency between the two modules.
-spec4 = importlib.util.spec_from_file_location("stage4_rocprofsys_sample_tree", os.path.join(POSTPROCESS_DIR, "stage4", "stage4_rocprofsys_sample_tree.py"))
-s4t = importlib.util.module_from_spec(spec4)
-sys.modules["stage4_rocprofsys_sample_tree"] = s4t
-spec4.loader.exec_module(s4t)
+s4t = load_module_by_path("stage4_rocprofsys_sample_tree", "stage4", "stage4_rocprofsys_sample_tree.py")
 
-spec4c = importlib.util.spec_from_file_location("stage4_rocprofsys_common", os.path.join(POSTPROCESS_DIR, "stage4", "stage4_rocprofsys_common.py"))
-s4c = importlib.util.module_from_spec(spec4c)
-sys.modules["stage4_rocprofsys_common"] = s4c
-spec4c.loader.exec_module(s4c)
+s4c = load_module_by_path("stage4_rocprofsys_common", "stage4", "stage4_rocprofsys_common.py")
 
 from stage1_run_dirs import resolve_run_dirs  # noqa: E402  (needs sys.path insert above first)
 
@@ -38,7 +24,7 @@ KERNEL_NO_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_kernel_no_anchor")
 RANK = "r0"  # every hand-built test tree in this file simulates one rank
 
 
-def make_row(label, parent=None, count=1, self_sum=0.0, total_sum=None, gpu=False):
+def make_merged_tree_node(label, parent=None, count=1, self_sum=0.0, total_sum=None, gpu=False):
     """A minimal hand-built merged-tree node -- same shape merge_rank_trees()
     produces (a "per_rank" dict, not flat count/self_sum/sum fields), without
     needing a fixture file or a real multi-rank merge."""
@@ -57,9 +43,9 @@ DEFAULT_HEADERS = [("CALLS", 8, "d"), ("SELF(s)", 12, ".6f"), ("TOTAL(s)", 12, "
 
 class RenderingTests(unittest.TestCase):
     def test_render_forest_uses_tree_connectors(self):
-        main = make_row("main", count=1, self_sum=0.0, total_sum=10.0)
-        child_a = make_row("child_a", parent=main, count=1, self_sum=4.0, total_sum=4.0)
-        child_b = make_row("child_b", parent=main, count=1, self_sum=6.0, total_sum=6.0)
+        main = make_merged_tree_node("main", count=1, self_sum=0.0, total_sum=10.0)
+        child_a = make_merged_tree_node("child_a", parent=main, count=1, self_sum=4.0, total_sum=4.0)
+        child_b = make_merged_tree_node("child_b", parent=main, count=1, self_sum=6.0, total_sum=6.0)
         rows = [main, child_a, child_b]
         children_map = tr.build_children_map(rows)
 
@@ -70,9 +56,9 @@ class RenderingTests(unittest.TestCase):
         self.assertTrue(labels[2].startswith("└── child_b"))
 
     def test_max_depth_truncates_with_hidden_count(self):
-        main = make_row("main")
-        child = make_row("child", parent=main)
-        grandchild = make_row("grandchild", parent=child)
+        main = make_merged_tree_node("main")
+        child = make_merged_tree_node("child", parent=main)
+        grandchild = make_merged_tree_node("grandchild", parent=child)
         rows = [main, child, grandchild]
         children_map = tr.build_children_map(rows)
 
@@ -82,9 +68,9 @@ class RenderingTests(unittest.TestCase):
         self.assertIn("2 more node(s) hidden", marker_lines[0])
 
     def test_build_children_map_collapse_hides_grandchildren(self):
-        main = make_row("main")
-        mpi_call = make_row("MPI_Allreduce", parent=main)
-        internal = make_row("MPIR_Allreduce_cdesc", parent=mpi_call)
+        main = make_merged_tree_node("main")
+        mpi_call = make_merged_tree_node("MPI_Allreduce", parent=main)
+        internal = make_merged_tree_node("MPIR_Allreduce_cdesc", parent=mpi_call)
         rows = [main, mpi_call, internal]
 
         children_map = tr.build_children_map(rows, collapses_children=lambda row: row["label"] == "MPI_Allreduce")
@@ -200,8 +186,8 @@ class RenderGpuKernelFallbackTests(unittest.TestCase):
 
 class RenderCalltreeTextTests(unittest.TestCase):
     def test_renders_tree_ending_in_single_newline(self):
-        main = make_row("main", count=1, self_sum=0.0, total_sum=10.0)
-        child = make_row("child", parent=main, count=1, self_sum=4.0, total_sum=4.0)
+        main = make_merged_tree_node("main", count=1, self_sum=0.0, total_sum=10.0)
+        child = make_merged_tree_node("child", parent=main, count=1, self_sum=4.0, total_sum=4.0)
         rows = [main, child]
         text = tr.render_calltree_text([main], rows, None, NEVER_PRUNED, DEFAULT_NODE_VALUES)
         self.assertIn("main", text)
@@ -212,9 +198,9 @@ class RenderCalltreeTextTests(unittest.TestCase):
         self.assertTrue(text.endswith("\n"))
 
     def test_collapses_children_hides_grandchildren(self):
-        main = make_row("main")
-        mpi_call = make_row("MPI_Allreduce", parent=main)
-        internal = make_row("MPIR_Allreduce_cdesc", parent=mpi_call)
+        main = make_merged_tree_node("main")
+        mpi_call = make_merged_tree_node("MPI_Allreduce", parent=main)
+        internal = make_merged_tree_node("MPIR_Allreduce_cdesc", parent=mpi_call)
         rows = [main, mpi_call, internal]
         text = tr.render_calltree_text(
             [main], rows, None, NEVER_PRUNED, DEFAULT_NODE_VALUES,

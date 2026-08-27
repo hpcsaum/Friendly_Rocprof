@@ -1,16 +1,13 @@
-import importlib.util
 import os
 import sys
 import tempfile
 import unittest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
-MODULE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "stage1", "stage1_run_dirs.py")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-spec = importlib.util.spec_from_file_location("stage1_run_dirs", MODULE_PATH)
-srd = importlib.util.module_from_spec(spec)
-sys.modules["stage1_run_dirs"] = srd
-spec.loader.exec_module(srd)
+srd = load_module_by_path("stage1_run_dirs", "stage1", "stage1_run_dirs.py")
 
 COMBINED_DIR = os.path.join(FIXTURES, "pop_combined_2rank")
 FLAT_LAYOUT_DIR = os.path.join(FIXTURES, "mpi_2rank")  # no rocprof-sys/ subdir, files directly in the dir

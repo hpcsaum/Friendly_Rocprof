@@ -1,4 +1,3 @@
-import importlib.util
 import json
 import os
 import sys
@@ -6,20 +5,15 @@ import tempfile
 import unittest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
-POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-MODULE_PATH = os.path.join(POSTPROCESS_DIR, "tools", "extract_wallclock_calltree.py")
 
 # extract_wallclock_calltree.py does a plain top-level "from stage1_run_dirs import ...",
 # relying on its own directory being on sys.path -- true automatically when run
 # directly, but not when loaded here by explicit file path, so replicate that
 # manually (same as test_extract_hotspots.py).
-sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
-import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-spec = importlib.util.spec_from_file_location("extract_wallclock_calltree", MODULE_PATH)
-ct_tool = importlib.util.module_from_spec(spec)
-sys.modules["extract_wallclock_calltree"] = ct_tool
-spec.loader.exec_module(ct_tool)
+ct_tool = load_module_by_path("extract_wallclock_calltree", "tools", "extract_wallclock_calltree.py")
 
 import stage6_noise_config  # noqa: E402  (needs sys.path insert above first)
 

@@ -1,6 +1,5 @@
 import argparse
 import csv
-import importlib.util
 import io
 import os
 import sys
@@ -8,16 +7,10 @@ import tempfile
 import unittest
 from unittest import mock
 
-POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-MODULE_PATH = os.path.join(POSTPROCESS_DIR, "tools", "convert_trace_to_csv.py")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
-import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
-
-spec = importlib.util.spec_from_file_location("convert_trace_to_csv", MODULE_PATH)
-conv = importlib.util.module_from_spec(spec)
-sys.modules["convert_trace_to_csv"] = conv
-spec.loader.exec_module(conv)
+conv = load_module_by_path("convert_trace_to_csv", "tools", "convert_trace_to_csv.py")
 
 from stage1_rocprofsys_trace import parse_trace_csv
 from stage4_rocprofsys_trace_ranks import _RANK_FILE_RE

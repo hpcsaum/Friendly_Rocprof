@@ -1,6 +1,5 @@
 import contextlib
 import glob
-import importlib.util
 import io
 import os
 import sys
@@ -8,20 +7,15 @@ import tempfile
 import unittest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
-POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-MODULE_PATH = os.path.join(POSTPROCESS_DIR, "tools", "select_hotspot_kernels.py")
 
 # select_hotspot_kernels.py does a plain top-level "import extract_GPU_hotspots", relying on
 # its own directory being on sys.path -- true automatically when run directly, but not when
 # loaded here by explicit file path, so replicate that manually (same technique as
 # test_select_instrumented_functions.py).
-sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
-import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-spec = importlib.util.spec_from_file_location("select_hotspot_kernels", MODULE_PATH)
-selector = importlib.util.module_from_spec(spec)
-sys.modules["select_hotspot_kernels"] = selector
-spec.loader.exec_module(selector)
+selector = load_module_by_path("select_hotspot_kernels", "tools", "select_hotspot_kernels.py")
 
 import extract_GPU_hotspots as gpu_tool  # noqa: E402
 import extract_hotspots as combined_tool  # noqa: E402

@@ -1,20 +1,13 @@
-import importlib.util
 import os
 import statistics
 import sys
 import unittest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
-POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-MODULE_PATH = os.path.join(POSTPROCESS_DIR, "stage5", "stage5_pop_metrics_table.py")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
-import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
-
-spec = importlib.util.spec_from_file_location("stage5_pop_metrics_table", MODULE_PATH)
-pop_table = importlib.util.module_from_spec(spec)
-sys.modules["stage5_pop_metrics_table"] = pop_table
-spec.loader.exec_module(pop_table)
+pop_table = load_module_by_path("stage5_pop_metrics_table", "stage5", "stage5_pop_metrics_table.py")
 
 import stage4_rocprofv3  # noqa: E402  (needs sys.path insert above first)
 

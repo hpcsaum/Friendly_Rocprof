@@ -1,20 +1,13 @@
-import importlib.util
 import os
 import re
 import sys
 import tempfile
 import unittest
 
-POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
-import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-spec = importlib.util.spec_from_file_location(
-    "stage6_run_metadata", os.path.join(POSTPROCESS_DIR, "stage6", "stage6_run_metadata.py")
-)
-rm = importlib.util.module_from_spec(spec)
-sys.modules["stage6_run_metadata"] = rm
-spec.loader.exec_module(rm)
+rm = load_module_by_path("stage6_run_metadata", "stage6", "stage6_run_metadata.py")
 
 PID_SUFFIX_RE = re.compile(r"(\d+)\.txt$")
 DIR_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}_\d{2}\.\d{2}")

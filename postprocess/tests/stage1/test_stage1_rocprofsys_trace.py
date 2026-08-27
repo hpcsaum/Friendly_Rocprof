@@ -1,17 +1,14 @@
 import contextlib
-import importlib.util
 import io
 import os
 import sys
 import unittest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
-MODULE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "stage1", "stage1_rocprofsys_trace.py")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-spec = importlib.util.spec_from_file_location("stage1_rocprofsys_trace", MODULE_PATH)
-stage1 = importlib.util.module_from_spec(spec)
-sys.modules["stage1_rocprofsys_trace"] = stage1
-spec.loader.exec_module(stage1)
+stage1 = load_module_by_path("stage1_rocprofsys_trace", "stage1", "stage1_rocprofsys_trace.py")
 
 SINGLE_RANK_CSV = os.path.join(FIXTURES, "trace_single_rank", "rank0.csv")
 PARTITIONED_OTHER = os.path.join(FIXTURES, "trace_partitioned_rank", "rank0-other.csv")

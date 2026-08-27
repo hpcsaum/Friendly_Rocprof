@@ -1,32 +1,17 @@
-import importlib.util
 import json
 import os
 import sys
 import tempfile
 import unittest
 
-POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
-import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-# Loaded as an isolated copy, not the shared singleton other modules import: stage6_noise_config's
-# _TAG_DEFS is a real process-wide global (see its own module docstring), and stage3_rocprofsys_common.py
-# captures a direct reference to its tag_defs function at import time ("from stage6_noise_config
-# import tag_defs as _stage6_tag_defs") -- permanently overwriting sys.modules["stage6_noise_config"]
-# here would silently detach that reference from whichever instance this test's own nc.configure()
-# calls actually mutate, breaking --extra-noise-config everywhere else for the rest of the process.
-# Saving and restoring the previous sys.modules entry keeps this test's isolation from leaking.
-_previous_module = sys.modules.get("stage6_noise_config")
-spec = importlib.util.spec_from_file_location(
-    "stage6_noise_config", os.path.join(POSTPROCESS_DIR, "stage6", "stage6_noise_config.py")
-)
-nc = importlib.util.module_from_spec(spec)
-sys.modules["stage6_noise_config"] = nc
-spec.loader.exec_module(nc)
-if _previous_module is None:
-    del sys.modules["stage6_noise_config"]
-else:
-    sys.modules["stage6_noise_config"] = _previous_module
+# isolated=True: stage3_rocprofsys_common.py captures a direct reference to this module's
+# tag_defs function at import time, so this test needs its own copy without disturbing the
+# shared sys.modules entry every other consumer resolves against -- see
+# load_module_by_path()'s own docstring for the full mechanism.
+nc = load_module_by_path("stage6_noise_config", "stage6", "stage6_noise_config.py", isolated=True)
 
 
 def _write_diff(tmp, diff):

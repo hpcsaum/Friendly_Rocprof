@@ -1,4 +1,3 @@
-import importlib.util
 import json
 import os
 import sys
@@ -7,20 +6,15 @@ import unittest
 import unittest.mock
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
-POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-MODULE_PATH = os.path.join(POSTPROCESS_DIR, "tools", "extract_CPU_hotspots.py")
 
 # extract_CPU_hotspots.py does a plain top-level "from stage1_rocprofsys_sample import ...",
 # relying on its own directory being on sys.path -- true automatically when run
 # directly, but not when loaded here by explicit file path, so replicate that
 # manually (same as test_extract_hotspots.py).
-sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
-import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-spec = importlib.util.spec_from_file_location("extract_CPU_hotspots", MODULE_PATH)
-hotspots = importlib.util.module_from_spec(spec)
-sys.modules["extract_CPU_hotspots"] = hotspots
-spec.loader.exec_module(hotspots)
+hotspots = load_module_by_path("extract_CPU_hotspots", "tools", "extract_CPU_hotspots.py")
 
 import stage4_rocprofsys_sample_flat as flat  # noqa: E402  (needs sys.path insert above first)
 import stage6_noise_config  # noqa: E402

@@ -1,15 +1,12 @@
-import importlib.util
 import os
 import sys
 import unittest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
-MODULE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "stage1", "stage1_rocprofv3.py")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-spec = importlib.util.spec_from_file_location("stage1_rocprofv3", MODULE_PATH)
-stage1 = importlib.util.module_from_spec(spec)
-sys.modules["stage1_rocprofv3"] = stage1
-spec.loader.exec_module(stage1)
+stage1 = load_module_by_path("stage1_rocprofv3", "stage1", "stage1_rocprofv3.py")
 
 
 class ParseKernelStatsCsvTests(unittest.TestCase):

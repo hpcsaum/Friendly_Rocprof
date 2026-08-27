@@ -1,19 +1,12 @@
-import importlib.util
 import os
 import sys
 import tempfile
 import unittest
 
-POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-MODULE_PATH = os.path.join(POSTPROCESS_DIR, "stage4", "stage4_rocprofsys_trace_ranks.py")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
-import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
-
-spec = importlib.util.spec_from_file_location("stage4_rocprofsys_trace_ranks", MODULE_PATH)
-ranks_mod = importlib.util.module_from_spec(spec)
-sys.modules["stage4_rocprofsys_trace_ranks"] = ranks_mod
-spec.loader.exec_module(ranks_mod)
+ranks_mod = load_module_by_path("stage4_rocprofsys_trace_ranks", "stage4", "stage4_rocprofsys_trace_ranks.py")
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 MIXED_DIR = os.path.join(FIXTURES, "trace_discovery_mixed")

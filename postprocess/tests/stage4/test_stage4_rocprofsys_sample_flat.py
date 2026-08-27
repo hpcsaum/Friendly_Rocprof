@@ -1,4 +1,3 @@
-import importlib.util
 import json
 import os
 import sys
@@ -6,16 +5,10 @@ import tempfile
 import unittest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
-POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-MODULE_PATH = os.path.join(POSTPROCESS_DIR, "stage4", "stage4_rocprofsys_sample_flat.py")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
-import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
-
-spec = importlib.util.spec_from_file_location("stage4_rocprofsys_sample_flat", MODULE_PATH)
-flat = importlib.util.module_from_spec(spec)
-sys.modules["stage4_rocprofsys_sample_flat"] = flat
-spec.loader.exec_module(flat)
+flat = load_module_by_path("stage4_rocprofsys_sample_flat", "stage4", "stage4_rocprofsys_sample_flat.py")
 
 import stage6_noise_config  # noqa: E402  (needs sys.path insert above first)
 

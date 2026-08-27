@@ -1,37 +1,20 @@
-import importlib.util
 import os
 import statistics
 import sys
 import unittest
 
-POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
-import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-spec = importlib.util.spec_from_file_location(
-    "stage5_load_imbalance_table", os.path.join(POSTPROCESS_DIR, "stage5", "stage5_load_imbalance_table.py")
-)
-imb = importlib.util.module_from_spec(spec)
-sys.modules["stage5_load_imbalance_table"] = imb
-spec.loader.exec_module(imb)
+imb = load_module_by_path("stage5_load_imbalance_table", "stage5", "stage5_load_imbalance_table.py")
 
 from stage5_table_render import render_table  # noqa: E402  (needs sys.path insert above first)
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 
-spec_flat = importlib.util.spec_from_file_location(
-    "stage4_rocprofsys_sample_flat", os.path.join(POSTPROCESS_DIR, "stage4", "stage4_rocprofsys_sample_flat.py")
-)
-flat = importlib.util.module_from_spec(spec_flat)
-sys.modules["stage4_rocprofsys_sample_flat"] = flat
-spec_flat.loader.exec_module(flat)
+flat = load_module_by_path("stage4_rocprofsys_sample_flat", "stage4", "stage4_rocprofsys_sample_flat.py")
 
-spec_v3 = importlib.util.spec_from_file_location(
-    "stage4_rocprofv3", os.path.join(POSTPROCESS_DIR, "stage4", "stage4_rocprofv3.py")
-)
-v3 = importlib.util.module_from_spec(spec_v3)
-sys.modules["stage4_rocprofv3"] = v3
-spec_v3.loader.exec_module(v3)
+v3 = load_module_by_path("stage4_rocprofv3", "stage4", "stage4_rocprofv3.py")
 
 
 class ComputeLoadImbalanceTests(unittest.TestCase):

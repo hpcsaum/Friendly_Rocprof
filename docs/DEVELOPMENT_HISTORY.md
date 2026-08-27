@@ -63,6 +63,7 @@
 | 2026-08-26 | Plan 3.13: new `--time-range` flag on all three trace-CSV report tools -- restricts hotspots/pop-metrics/calltree output to one or more time windows (comma-separated, open-ended halves allowed), clipping a straddling call's duration to its in-window portion and cutting a call-tree subtree with zero overlap anywhere within it while keeping the ancestor chain to any surviving descendant intact; new `stage6_time_range_config.py` (mirroring `stage6_noise_config.py`'s process-wide-singleton pattern) also builds every report's now-always-printed "time range: ..." header note, the first instance of a deliberate new `stage6 -> stage4` import exception for non-table report output -- see full accounting below |
 | 2026-08-26 | Plan 3.14: new `scripts/profile_traced_hotspot_kernels.sh` runs a `rocprof-compute` kernel deep-dive from a trace directory that already exists, instead of paying for a fresh `rocprofv3` scan -- new `select_hotspot_kernels.py --trace-dir` source (backed by new `stage4_rocprofsys_trace_flat.aggregate_gpu_kernels()`) resolves hot kernel names straight from the trace-CSV pipeline, since the trace tools' own CPU+GPU-fused report layout isn't parseable by the existing `--report` source; also gains `--time-range` for scoping kernel selection to one window of the trace -- see full accounting below |
 | 2026-08-27 | Plan 3.15 (Phase 0 of 8): test comment policy written into `postprocess/README.md`'s "Tests" section, ahead of a multi-phase `postprocess/tests/` maintainability cleanup -- see full accounting below |
+| 2026-08-27 | Plan 3.15 (Phase 1 of 8): new `postprocess/tests/_test_helpers.py` replaces the copy-pasted `importlib.util` module-loading dance in 41 test files; colliding `make_row`/`make_raw_row` helper names resolved to purpose-specific names; a reimplemented `flatten()` in one test file replaced with the real `flatten_tree()` -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -2952,3 +2953,36 @@ matters for HPC/offline environments this toolchain targets.
 
 Verification: no test files touched in this phase, so the suite is unchanged at `Ran 750 tests ...
 OK` (`python3 -m unittest discover -s tests -t .` from `postprocess/`).
+
+## 2026-08-27 — Plan 3.15, Phase 1: shared test helper module
+
+Mechanical follow-up to Phase 0, with the suite's biggest single source of raw duplication as the
+target: 41 of 45 test files independently repeated the same `importlib.util.spec_from_file_location`
+module-loading dance (roughly 7-15 lines each, depending on whether a `MODULE_PATH` variable or an
+inline `os.path.join()` was used). New `postprocess/tests/_test_helpers.py` exposes one function,
+`load_module_by_path(name, *path_parts, isolated=False)`, that every one of those 41 files now calls
+instead -- net -298 lines across the suite. The `isolated=True` path preserves
+`test_stage6_noise_config.py`'s existing (and necessary) behavior of restoring the previous
+`sys.modules` entry after loading its own copy, rather than permanently clobbering the shared
+instance `stage3_rocprofsys_common.py` captured a direct function reference from at import time --
+that mechanism moved into the helper's own docstring rather than being explained locally in every
+file that doesn't need it. The other module-loading style (`postprocess/README.md`'s documented
+plain `from stageN_x import y`, used where a test doesn't need a fresh isolated instance) was left
+untouched, since the two styles are already intentional, not an inconsistency to unify away.
+
+Also in this phase, same "mechanical, no behavior change" theme: the four incompatible `make_row`
+helpers (and one `make_raw_row`) that shared confusingly similar names across different files --
+each building a differently-shaped synthetic test row -- were renamed to purpose-specific names
+(`make_label_parent_row`, `make_merged_tree_node`, `make_taggable_row`, `make_category_row`,
+`make_raw_trace_row`) so the same name never means two different shapes across files anymore. And
+`test_stage4_rocprofsys_trace_tree.py`'s local `flatten()` helper, a byte-for-byte reimplementation
+of `stage4_rocprofsys_common.flatten_tree()` (confirmed identical when compared directly), was
+replaced with a real import of the function it was silently duplicating.
+
+Migration itself was scripted (not hand-edited file by file) given the scale, run in dry-run mode
+first against every file's exact existing shape (multi-line vs. single-line calls, `MODULE_PATH`
+variable vs. inline path, single vs. multiple modules loaded per file) until zero warnings remained,
+then applied and manually diffed before committing.
+
+Verification: full suite unchanged at `Ran 750 tests ... OK` -- expected, since this phase only
+relocates loading mechanics and renames local helpers, it doesn't consolidate or remove any test.

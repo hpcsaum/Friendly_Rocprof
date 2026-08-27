@@ -1,14 +1,11 @@
-import importlib.util
 import os
 import sys
 import unittest
 
-MODULE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "stage2", "stage2_rocprofsys_sample.py")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-spec = importlib.util.spec_from_file_location("stage2_rocprofsys_sample", MODULE_PATH)
-stage2 = importlib.util.module_from_spec(spec)
-sys.modules["stage2_rocprofsys_sample"] = stage2
-spec.loader.exec_module(stage2)
+stage2 = load_module_by_path("stage2_rocprofsys_sample", "stage2", "stage2_rocprofsys_sample.py")
 
 
 class AttachAncestryTests(unittest.TestCase):

@@ -1,24 +1,18 @@
-import importlib.util
 import os
 import sys
 import tempfile
 import unittest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
-POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-MODULE_PATH = os.path.join(POSTPROCESS_DIR, "tools", "extract_GPU_hotspots.py")
 
 # extract_GPU_hotspots.py does a plain top-level "from stage4_rocprofv3 import ...",
 # relying on its own directory being on sys.path -- true automatically when run
 # directly, but not when loaded here by explicit file path, so replicate that
 # manually (same as test_extract_hotspots.py).
-sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
-import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-spec = importlib.util.spec_from_file_location("extract_GPU_hotspots", MODULE_PATH)
-hotspots = importlib.util.module_from_spec(spec)
-sys.modules["extract_GPU_hotspots"] = hotspots
-spec.loader.exec_module(hotspots)
+hotspots = load_module_by_path("extract_GPU_hotspots", "tools", "extract_GPU_hotspots.py")
 
 
 class ConfigJsonGuessingTests(unittest.TestCase):

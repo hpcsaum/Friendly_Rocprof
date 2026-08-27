@@ -1,4 +1,3 @@
-import importlib.util
 import json
 import os
 import sys
@@ -6,20 +5,15 @@ import tempfile
 import unittest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
-POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-MODULE_PATH = os.path.join(POSTPROCESS_DIR, "tools", "extract_pop_metrics.py")
 
 # extract_pop_metrics.py does a plain top-level "from stage5_pop_metrics_table import ...",
 # relying on its own directory being on sys.path -- true automatically when run
 # directly, but not when loaded here by explicit file path, so replicate that
 # manually (same as test_extract_hotspots.py).
-sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
-import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-spec = importlib.util.spec_from_file_location("extract_pop_metrics", MODULE_PATH)
-pop_tool = importlib.util.module_from_spec(spec)
-sys.modules["extract_pop_metrics"] = pop_tool
-spec.loader.exec_module(pop_tool)
+pop_tool = load_module_by_path("extract_pop_metrics", "tools", "extract_pop_metrics.py")
 
 import stage6_noise_config  # noqa: E402  (needs sys.path insert above first)
 

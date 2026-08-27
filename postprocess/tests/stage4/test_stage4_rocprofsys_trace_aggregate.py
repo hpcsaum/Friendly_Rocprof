@@ -1,5 +1,4 @@
 import contextlib
-import importlib.util
 import io
 import json
 import os
@@ -10,16 +9,10 @@ import time
 import unittest
 from unittest import mock
 
-POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-MODULE_PATH = os.path.join(POSTPROCESS_DIR, "stage4", "stage4_rocprofsys_trace_aggregate.py")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
-import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
-
-spec = importlib.util.spec_from_file_location("stage4_rocprofsys_trace_aggregate", MODULE_PATH)
-agg = importlib.util.module_from_spec(spec)
-sys.modules["stage4_rocprofsys_trace_aggregate"] = agg
-spec.loader.exec_module(agg)
+agg = load_module_by_path("stage4_rocprofsys_trace_aggregate", "stage4", "stage4_rocprofsys_trace_aggregate.py")
 
 import stage6_time_range_config as trc  # noqa: E402
 
@@ -159,7 +152,7 @@ class GetRankAggregateCacheTests(unittest.TestCase):
             self.assertEqual(fresh_parent, cached_parent)
 
 
-def make_raw_row(name, tid=None, ts=0.0, category="host", parent=None, corr_id=None):
+def make_raw_trace_row(name, tid=None, ts=0.0, category="host", parent=None, corr_id=None):
     """A minimal raw (pre-merge) row -- the shape _reanchor_kernels_by_owner_and_time() operates
     on: parse_trace_csv()/attach_ancestry()'s own per-instance rows, keyed by "name" (not
     "label" -- see stage1_rocprofsys_trace.LABEL_KEY), each carrying its own "ts"/"tid"/"category"/
@@ -169,34 +162,34 @@ def make_raw_row(name, tid=None, ts=0.0, category="host", parent=None, corr_id=N
 
 class ReanchorKernelsByOwnerAndTimeTests(unittest.TestCase):
     def test_exact_owner_match_reanchors_onto_the_instance_preceding_it_in_time(self):
-        owner = make_raw_row("foo$mod_", tid=1000, ts=10.0)
-        launch = make_raw_row("hipModuleLaunchKernel", tid=1000, ts=15.0, category="rocm_hip_api")
-        kernel = make_raw_row(
+        owner = make_raw_trace_row("foo$mod_", tid=1000, ts=10.0)
+        launch = make_raw_trace_row("hipModuleLaunchKernel", tid=1000, ts=15.0, category="rocm_hip_api")
+        kernel = make_raw_trace_row(
             "foo$mod_$ck_L1_1", tid=None, ts=16.0, category="rocm_kernel_dispatch", parent=launch,
         )
         agg._reanchor_kernels_by_owner_and_time([owner, launch, kernel])
         self.assertIs(kernel["parent"], owner)
 
     def test_no_ck_or_omp_offloading_marker_leaves_in_place(self):
-        launch = make_raw_row("hipLaunchKernel", tid=1000, ts=15.0, category="rocm_hip_api")
-        kernel = make_raw_row(
+        launch = make_raw_trace_row("hipLaunchKernel", tid=1000, ts=15.0, category="rocm_hip_api")
+        kernel = make_raw_trace_row(
             "SomeKernel", tid=None, ts=16.0, category="rocm_kernel_dispatch", parent=launch,
         )
         agg._reanchor_kernels_by_owner_and_time([launch, kernel])
         self.assertIs(kernel["parent"], launch)
 
     def test_no_owner_match_leaves_in_place(self):
-        launch = make_raw_row("hipModuleLaunchKernel", tid=1000, ts=15.0, category="rocm_hip_api")
-        kernel = make_raw_row(
+        launch = make_raw_trace_row("hipModuleLaunchKernel", tid=1000, ts=15.0, category="rocm_hip_api")
+        kernel = make_raw_trace_row(
             "foo$mod_$ck_L1_1", tid=None, ts=16.0, category="rocm_kernel_dispatch", parent=launch,
         )
         agg._reanchor_kernels_by_owner_and_time([launch, kernel])  # no "foo$mod_" row anywhere
         self.assertIs(kernel["parent"], launch)
 
     def test_kernel_dispatched_before_any_owner_instance_leaves_in_place(self):
-        owner = make_raw_row("foo$mod_", tid=1000, ts=20.0)  # starts AFTER the kernel dispatches
-        launch = make_raw_row("hipModuleLaunchKernel", tid=1000, ts=5.0, category="rocm_hip_api")
-        kernel = make_raw_row(
+        owner = make_raw_trace_row("foo$mod_", tid=1000, ts=20.0)  # starts AFTER the kernel dispatches
+        launch = make_raw_trace_row("hipModuleLaunchKernel", tid=1000, ts=5.0, category="rocm_hip_api")
+        kernel = make_raw_trace_row(
             "foo$mod_$ck_L1_1", tid=None, ts=6.0, category="rocm_kernel_dispatch", parent=launch,
         )
         agg._reanchor_kernels_by_owner_and_time([owner, launch, kernel])
@@ -205,8 +198,8 @@ class ReanchorKernelsByOwnerAndTimeTests(unittest.TestCase):
     def test_no_corr_id_resolved_parent_leaves_in_place(self):
         # A kernel _attach_kernels_by_corr_id() never resolved (parent is still None) has no known
         # launching thread to scope the owner search to.
-        owner = make_raw_row("foo$mod_", tid=1000, ts=10.0)
-        kernel = make_raw_row(
+        owner = make_raw_trace_row("foo$mod_", tid=1000, ts=10.0)
+        kernel = make_raw_trace_row(
             "foo$mod_$ck_L1_1", tid=None, ts=16.0, category="rocm_kernel_dispatch", parent=None,
         )
         agg._reanchor_kernels_by_owner_and_time([owner, kernel])
@@ -215,10 +208,10 @@ class ReanchorKernelsByOwnerAndTimeTests(unittest.TestCase):
     def test_two_same_thread_candidates_resolve_to_the_chronologically_correct_one(self):
         # Ambiguous by label alone (two real "bar$mod_" instances on the same thread, at two
         # different tree positions) -- resolved exactly by time, not split or guessed.
-        owner_early = make_raw_row("bar$mod_", tid=2000, ts=10.0)
-        owner_late = make_raw_row("bar$mod_", tid=2000, ts=30.0)
-        launch = make_raw_row("hipModuleLaunchKernel", tid=2000, ts=31.0, category="rocm_hip_api")
-        kernel = make_raw_row(
+        owner_early = make_raw_trace_row("bar$mod_", tid=2000, ts=10.0)
+        owner_late = make_raw_trace_row("bar$mod_", tid=2000, ts=30.0)
+        launch = make_raw_trace_row("hipModuleLaunchKernel", tid=2000, ts=31.0, category="rocm_hip_api")
+        kernel = make_raw_trace_row(
             "bar$mod_$ck_L2_2", tid=None, ts=31.5, category="rocm_kernel_dispatch", parent=launch,
         )
         agg._reanchor_kernels_by_owner_and_time([owner_early, owner_late, launch, kernel])
@@ -228,10 +221,10 @@ class ReanchorKernelsByOwnerAndTimeTests(unittest.TestCase):
         # A same-owner-labeled row on a DIFFERENT thread, with a start time that would win a
         # naive rank-wide "nearest preceding" search, must lose to the correct (older, but
         # same-thread) candidate -- proving tid-scoping, not just time, is load-bearing.
-        correct_owner = make_raw_row("baz$mod_", tid=3000, ts=10.0)
-        wrong_thread_owner = make_raw_row("baz$mod_", tid=4000, ts=20.0)
-        launch = make_raw_row("hipModuleLaunchKernel", tid=3000, ts=21.0, category="rocm_hip_api")
-        kernel = make_raw_row(
+        correct_owner = make_raw_trace_row("baz$mod_", tid=3000, ts=10.0)
+        wrong_thread_owner = make_raw_trace_row("baz$mod_", tid=4000, ts=20.0)
+        launch = make_raw_trace_row("hipModuleLaunchKernel", tid=3000, ts=21.0, category="rocm_hip_api")
+        kernel = make_raw_trace_row(
             "baz$mod_$ck_L3_3", tid=None, ts=21.5, category="rocm_kernel_dispatch", parent=launch,
         )
         agg._reanchor_kernels_by_owner_and_time(
@@ -242,9 +235,9 @@ class ReanchorKernelsByOwnerAndTimeTests(unittest.TestCase):
     def test_generic_omp_offloading_name_also_reanchors(self):
         # The generalized (non-Cray-Fortran) owner-name convention -- see
         # stage4_rocprofsys_common.kernel_owner_label() -- resolves the same way.
-        owner = make_raw_row("launch_omp_kernel", tid=1000, ts=10.0)
-        launch = make_raw_row("hipModuleLaunchKernel", tid=1000, ts=15.0, category="rocm_hip_api")
-        kernel = make_raw_row(
+        owner = make_raw_trace_row("launch_omp_kernel", tid=1000, ts=10.0)
+        launch = make_raw_trace_row("hipModuleLaunchKernel", tid=1000, ts=15.0, category="rocm_hip_api")
+        kernel = make_raw_trace_row(
             "__omp_offloading_4f_8fb8827_launch_omp_kernel_l6", tid=None, ts=16.0,
             category="rocm_kernel_dispatch", parent=launch,
         )

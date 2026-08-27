@@ -1,14 +1,11 @@
-import importlib.util
 import os
 import sys
 import unittest
 
-MODULE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "stage4", "stage4_rank_merge_math.py")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-spec = importlib.util.spec_from_file_location("stage4_rank_merge_math", MODULE_PATH)
-rmm = importlib.util.module_from_spec(spec)
-sys.modules["stage4_rank_merge_math"] = rmm
-spec.loader.exec_module(rmm)
+rmm = load_module_by_path("stage4_rank_merge_math", "stage4", "stage4_rank_merge_math.py")
 
 
 class StatsAcrossRanksTests(unittest.TestCase):

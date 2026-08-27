@@ -1,21 +1,14 @@
-import importlib.util
 import os
 import sys
 import unittest
 
-POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-MODULE_PATH = os.path.join(POSTPROCESS_DIR, "stage4", "stage4_rocprofsys_common.py")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
-import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
-
-spec = importlib.util.spec_from_file_location("stage4_rocprofsys_common", MODULE_PATH)
-s4c = importlib.util.module_from_spec(spec)
-sys.modules["stage4_rocprofsys_common"] = s4c
-spec.loader.exec_module(s4c)
+s4c = load_module_by_path("stage4_rocprofsys_common", "stage4", "stage4_rocprofsys_common.py")
 
 
-def make_row(label, parent=None):
+def make_label_parent_row(label, parent=None):
     """A minimal row for caller_chains_for_label() -- it only ever reads "label"/"parent"."""
     return {"label": label, "parent": parent}
 
@@ -109,9 +102,9 @@ class AggregateNodeStatsTests(unittest.TestCase):
 
 class CallerChainsForLabelTests(unittest.TestCase):
     def test_single_call_site_returns_one_root_to_target_chain(self):
-        main = make_row("main")
-        compute = make_row("compute", parent=main)
-        target = make_row("hot_function", parent=compute)
+        main = make_label_parent_row("main")
+        compute = make_label_parent_row("compute", parent=main)
+        target = make_label_parent_row("hot_function", parent=compute)
         rows = [main, compute, target]
 
         chains = s4c.caller_chains_for_label(rows, "hot_function")
@@ -119,11 +112,11 @@ class CallerChainsForLabelTests(unittest.TestCase):
         self.assertEqual([n["label"] for n in chains[0]], ["main", "compute", "hot_function"])
 
     def test_two_distinct_call_sites_return_two_chains(self):
-        main = make_row("main")
-        compute_a = make_row("compute_a", parent=main)
-        compute_b = make_row("compute_b", parent=main)
-        target_a = make_row("hot_function", parent=compute_a)
-        target_b = make_row("hot_function", parent=compute_b)
+        main = make_label_parent_row("main")
+        compute_a = make_label_parent_row("compute_a", parent=main)
+        compute_b = make_label_parent_row("compute_b", parent=main)
+        target_a = make_label_parent_row("hot_function", parent=compute_a)
+        target_b = make_label_parent_row("hot_function", parent=compute_b)
         rows = [main, compute_a, compute_b, target_a, target_b]
 
         chains = s4c.caller_chains_for_label(rows, "hot_function")
@@ -135,12 +128,12 @@ class CallerChainsForLabelTests(unittest.TestCase):
         })
 
     def test_no_match_returns_empty_list(self):
-        main = make_row("main")
+        main = make_label_parent_row("main")
         rows = [main]
         self.assertEqual(s4c.caller_chains_for_label(rows, "never_called"), [])
 
     def test_target_is_a_root_returns_single_node_chain(self):
-        main = make_row("main")
+        main = make_label_parent_row("main")
         rows = [main]
         chains = s4c.caller_chains_for_label(rows, "main")
         self.assertEqual(len(chains), 1)
@@ -204,33 +197,33 @@ class KernelOwnerLabelTests(unittest.TestCase):
 
 class ExpandLabelsWithAncestorsTests(unittest.TestCase):
     def test_depth_1_adds_only_the_immediate_parent(self):
-        main = make_row("main")
-        caller = make_row("caller", parent=main)
-        target = make_row("target", parent=caller)
+        main = make_label_parent_row("main")
+        caller = make_label_parent_row("caller", parent=main)
+        target = make_label_parent_row("target", parent=caller)
         rows = [main, caller, target]
 
         added = s4c.expand_labels_with_ancestors(rows, {"target"}, depth=1)
         self.assertEqual(added, {"caller"})
 
     def test_depth_2_reaches_the_grandparent_too(self):
-        main = make_row("main")
-        caller = make_row("caller", parent=main)
-        target = make_row("target", parent=caller)
+        main = make_label_parent_row("main")
+        caller = make_label_parent_row("caller", parent=main)
+        target = make_label_parent_row("target", parent=caller)
         rows = [main, caller, target]
 
         added = s4c.expand_labels_with_ancestors(rows, {"target"}, depth=2)
         self.assertEqual(added, {"caller", "main"})
 
     def test_depth_0_adds_nothing(self):
-        main = make_row("main")
-        target = make_row("target", parent=main)
+        main = make_label_parent_row("main")
+        target = make_label_parent_row("target", parent=main)
         added = s4c.expand_labels_with_ancestors([main, target], {"target"}, depth=0)
         self.assertEqual(added, set())
 
     def test_already_selected_ancestor_is_not_reported_twice(self):
-        main = make_row("main")
-        caller = make_row("caller", parent=main)
-        target = make_row("target", parent=caller)
+        main = make_label_parent_row("main")
+        caller = make_label_parent_row("caller", parent=main)
+        target = make_label_parent_row("target", parent=caller)
         rows = [main, caller, target]
 
         # "caller" is already in the base selection -- expanding "target" must not re-report it,
@@ -240,18 +233,18 @@ class ExpandLabelsWithAncestorsTests(unittest.TestCase):
         self.assertEqual(added, {"main"})
 
     def test_multiple_call_sites_each_contribute_their_own_immediate_parent(self):
-        main = make_row("main")
-        caller_a = make_row("caller_a", parent=main)
-        caller_b = make_row("caller_b", parent=main)
-        target_a = make_row("target", parent=caller_a)
-        target_b = make_row("target", parent=caller_b)
+        main = make_label_parent_row("main")
+        caller_a = make_label_parent_row("caller_a", parent=main)
+        caller_b = make_label_parent_row("caller_b", parent=main)
+        target_a = make_label_parent_row("target", parent=caller_a)
+        target_b = make_label_parent_row("target", parent=caller_b)
         rows = [main, caller_a, caller_b, target_a, target_b]
 
         added = s4c.expand_labels_with_ancestors(rows, {"target"}, depth=1)
         self.assertEqual(added, {"caller_a", "caller_b"})
 
     def test_label_never_sampled_contributes_nothing(self):
-        main = make_row("main")
+        main = make_label_parent_row("main")
         added = s4c.expand_labels_with_ancestors([main], {"never_seen"}, depth=1)
         self.assertEqual(added, set())
 

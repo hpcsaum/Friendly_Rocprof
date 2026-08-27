@@ -1,4 +1,3 @@
-import importlib.util
 import glob
 import os
 import sys
@@ -6,16 +5,10 @@ import tempfile
 import unittest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
-POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-MODULE_PATH = os.path.join(POSTPROCESS_DIR, "tools", "extract_trace_calltree.py")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
-import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
-
-spec = importlib.util.spec_from_file_location("extract_trace_calltree", MODULE_PATH)
-calltree = importlib.util.module_from_spec(spec)
-sys.modules["extract_trace_calltree"] = calltree
-spec.loader.exec_module(calltree)
+calltree = load_module_by_path("extract_trace_calltree", "tools", "extract_trace_calltree.py")
 
 import stage6_time_range_config as trc  # noqa: E402
 

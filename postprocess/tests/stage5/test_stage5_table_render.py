@@ -1,18 +1,11 @@
-import importlib.util
 import os
 import sys
 import unittest
 
-POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
-import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _test_helpers import load_module_by_path  # noqa: E402
 
-spec = importlib.util.spec_from_file_location(
-    "stage5_table_render", os.path.join(POSTPROCESS_DIR, "stage5", "stage5_table_render.py")
-)
-tr = importlib.util.module_from_spec(spec)
-sys.modules["stage5_table_render"] = tr
-spec.loader.exec_module(tr)
+tr = load_module_by_path("stage5_table_render", "stage5", "stage5_table_render.py")
 
 
 class SelectEntriesTests(unittest.TestCase):
