@@ -357,6 +357,53 @@ call time, never `from stage6_time_range_config import X` — so its own tests
 (`tests/stage6/test_stage6_time_range_config.py`) just use the normal shared import and reset the
 active range in `tearDown()` (`trc.configure(None)`) instead.
 
+### Test comments
+
+The same policy `CLAUDE.md`'s "Code comments" section sets for source files applies to tests, with
+one addition specific to test data:
+
+- Every test file gets a top-of-file docstring: which module/tool it tests, its functional scope,
+  and a one-line-per-class list of what each `TestCase` class in the file covers — a table of
+  contents a reader can scan before diving into any individual test, not a restatement of every
+  test method's assertions.
+- An inline comment on an individual test is warranted only when the test's purpose, or the shape
+  of its fixture data, is genuinely non-obvious from the test name and assertions alone — a hidden
+  invariant, a documented known-limitation, or why a scenario needs its own test rather than being
+  folded into another. Restating what the assertions already show is not a comment worth having.
+  Same "current behavior, not history" rule as `CLAUDE.md`: no "added during test cleanup", no "see
+  prior audit", no narrating this project.
+- Every hard-coded value in a test (a magic number, a specific string, a threshold) needs its
+  significance made clear one way or the other: either it's arbitrary (any value would exercise the
+  same code path — say so, or better, name the variable/constant so that's obvious without a
+  comment) or it's significant (it must match something real — a documented rocprof output field, a
+  constant defined in the module under test, a specific fixture file's actual content) and the
+  comment should say what it's tied to. A reader should never have to guess whether changing a
+  number in a test would break something real or just be cosmetic.
+
+Templates worth matching — a module docstring giving the table of contents by class, and one
+comment for the non-obvious *why* plus one for a hard-coded value that needs its significance
+flagged, nothing restating what the assertion already shows:
+
+```python
+"""Tests for stage3_rocprofsys_common.py's noise-tagging engine.
+
+TagRowsBasicMatchTests         -- label/filename substring-to-tag matching, self vs inherited tags
+ThreadRootInheritanceTests     -- ancestor-derived tags landing on a rank's thread-root frame
+SiblingGroupContaminationTests -- one matching sibling marking the whole sibling group
+"""
+```
+
+```python
+def test_thread_root_with_matching_first_child_inherits_the_tag(self):
+    # A real root can't be told apart from an untethered noise root -- both have parent=None,
+    # so a real root whose very first traced child happens to match a tag pattern inherits it
+    # the same way noise-root inheritance is meant to work. Known limitation, not a bug.
+    root = make_row("main")
+    child = make_row("mpi_init", parent=root)  # any tag-matching label works here; the exact string isn't significant
+    tag_rows([root, child], TAG_DEFS)
+    self.assertIn("mpi_territory", root["tags"])
+```
+
 ## Further reading
 
 [docs/pop_metrics_reference.md](../docs/pop_metrics_reference.md) covers the POP-metrics-specific

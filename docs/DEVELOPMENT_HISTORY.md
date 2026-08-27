@@ -62,6 +62,7 @@
 | 2026-08-21 | Plan 3.12: `select_hotspot_functions.py` renamed to `select_instrumented_functions.py` and widened -- a selected hotspot's immediate real caller is now pulled in by default (`--ancestor-depth`, via new generic `stage4_rocprofsys_common.expand_labels_with_ancestors()`), and a new `--gpu-output-dir` resolves hot GPU kernels into their real CPU owner (`resolve_kernel_owners()`), fixing GPU kernels/MPI calls losing their real caller's instrumentation regardless of that caller's own hotspot status; new `stage5_calltree_text_parser.py` lets `--report` mode support the same ancestor-pulling by reconstructing tree structure from a sibling `calltree.txt`'s rendered text -- see full accounting below |
 | 2026-08-26 | Plan 3.13: new `--time-range` flag on all three trace-CSV report tools -- restricts hotspots/pop-metrics/calltree output to one or more time windows (comma-separated, open-ended halves allowed), clipping a straddling call's duration to its in-window portion and cutting a call-tree subtree with zero overlap anywhere within it while keeping the ancestor chain to any surviving descendant intact; new `stage6_time_range_config.py` (mirroring `stage6_noise_config.py`'s process-wide-singleton pattern) also builds every report's now-always-printed "time range: ..." header note, the first instance of a deliberate new `stage6 -> stage4` import exception for non-table report output -- see full accounting below |
 | 2026-08-26 | Plan 3.14: new `scripts/profile_traced_hotspot_kernels.sh` runs a `rocprof-compute` kernel deep-dive from a trace directory that already exists, instead of paying for a fresh `rocprofv3` scan -- new `select_hotspot_kernels.py --trace-dir` source (backed by new `stage4_rocprofsys_trace_flat.aggregate_gpu_kernels()`) resolves hot kernel names straight from the trace-CSV pipeline, since the trace tools' own CPU+GPU-fused report layout isn't parseable by the existing `--report` source; also gains `--time-range` for scoping kernel selection to one window of the trace -- see full accounting below |
+| 2026-08-27 | Plan 3.15 (Phase 0 of 8): test comment policy written into `postprocess/README.md`'s "Tests" section, ahead of a multi-phase `postprocess/tests/` maintainability cleanup -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -2917,3 +2918,37 @@ appearing, and a `--time-range` window covering roughly the middle third of the 
 ~92-second span visibly changed the top-5 ranking relative to the whole-run selection --
 `rocprof-compute profile`/`analyze` themselves remain unverifiable on this CPU-only dev machine, per
 `CLAUDE.md`'s standing environment-constraints note.
+
+## 2026-08-27 — Plan 3.15, Phase 0: test comment policy
+
+A full audit of `postprocess/tests/` (750 `unittest` tests across 45 files) found zero shared
+helpers, zero docstrings, and heavy copy-paste -- most notably the same `importlib.util`
+module-loading dance repeated in roughly 35 files, and at least four incompatible `make_row`/
+`make_raw_row`-family helpers sharing confusingly similar names across different files. Plan 3.15
+(`docs/plans/3.15-test-suite-cleanup.md`) lays out an 8-phase cleanup: shared helpers, duplication
+consolidation, a per-file test-scope audit, trivial-test cleanup, a comments pass, and a final
+coverage check against the real codebase -- executed one phase at a time, each manually verified
+before the next starts.
+
+This is Phase 0: before touching any test file, `postprocess/README.md`'s existing "Tests" section
+gained a new "Test comments" subsection, adapting `CLAUDE.md`'s existing "Code comments" policy
+(current behavior not history, a top-of-file docstring per module, write for a new developer not a
+project historian) to test files specifically, with two additions: the top-of-file docstring must
+list each `TestCase` class in the file with a one-line description (a table of contents, given each
+file has dozens of tests and zero navigation aids today), and every hard-coded value in a test must
+make clear whether it's arbitrary or tied to something real (a documented rocprof field, a module
+constant, a specific fixture file's content), so a reader never has to guess whether changing a
+number would break something real or just be cosmetic. Rather than pointing at specific test files
+as examples (which this same cleanup will go on to rename, merge, or delete in later phases), the
+policy includes small self-contained copy-paste templates demonstrating both rules at once. Landing
+the policy first means
+every later phase's new or touched code already has a standard to follow, rather than needing a
+separate cleanup pass at the end for code written during the cleanup itself.
+
+One notable decision baked into the plan itself: the cleanup stays on plain `unittest` +
+`subTest()` rather than adopting pytest, since `docs/plans/1.11-pop-metrics-tool.md` already
+documents "plain unittest... no pytest/CI config" as this project's policy, and staying dependency-free
+matters for HPC/offline environments this toolchain targets.
+
+Verification: no test files touched in this phase, so the suite is unchanged at `Ran 750 tests ...
+OK` (`python3 -m unittest discover -s tests -t .` from `postprocess/`).
