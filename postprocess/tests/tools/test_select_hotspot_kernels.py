@@ -19,7 +19,6 @@ selector = load_module_by_path("select_hotspot_kernels", "tools", "select_hotspo
 
 import extract_GPU_hotspots as gpu_tool  # noqa: E402
 import extract_hotspots as combined_tool  # noqa: E402
-from stage5_table_render import wrap_trailing_label  # noqa: E402
 import stage6_time_range_config as trc  # noqa: E402
 
 GPU_SINGLE_RANK = os.path.join(FIXTURES, "rocprofv3_single_rank")
@@ -29,19 +28,96 @@ CPU_MPI_2RANK = os.path.join(FIXTURES, "mpi_2rank")
 TRACE_KERNEL_SELECTION_DIR = os.path.join(FIXTURES, "trace_gpu_kernel_selection")
 
 
+def _gpu_report_labels(source_dir, **kwargs):
+    """labels_from_output_dir()/labels_from_trace_dir() both take (source_dir, **selection
+    kwargs) directly; labels_from_report() instead reads an already-written report file, and has
+    no show_all of its own (write_report() decides what's IN the report text; require_multiple_calls
+    is the only read-time filter labels_from_report() itself applies). This wraps report writing
+    +reading behind the same (source_dir, **kwargs) shape as the other two loaders, so all three
+    can share one subTest table below -- show_all is accepted and ignored (always written True)
+    rather than forcing every call site to know which loader does and doesn't have it."""
+    kwargs.pop("show_all", None)
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "hotspots.txt")
+        gpu_tool.write_report(source_dir, dest, show_all=True)
+        return selector.labels_from_report(dest, **kwargs)
+
+
+class SelectionKwargsTests(unittest.TestCase):
+    """labels_from_output_dir()/labels_from_report()/labels_from_trace_dir() share identical
+    selection semantics (require_multiple_calls default-excludes a kernel with only one
+    dispatch/call; top/threshold rank and filter the rest) -- each shape below is exercised once
+    per applicable loader via subTest, rather than once per loader as separate test methods.
+    labels_from_report() has no top/threshold of its own (see _gpu_report_labels()), so it's
+    absent from those two shapes' case lists."""
+
+    def test_default_excludes_the_single_dispatch_kernel(self):
+        # GPU_SINGLE_RANK's __hipRegisterFatBinary has Calls=1 -- no second dispatch for the
+        # default require_multiple_calls=True bar to clear. TRACE_KERNEL_SELECTION_DIR's
+        # kernel_b.kd is dispatched only once total, same rule.
+        cases = [
+            ("output_dir", selector.labels_from_output_dir, GPU_SINGLE_RANK,
+             {"JacobiIterationKernel", "BoundaryKernel"}, {"__hipRegisterFatBinary"}),
+            ("report", _gpu_report_labels, GPU_SINGLE_RANK,
+             {"JacobiIterationKernel", "BoundaryKernel"}, {"__hipRegisterFatBinary"}),
+            ("trace_dir", selector.labels_from_trace_dir, TRACE_KERNEL_SELECTION_DIR,
+             {"kernel_a.kd", "kernel_c.kd"}, {"kernel_b.kd"}),
+        ]
+        for name, loader, source, expect_in, expect_out in cases:
+            with self.subTest(source=name):
+                labels = loader(source, show_all=True)
+                for label in expect_in:
+                    self.assertIn(label, labels)
+                for label in expect_out:
+                    self.assertNotIn(label, labels)
+
+    def test_all_dispatches_includes_the_single_dispatch_kernel(self):
+        cases = [
+            ("output_dir", selector.labels_from_output_dir, GPU_SINGLE_RANK, "__hipRegisterFatBinary"),
+            ("report", _gpu_report_labels, GPU_SINGLE_RANK, "__hipRegisterFatBinary"),
+            ("trace_dir", selector.labels_from_trace_dir, TRACE_KERNEL_SELECTION_DIR, "kernel_b.kd"),
+        ]
+        for name, loader, source, expect_label in cases:
+            with self.subTest(source=name):
+                labels = loader(source, show_all=True, require_multiple_calls=False)
+                self.assertIn(expect_label, labels)
+
+    def test_top_n_selects_highest_only(self):
+        cases = [
+            ("output_dir", selector.labels_from_output_dir, GPU_SINGLE_RANK, ["JacobiIterationKernel"]),
+            ("trace_dir", selector.labels_from_trace_dir, TRACE_KERNEL_SELECTION_DIR, ["kernel_a.kd"]),
+        ]
+        for name, loader, source, expected in cases:
+            with self.subTest(source=name):
+                self.assertEqual(loader(source, top=1), expected)
+
+    def test_threshold_filters(self):
+        # BoundaryKernel is ~9.6% of GPU_SINGLE_RANK's total -- excluded at a 50% threshold.
+        # kernel_c.kd is ~7.4% of TRACE_KERNEL_SELECTION_DIR's total kernel time -- excluded at 10%.
+        cases = [
+            ("output_dir", selector.labels_from_output_dir, GPU_SINGLE_RANK,
+             {"threshold": 50.0}, ["JacobiIterationKernel"]),
+            ("trace_dir", selector.labels_from_trace_dir, TRACE_KERNEL_SELECTION_DIR,
+             {"threshold": 10.0, "require_multiple_calls": False}, ["kernel_a.kd", "kernel_b.kd"]),
+        ]
+        for name, loader, source, kwargs, expected in cases:
+            with self.subTest(source=name):
+                self.assertEqual(loader(source, **kwargs), expected)
+
+    def test_no_data_raises(self):
+        with tempfile.TemporaryDirectory() as empty_trace_dir:
+            cases = [
+                ("output_dir_no_timing_data", lambda: selector.labels_from_output_dir(GPU_NO_DATA)),
+                ("trace_dir_empty", lambda: selector.labels_from_trace_dir(empty_trace_dir)),
+                ("trace_dir_nonexistent", lambda: selector.labels_from_trace_dir("/nonexistent/trace-dir")),
+            ]
+            for name, call in cases:
+                with self.subTest(source=name):
+                    with self.assertRaises(SystemExit):
+                        call()
+
+
 class LabelsFromOutputDirTests(unittest.TestCase):
-    def test_default_excludes_single_call_kernel(self):
-        # rocprofv3_single_rank's __hipRegisterFatBinary row has Calls=1 -- no second
-        # dispatch for the launcher's default -d 2 to target, so it's excluded by default.
-        labels = selector.labels_from_output_dir(GPU_SINGLE_RANK, show_all=True)
-        self.assertIn("JacobiIterationKernel", labels)
-        self.assertIn("BoundaryKernel", labels)
-        self.assertNotIn("__hipRegisterFatBinary", labels)
-
-    def test_all_dispatches_includes_single_call_kernel(self):
-        labels = selector.labels_from_output_dir(GPU_SINGLE_RANK, show_all=True, require_multiple_calls=False)
-        self.assertIn("__hipRegisterFatBinary", labels)
-
     def test_underlying_aggregate_still_reports_the_single_call_kernel(self):
         # confirms the exclusion happens in select_hotspot_kernels, not because the data
         # is somehow missing from extract_GPU_hotspots.aggregate() itself.
@@ -55,41 +131,12 @@ class LabelsFromOutputDirTests(unittest.TestCase):
         self.assertIn("JacobiIterationKernel", labels)
         self.assertIn("BoundaryKernel", labels)
 
-    def test_top_n_selects_highest_only(self):
-        labels = selector.labels_from_output_dir(GPU_SINGLE_RANK, top=1)
-        self.assertEqual(labels, ["JacobiIterationKernel"])
-
-    def test_threshold_filters(self):
-        # BoundaryKernel is ~9.6% of total in this fixture -- excluded at a 50% threshold.
-        labels = selector.labels_from_output_dir(GPU_SINGLE_RANK, threshold=50.0)
-        self.assertEqual(labels, ["JacobiIterationKernel"])
-
-    def test_no_timing_data_raises(self):
-        with self.assertRaises(SystemExit):
-            selector.labels_from_output_dir(GPU_NO_DATA)
-
     def test_sorted_and_deduped(self):
         labels = selector.labels_from_output_dir(GPU_SINGLE_RANK, show_all=True)
         self.assertEqual(labels, sorted(set(labels)))
 
 
 class LabelsFromReportTests(unittest.TestCase):
-    def test_solo_gpu_report_default_excludes_single_call(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            dest = os.path.join(tmp, "hotspots.txt")
-            gpu_tool.write_report(GPU_SINGLE_RANK, dest, show_all=True)
-            labels = selector.labels_from_report(dest)
-        self.assertIn("JacobiIterationKernel", labels)
-        self.assertIn("BoundaryKernel", labels)
-        self.assertNotIn("__hipRegisterFatBinary", labels)
-
-    def test_solo_gpu_report_all_dispatches_includes_single_call(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            dest = os.path.join(tmp, "hotspots.txt")
-            gpu_tool.write_report(GPU_SINGLE_RANK, dest, show_all=True)
-            labels = selector.labels_from_report(dest, require_multiple_calls=False)
-        self.assertIn("__hipRegisterFatBinary", labels)
-
     def test_combined_report_reads_table_3(self):
         # Proves the same parser covers tool 3's combined report format too -- table 3's
         # header ("=== 3. GPU kernel hotspots (rocprofv3 run) -- showing ... ===") shares the
@@ -122,26 +169,6 @@ class LabelsFromReportTests(unittest.TestCase):
             labels = selector.labels_from_report(dest)
         self.assertEqual(labels, ["void MyKernel<int, float>(int*, float const*) const"])
 
-    def test_pre_wrapped_kernel_name_reconstructs_across_physical_lines(self):
-        # A kernel name long enough that extract_GPU_hotspots.py's real render_table() call
-        # would hard-wrap it across 2+ physical lines -- confirms labels_from_report() (via
-        # iter_table_rows()) rejoins it back into one label, not just its first physical line.
-        long_kernel = "void MyKernel<" + "T" * 100 + ">(int, float const*)"
-        prefix = "    1     1.000000     10.0          50      20.00  "
-        row_text = wrap_trailing_label(prefix, long_kernel, width=90)
-        report = (
-            "rocprofv3 GPU kernel hotspots report\n\n"
-            "GPU kernel hotspots -- showing top 1 of 1 entries\n"
-            "    #      total(s)   %total       calls    avg(us)  kernel\n"
-            + row_text + "\n"
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            dest = os.path.join(tmp, "hotspots.txt")
-            with open(dest, "w") as f:
-                f.write(report)
-            labels = selector.labels_from_report(dest)
-        self.assertEqual(labels, [long_kernel])
-
     def test_malformed_text_raises(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "not_a_report.txt")
@@ -171,37 +198,6 @@ class LabelsFromTraceDirTests(unittest.TestCase):
         labels = selector.labels_from_trace_dir(TRACE_KERNEL_SELECTION_DIR, show_all=True,
                                                   require_multiple_calls=False)
         self.assertEqual(set(labels), {"kernel_a.kd", "kernel_b.kd", "kernel_c.kd"})
-
-    def test_default_excludes_single_dispatch_kernel(self):
-        # kernel_b.kd is dispatched only once total -- excluded by default.
-        labels = selector.labels_from_trace_dir(TRACE_KERNEL_SELECTION_DIR, show_all=True)
-        self.assertIn("kernel_a.kd", labels)
-        self.assertIn("kernel_c.kd", labels)
-        self.assertNotIn("kernel_b.kd", labels)
-
-    def test_all_dispatches_includes_single_dispatch_kernel(self):
-        labels = selector.labels_from_trace_dir(TRACE_KERNEL_SELECTION_DIR, show_all=True,
-                                                  require_multiple_calls=False)
-        self.assertIn("kernel_b.kd", labels)
-
-    def test_top_n_selects_highest_only(self):
-        labels = selector.labels_from_trace_dir(TRACE_KERNEL_SELECTION_DIR, top=1)
-        self.assertEqual(labels, ["kernel_a.kd"])
-
-    def test_threshold_filters(self):
-        # kernel_c.kd is ~7.4% of total kernel time -- excluded at a 10% threshold.
-        labels = selector.labels_from_trace_dir(TRACE_KERNEL_SELECTION_DIR, threshold=10.0,
-                                                  require_multiple_calls=False)
-        self.assertEqual(labels, ["kernel_a.kd", "kernel_b.kd"])
-
-    def test_no_trace_data_raises(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(SystemExit):
-                selector.labels_from_trace_dir(tmp)
-
-    def test_nonexistent_dir_raises(self):
-        with self.assertRaises(SystemExit):
-            selector.labels_from_trace_dir("/nonexistent/trace-dir")
 
 
 class MainCLITests(unittest.TestCase):

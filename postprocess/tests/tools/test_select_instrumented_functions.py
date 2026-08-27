@@ -22,7 +22,6 @@ import extract_calltree as calltree_tool  # noqa: E402
 import extract_CPU_hotspots as cpu_tool  # noqa: E402
 import extract_GPU_hotspots as gpu_tool  # noqa: E402
 import extract_hotspots as combined_tool  # noqa: E402
-from stage5_table_render import wrap_trailing_label  # noqa: E402
 import stage6_noise_config  # noqa: E402
 
 SINGLE_RANK = os.path.join(FIXTURES, "single_rank")
@@ -135,26 +134,6 @@ class LabelsFromReportTests(unittest.TestCase):
                 f.write(report)
             labels = selector.labels_from_report(dest)
         self.assertEqual(labels, ["MyNamespace::Foo(int, double) const"])
-
-    def test_pre_wrapped_function_name_reconstructs_across_physical_lines(self):
-        # A function name long enough that extract_CPU_hotspots.py's real render_table() call
-        # would hard-wrap it across 2+ physical lines -- confirms labels_from_report() (via
-        # iter_table_rows()) rejoins it back into one label, not just its first physical line.
-        long_name = "MyNamespace::" + "T" * 100 + "::Foo(int, double)"
-        prefix = "    1     1.000000     10.0      2.000000          50    50.0  "
-        row_text = wrap_trailing_label(prefix, long_name, width=100)
-        report = (
-            "rocprof-sys hotspots report (CPU-side only)\n\n"
-            "CPU compute hotspots (candidates for GPU offload) -- showing top 1 of 1 entries\n"
-            "    #      self(s)   %total      total(s)       calls    %self  function\n"
-            + row_text + "\n"
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            dest = os.path.join(tmp, "hotspots.txt")
-            with open(dest, "w") as f:
-                f.write(report)
-            labels = selector.labels_from_report(dest)
-        self.assertEqual(labels, [long_name])
 
     def test_malformed_text_raises(self):
         with tempfile.TemporaryDirectory() as tmp:

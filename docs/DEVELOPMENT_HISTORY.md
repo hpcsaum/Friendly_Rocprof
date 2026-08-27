@@ -64,6 +64,7 @@
 | 2026-08-26 | Plan 3.14: new `scripts/profile_traced_hotspot_kernels.sh` runs a `rocprof-compute` kernel deep-dive from a trace directory that already exists, instead of paying for a fresh `rocprofv3` scan -- new `select_hotspot_kernels.py --trace-dir` source (backed by new `stage4_rocprofsys_trace_flat.aggregate_gpu_kernels()`) resolves hot kernel names straight from the trace-CSV pipeline, since the trace tools' own CPU+GPU-fused report layout isn't parseable by the existing `--report` source; also gains `--time-range` for scoping kernel selection to one window of the trace -- see full accounting below |
 | 2026-08-27 | Plan 3.15 (Phase 0 of 8): test comment policy written into `postprocess/README.md`'s "Tests" section, ahead of a multi-phase `postprocess/tests/` maintainability cleanup -- see full accounting below |
 | 2026-08-27 | Plan 3.15 (Phase 1 of 8): new `postprocess/tests/_test_helpers.py` replaces the copy-pasted `importlib.util` module-loading dance in 41 test files; colliding `make_row`/`make_raw_row` helper names resolved to purpose-specific names; a reimplemented `flatten()` in one test file replaced with the real `flatten_tree()` -- see full accounting below |
+| 2026-08-27 | Plan 3.15 (Phase 2 of 8): `test_select_hotspot_kernels.py`/`test_select_instrumented_functions.py` consolidated -- 750 -> 740 tests, no coverage lost -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -2986,3 +2987,44 @@ then applied and manually diffed before committing.
 
 Verification: full suite unchanged at `Ran 750 tests ... OK` -- expected, since this phase only
 relocates loading mechanics and renames local helpers, it doesn't consolidate or remove any test.
+
+## 2026-08-27 — Plan 3.15, Phase 2: `select_hotspot_kernels`/`select_instrumented_functions` consolidation
+
+The plan's identified biggest test-count win, targeting the two tools whose test files re-run the
+same selection-kwargs assertions once per source loader (`labels_from_output_dir`/`labels_from_report`/
+`labels_from_trace_dir`). `test_select_hotspot_kernels.py`'s three loaders turned out to genuinely
+share identical kwargs and selection semantics (`show_all`/`require_multiple_calls`/`top`/`threshold`,
+all ultimately backed by the same `stage5_table_render.select_entries()`), so its
+default-exclude/all-dispatches/top-N/threshold/no-data-raises tests -- previously 14 separate test
+methods across 3 classes -- collapsed into one new `SelectionKwargsTests` class with 5 methods, each
+`subTest`-looping over every source that shape applies to (the report loader has no top/threshold of
+its own -- `write_report()` decides what's in the report text, not a `labels_from_report()` kwarg --
+so those two shapes' case lists cover only `output_dir`/`trace_dir`, correctly, not a forced fit). A
+small `_gpu_report_labels()` helper wraps report writing+reading behind the same `(source_dir,
+**kwargs)` call shape the other two loaders already have, so all three fit one subTest table. File
+total: 28 -> 19 tests, all previously-covered fixture/kwargs combinations traced individually against
+the new subTest tuples to confirm none were silently dropped.
+
+Investigating the plan's second target -- "the `iter_table_rows`/`wrap_trailing_label` edge-case
+tests duplicated near-verbatim in both files" -- surfaced a needed correction to the plan's own
+framing: reading both tools' `labels_from_report()` implementations directly showed that
+`test_malformed_text_raises`/`test_missing_file_raises` are NOT shared-utility duplicates at all --
+each tool searches for its own distinct report-section header ("GPU kernel hotspots" vs "CPU compute
+hotspots") and raises its own distinct error message, genuinely tool-specific coverage that stayed in
+both files unchanged. Only `test_pre_wrapped_{kernel,function}_name_reconstructs_across_physical_lines`
+turned out to be true duplication -- confirmed by direct comparison against
+`test_stage5_table_render.py::IterTableRowsTests::test_wrapped_label_reconstructs_to_the_original_full_string`,
+already exercising the identical `wrap_trailing_label()`-then-`iter_table_rows()` round-trip
+generically, with no dependency on either tool's specific column count. Since coverage already
+existed there in full, no new tests were added to `test_stage5_table_render.py` -- the two per-tool
+copies were simply dropped (with their now-unused `wrap_trailing_label` imports).
+
+`test_select_instrumented_functions.py` turned out to have no further consolidation opportunity
+beyond that one drop: its `labels_from_report()` takes no kwargs at all (trusts whatever the report
+writer already selected), unlike `labels_from_output_dir()`'s `threshold`/`top`/`unfiltered` --
+architecturally different enough that forcing its "default-exclude" tests across both loaders into
+one parametrized table would produce an artificial merge, not real deduplication, so its remaining
+top-N/unfiltered/mpi-2rank/dated-subdirectory tests were left as standalone tests. File total: 47 ->
+46 tests.
+
+Verification: full suite `Ran 740 tests ... OK` (750 -> 740, -10 total across the two files).
