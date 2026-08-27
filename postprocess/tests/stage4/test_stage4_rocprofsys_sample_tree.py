@@ -15,6 +15,9 @@ MPI_2RANK_DIR = os.path.join(FIXTURES, "mpi_2rank")
 KERNEL_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_kernel_anchor")
 KERNEL_NO_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_kernel_no_anchor")
 SAMPLING_FALLBACK_DIR = os.path.join(FIXTURES, "calltree_sampling_fallback")
+GPU_SPAWNED_THREAD_DIR = os.path.join(FIXTURES, "gpu_spawned_thread")
+MULTI_METRIC_RANK_DIR = os.path.join(FIXTURES, "multi_metric_rank")
+EMPTY_DIR = os.path.join(FIXTURES, "no_timing_data")
 
 RANK = "r0"  # every hand-built test tree in this file simulates one rank
 
@@ -261,6 +264,45 @@ class AttachKernelSummariesCollectIntoTests(unittest.TestCase):
 
 
 class LoadRankTreesTests(unittest.TestCase):
+    def test_basic_two_rank_tree(self):
+        cpu_dir, _gpu_dir = resolve_run_dirs(MPI_2RANK_DIR)
+        ranks = s4t.load_rank_trees(cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt")
+        self.assertEqual(len(ranks), 2)
+        for rank_key, rows, roots in ranks:
+            self.assertEqual(len(roots), 1)
+            self.assertEqual(roots[0]["label"], "main")
+            # compute_stencil and hipMemcpy are main's only two children
+            children = [r for r in rows if r["parent"] is roots[0]]
+            self.assertEqual({c["label"] for c in children}, {"compute_stencil", "hipMemcpy"})
+
+    def test_raises_on_empty_input_is_just_empty_list(self):
+        # load_rank_trees() itself doesn't raise -- a report-building tool composed over it
+        # does, once it sees an empty list. Confirmed here so that distinction stays intentional.
+        cpu_dir, _gpu_dir = resolve_run_dirs(EMPTY_DIR)
+        self.assertEqual(s4t.load_rank_trees(cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt"), [])
+
+    def test_is_thread_root_flagged_case(self):
+        # gpu_spawned_thread: start_thread's DEPTH nests one level under its
+        # spawning pthread_create call -- is_thread_root correctly fires, but
+        # root-enumeration here relies only on parent is None, not that flag.
+        cpu_dir, _gpu_dir = resolve_run_dirs(GPU_SPAWNED_THREAD_DIR)
+        ranks = s4t.load_rank_trees(cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt")
+        self.assertEqual(len(ranks), 1)
+        _rank_key, _rows, roots = ranks[0]
+        # main, hipRuntimeGetVersion, compute_stencil are three independent
+        # DEPTH-0 roots in this fixture -- all three must be detected.
+        self.assertEqual({r["label"] for r in roots}, {"main", "hipRuntimeGetVersion", "compute_stencil"})
+
+    def test_depth_resets_to_zero_case(self):
+        # multi_metric_rank: a second OS thread's own root row sits at DEPTH 0,
+        # the same depth as thread 0's other roots -- parent is None still
+        # correctly separates it without relying on is_thread_root.
+        cpu_dir, _gpu_dir = resolve_run_dirs(MULTI_METRIC_RANK_DIR)
+        ranks = s4t.load_rank_trees(cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt")
+        _rank_key, _rows, roots = ranks[0]
+        labels = [r["label"] for r in roots]
+        self.assertEqual(labels.count("worker_loop"), 2)  # two distinct thread roots, not merged
+
     def test_primary_pattern_file_used_when_present(self):
         cpu_dir, _gpu_dir = resolve_run_dirs(MPI_2RANK_DIR)
         ranks = s4t.load_rank_trees(cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt")

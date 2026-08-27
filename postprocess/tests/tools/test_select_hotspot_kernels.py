@@ -192,9 +192,12 @@ class LabelsFromTraceDirTests(unittest.TestCase):
         _clear_kernel_selection_cache()
         trc.configure(None)
 
-    def test_only_kernel_labels_are_returned(self):
-        # cpu_heavy_function's self_sum (60.0) dwarfs every kernel's, and hipLaunchKernel is a
-        # launch call, not a dispatch -- neither may leak into the result.
+    def test_loader_wires_discovery_aggregation_and_selection_together(self):
+        # The gpu_kernel-only domain filter itself is exhaustively covered directly against
+        # aggregate_gpu_kernels() in test_stage4_rocprofsys_trace_flat.py -- this confirms
+        # labels_from_trace_dir()'s own composition (discover_ranks -> aggregate_gpu_kernels ->
+        # select_entries) reaches the same result end to end: cpu_heavy_function's huge self_sum
+        # and the hipLaunchKernel launch call both correctly stay out of the returned labels.
         labels = selector.labels_from_trace_dir(TRACE_KERNEL_SELECTION_DIR, show_all=True,
                                                   require_multiple_calls=False)
         self.assertEqual(set(labels), {"kernel_a.kd", "kernel_b.kd", "kernel_c.kd"})

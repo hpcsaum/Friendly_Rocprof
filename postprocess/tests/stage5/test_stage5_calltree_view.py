@@ -181,15 +181,10 @@ class CompilerRuntimeTierTests(unittest.TestCase):
 
 
 class SamplingMissingFallbackTests(unittest.TestCase):
-    def test_rank_without_sampling_file_falls_back_to_wall_clock(self):
-        ranks = load_rank_trees(
-            FALLBACK_DIR, "sampling_wall_clock-*.txt", "wall_clock-*.txt", postprocess=strip_wrapper_noise
-        )
-        self.assertEqual(len(ranks), 2)
-        labels_by_rank = {rk: {r["label"] for r in rows} for rk, rows, _roots in ranks}
-        self.assertIn({"main", "sampled_leaf"}, labels_by_rank.values())
-        self.assertIn({"main_fallback", "instrumented_leaf"}, labels_by_rank.values())
-
+    # The fallback-pattern selection itself (sampling_wall_clock missing -> wall_clock used) is
+    # exhaustively covered directly against load_rank_trees() in
+    # test_stage4_rocprofsys_sample_tree.py::LoadRankTreesTests -- this only confirms the
+    # fallback rank's data actually reaches this tool's rendered report.
     def test_fallback_rank_renders_correctly(self):
         report = render(FALLBACK_DIR)
         self.assertIn("main_fallback", report)
@@ -198,6 +193,11 @@ class SamplingMissingFallbackTests(unittest.TestCase):
 
 class KernelAnchorBroadeningTests(unittest.TestCase):
     def test_namespace_qualified_and_cray_acc_both_resolve_as_anchors(self):
+        # Wiring check: is_kernel_launch()'s substring matching (incl. namespace-qualified and
+        # __cray_start_acc_kernel forms) and the proportional-split arithmetic below are both
+        # exhaustively unit-tested directly in test_stage4_rocprofsys_sample_tree.py
+        # (IsKernelLaunchTests, KernelAnchorAttributionTests) -- this only confirms real fixture
+        # parsing reaches the same result end to end through this tool's rendered report.
         report = render(KERNEL_ANCHOR_DIR)
         self.assertIn("[GPU kernels -- rocprofv3", report)
         self.assertNotIn("no owning subroutine or launch call site found", report)
@@ -224,6 +224,10 @@ class AggregationTests(unittest.TestCase):
         report = render(MULTI_RANK_DIR)
         self.assertNotIn("=== Rank", report)
 
+    # The next two tests' avg/std_dev/min/max arithmetic is already exhaustively unit-tested
+    # directly against aggregate_node_stats() in test_stage4_rocprofsys_common.py -- they're kept
+    # as wiring checks confirming a real 3-file fixture reaches the same numbers end to end
+    # through merge_rank_trees() and this tool's rendered decimal text, not fresh math coverage.
     def test_load_balance_columns_for_node_present_on_every_rank(self):
         report = render(MULTI_RANK_DIR)
         line = _line_for(report, "compute_stencil")

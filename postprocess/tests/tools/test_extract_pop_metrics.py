@@ -88,19 +88,6 @@ class WriteReportTests(unittest.TestCase):
         self.assertIn("GPU-Eff", header_both)
         self.assertNotIn("GPU-Eff", header_mixed)  # reference (REF_DIR) has no GPU data at all
 
-    def test_column_order_matches_grouping(self):
-        # Non-scaling metrics first (GPU-Util before GPU-Off per the user's
-        # preferred order), all scaling metrics grouped at the end.
-        with tempfile.TemporaryDirectory() as tmp:
-            report = pop_tool.write_report(
-                [COMBINED_DIR, COMBINED_DIR], os.path.join(tmp, "out.txt"), scaling="strong"
-            )
-        header = next(line for line in report.splitlines() if "ranks" in line and "LB" in line)
-        columns = ["LB", "CommE", "PE", "GPU-Util", "GPU-Off", "GPU-LB", "CompE", "GE", "GPU-Eff"]
-        positions = [header.index(c) for c in columns]
-        self.assertEqual(positions, sorted(positions))
-
-
 class MainCliTests(unittest.TestCase):
     def test_scaling_flag_required_with_scaled_dirs(self):
         with tempfile.TemporaryDirectory() as tmp:

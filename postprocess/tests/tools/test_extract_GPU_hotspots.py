@@ -16,6 +16,10 @@ hotspots = load_module_by_path("extract_GPU_hotspots", "tools", "extract_GPU_hot
 
 
 class ConfigJsonGuessingTests(unittest.TestCase):
+    # Wiring check: "missing data -> None" behavior itself is exhaustively covered generically in
+    # test_stage6_run_metadata.py; this confirms this tool's own CONFIG_EXECUTABLE_KEYS/
+    # CONFIG_DATETIME_KEYS/CONFIG_RUNTIME_KEYS constants actually match a real *_config.json
+    # fixture, not synthetic keys.
     def test_guesses_from_config_json(self):
         config = hotspots.load_json_file(os.path.join(FIXTURES, "rocprofv3_mpi_2rank"), "*_config.json")
         self.assertEqual(hotspots.guess_executable(config, hotspots.CONFIG_EXECUTABLE_KEYS), "jacobi_hip")
@@ -25,21 +29,14 @@ class ConfigJsonGuessingTests(unittest.TestCase):
         # "elapsed" is nested under "timing" -- exercises the one-level-deep search
         self.assertEqual(hotspots.guess_total_runtime(config, hotspots.CONFIG_RUNTIME_KEYS), "5.980000 sec")
 
-    def test_missing_config_json_leaves_fields_blank(self):
-        config = hotspots.load_json_file(os.path.join(FIXTURES, "rocprofv3_single_rank"), "*_config.json")
-        self.assertEqual(config, {})
-        self.assertIsNone(hotspots.guess_executable(config, hotspots.CONFIG_EXECUTABLE_KEYS))
-        self.assertIsNone(hotspots.guess_total_runtime(config, hotspots.CONFIG_RUNTIME_KEYS))
-
     def test_num_ranks_from_distinct_pids(self):
+        # PID_SUFFIX_RE here (*_kernel_stats.csv) is defined locally in extract_GPU_hotspots.py,
+        # not shared -- this is the only coverage of that specific pattern.
         scanned = [
             "/x/myhost/2001_kernel_stats.csv",
             "/x/myhost/2002_kernel_stats.csv",
         ]
         self.assertEqual(hotspots.guess_num_ranks({}, hotspots.PID_SUFFIX_RE, scanned), 2)
-
-    def test_num_ranks_none_when_no_files(self):
-        self.assertIsNone(hotspots.guess_num_ranks({}, hotspots.PID_SUFFIX_RE, []))
 
 
 class WriteReportTests(unittest.TestCase):

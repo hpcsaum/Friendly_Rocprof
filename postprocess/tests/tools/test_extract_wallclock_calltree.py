@@ -18,22 +18,7 @@ ct_tool = load_module_by_path("extract_wallclock_calltree", "tools", "extract_wa
 import stage6_noise_config  # noqa: E402  (needs sys.path insert above first)
 
 MPI_2RANK_DIR = os.path.join(FIXTURES, "mpi_2rank")
-KERNEL_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_kernel_anchor")
 EMPTY_DIR = os.path.join(FIXTURES, "no_timing_data")
-
-
-class ResolveTwoDirsTests(unittest.TestCase):
-    # extract_wallclock_calltree.py imports resolve_two_dirs() from stage1_run_dirs.py (which has
-    # its own thorough direct tests) -- this just confirms the import wires through correctly.
-    def test_detects_paired_subdirs(self):
-        cpu_dir, gpu_dir = ct_tool.resolve_two_dirs(KERNEL_ANCHOR_DIR, None)
-        self.assertEqual(cpu_dir, os.path.join(KERNEL_ANCHOR_DIR, "rocprof-sys"))
-        self.assertEqual(gpu_dir, os.path.join(KERNEL_ANCHOR_DIR, "rocprofv3"))
-
-    def test_falls_back_to_run_dir_itself_when_flat(self):
-        cpu_dir, gpu_dir = ct_tool.resolve_two_dirs(MPI_2RANK_DIR, None)
-        self.assertEqual(cpu_dir, MPI_2RANK_DIR)
-        self.assertIsNone(gpu_dir)
 
 
 class HeaderProseTests(unittest.TestCase):

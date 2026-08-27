@@ -21,6 +21,10 @@ import stage6_noise_config  # noqa: E402
 
 
 class MetadataGuessingTests(unittest.TestCase):
+    # The next two tests are wiring checks: "missing data -> None"/"distinct PIDs in filenames"
+    # behavior itself is exhaustively covered generically in test_stage6_run_metadata.py; these
+    # confirm this tool's own EXECUTABLE_KEYS/RUN_DATETIME_KEYS/TOTAL_RUNTIME_KEYS/NUM_RANKS_KEYS
+    # constants actually match a real metadata.json/filename fixture, not synthetic keys.
     def test_guesses_from_mpi_fixture_metadata_json(self):
         data = hotspots.load_json_file(os.path.join(FIXTURES, "mpi_2rank"), hotspots.METADATA_FILENAME)
         self.assertEqual(hotspots.guess_executable(data, hotspots.EXECUTABLE_KEYS), "jacobi_mpi")
@@ -30,12 +34,6 @@ class MetadataGuessingTests(unittest.TestCase):
         self.assertEqual(hotspots.guess_total_runtime(data, hotspots.TOTAL_RUNTIME_KEYS), "21.824161 sec")
         # world_size is nested under "settings" -- exercises the one-level-deep search
         self.assertEqual(hotspots.guess_num_ranks(data, hotspots.PID_SUFFIX_RE, [], keys=hotspots.NUM_RANKS_KEYS), 2)
-
-    def test_missing_metadata_json_leaves_fields_blank(self):
-        data = hotspots.load_json_file(os.path.join(FIXTURES, "single_rank"), hotspots.METADATA_FILENAME)
-        self.assertEqual(data, {})
-        self.assertIsNone(hotspots.guess_executable(data, hotspots.EXECUTABLE_KEYS))
-        self.assertIsNone(hotspots.guess_total_runtime(data, hotspots.TOTAL_RUNTIME_KEYS))
 
     def test_num_ranks_falls_back_to_distinct_pids_in_filenames(self):
         scanned = ["/x/wall_clock-1001.txt", "/x/wall_clock-1002.txt", "/x/roctracer-1001.txt"]

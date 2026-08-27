@@ -25,13 +25,6 @@ class MergeRanksTests(unittest.TestCase):
         for node in flatten_tree(roots):
             self.assertEqual(set(node.keys()), TREE_NODE_CONTRACT_KEYS)
 
-    def test_both_ranks_contribute_to_the_same_merged_position(self):
-        roots = tree.merge_ranks(RANK_INPUTS)
-        main = next(n for n in roots if n["label"] == "main")
-        self.assertEqual(set(main["per_rank"].keys()), {"r0", "r1"})
-        self.assertAlmostEqual(main["per_rank"]["r0"]["sum"], 10.0)
-        self.assertAlmostEqual(main["per_rank"]["r1"]["sum"], 12.0)
-
     def test_corr_id_joined_kernel_stays_nested_under_its_launch_site_after_cross_rank_merge(self):
         roots = tree.merge_ranks(RANK_INPUTS)
         main = next(n for n in roots if n["label"] == "main")

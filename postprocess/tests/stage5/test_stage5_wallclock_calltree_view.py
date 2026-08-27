@@ -11,68 +11,20 @@ POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
 sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
 import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
 
-from stage1_run_dirs import resolve_run_dirs  # noqa: E402  (needs sys.path insert above first)
 from stage5_wallclock_calltree_view import build_calltree_view  # noqa: E402
-from stage4_rocprofsys_sample_tree import load_rank_trees  # noqa: E402
 import stage6_noise_config  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 MPI_2RANK_DIR = os.path.join(FIXTURES, "mpi_2rank")
-GPU_SPAWNED_THREAD_DIR = os.path.join(FIXTURES, "gpu_spawned_thread")
-MULTI_METRIC_RANK_DIR = os.path.join(FIXTURES, "multi_metric_rank")
 GPU_API_NESTED_CHAIN_DIR = os.path.join(FIXTURES, "gpu_api_nested_chain")
 KERNEL_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_kernel_anchor")
 KERNEL_MULTI_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_kernel_multi_anchor")
 KERNEL_NO_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_kernel_no_anchor")
 KD_ARTIFACT_DIR = os.path.join(FIXTURES, "calltree_kd_artifact")
-EMPTY_DIR = os.path.join(FIXTURES, "no_timing_data")
 
 
 def render(run_dir, **kwargs):
     return render_calltree_view(build_calltree_view, run_dir, **kwargs)
-
-
-class LoadRankTreesTests(unittest.TestCase):
-    def test_basic_two_rank_tree(self):
-        cpu_dir, _gpu_dir = resolve_run_dirs(MPI_2RANK_DIR)
-        ranks = load_rank_trees(cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt")
-        self.assertEqual(len(ranks), 2)
-        for rank_key, rows, roots in ranks:
-            self.assertEqual(len(roots), 1)
-            self.assertEqual(roots[0]["label"], "main")
-            # compute_stencil and hipMemcpy are main's only two children
-            children = [r for r in rows if r["parent"] is roots[0]]
-            self.assertEqual({c["label"] for c in children}, {"compute_stencil", "hipMemcpy"})
-
-    def test_raises_on_empty_input_is_just_empty_list(self):
-        # load_rank_trees() itself doesn't raise -- build_calltree_view() does, once it
-        # sees an empty list. Confirmed here so that distinction stays intentional.
-        cpu_dir, _gpu_dir = resolve_run_dirs(EMPTY_DIR)
-        self.assertEqual(load_rank_trees(cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt"), [])
-
-
-class MultiRootDetectionTests(unittest.TestCase):
-    def test_is_thread_root_flagged_case(self):
-        # gpu_spawned_thread: start_thread's DEPTH nests one level under its
-        # spawning pthread_create call -- is_thread_root correctly fires, but
-        # root-enumeration here relies only on parent is None, not that flag.
-        cpu_dir, _gpu_dir = resolve_run_dirs(GPU_SPAWNED_THREAD_DIR)
-        ranks = load_rank_trees(cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt")
-        self.assertEqual(len(ranks), 1)
-        _rank_key, _rows, roots = ranks[0]
-        # main, hipRuntimeGetVersion, compute_stencil are three independent
-        # DEPTH-0 roots in this fixture -- all three must be detected.
-        self.assertEqual({r["label"] for r in roots}, {"main", "hipRuntimeGetVersion", "compute_stencil"})
-
-    def test_depth_resets_to_zero_case(self):
-        # multi_metric_rank: a second OS thread's own root row sits at DEPTH 0,
-        # the same depth as thread 0's other roots -- parent is None still
-        # correctly separates it without relying on is_thread_root.
-        cpu_dir, _gpu_dir = resolve_run_dirs(MULTI_METRIC_RANK_DIR)
-        ranks = load_rank_trees(cpu_dir, "wall_clock-*.txt", "sampling_wall_clock-*.txt")
-        _rank_key, _rows, roots = ranks[0]
-        labels = [r["label"] for r in roots]
-        self.assertEqual(labels.count("worker_loop"), 2)  # two distinct thread roots, not merged
 
 
 class RenderTreeTests(unittest.TestCase):
@@ -111,6 +63,10 @@ class RenderTreeTests(unittest.TestCase):
         self.assertNotIn("hidden below this point", report)
 
     def test_real_columns_not_bracketed_string(self):
+        # Wiring check: format_aligned_rows()'s own column-formatting behavior (incl. the
+        # "[calls=" old-format regression) is exhaustively covered directly in
+        # test_stage5_tree_render.py -- this only confirms this tool's report actually uses the
+        # real REPORT_HEADERS constant, not a leftover hand-rolled string.
         report = render(MPI_2RANK_DIR)
         self.assertIn("calls", report)
         self.assertIn("self-avg(s)", report)
@@ -149,6 +105,10 @@ class KernelIntegrationTests(unittest.TestCase):
         self.assertNotIn("no launch call site found", report)
 
     def test_multiple_anchors_split_proportionally(self):
+        # Wiring check: the 60%/40% (300/500, 200/500) split arithmetic itself is exhaustively
+        # covered directly against KernelAnchorAttributionTests in
+        # test_stage4_rocprofsys_sample_tree.py -- this only confirms both anchors' labels
+        # actually land at the right two tree positions in this tool's rendered report.
         report = render(KERNEL_MULTI_ANCHOR_DIR)
         # fixture: compute_a issued 300 launch calls, compute_b issued 200 (of 500 total). This
         # bracketed label is long enough that wrap_leading_labels() may hard-wrap it across
@@ -190,8 +150,8 @@ class OtherTagConfigTests(unittest.TestCase):
     def test_other_tagged_node_spliced_out_with_fold(self):
         # This tool has no wrapper-noise handling of its own -- confirms "other"'s default
         # treatment (splice, fold=True) still lands here via _splice_other().
-        # compute_stencil is main's real, otherwise-untagged child (see
-        # LoadRankTreesTests.test_basic_two_rank_tree above).
+        # compute_stencil is main's real, otherwise-untagged child (mpi_2rank's tree shape is
+        # covered directly in test_stage4_rocprofsys_sample_tree.py::LoadRankTreesTests).
         report_default = render(MPI_2RANK_DIR)
         self.assertIn("compute_stencil", report_default)
 

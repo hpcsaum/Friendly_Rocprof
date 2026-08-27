@@ -66,6 +66,7 @@
 | 2026-08-27 | Plan 3.15 (Phase 1 of 8): new `postprocess/tests/_test_helpers.py` replaces the copy-pasted `importlib.util` module-loading dance in 41 test files; colliding `make_row`/`make_raw_row` helper names resolved to purpose-specific names; a reimplemented `flatten()` in one test file replaced with the real `flatten_tree()` -- see full accounting below |
 | 2026-08-27 | Plan 3.15 (Phase 2 of 8): `test_select_hotspot_kernels.py`/`test_select_instrumented_functions.py` consolidated -- 750 -> 740 tests, no coverage lost -- see full accounting below |
 | 2026-08-27 | Plan 3.15 (Phase 3 of 8): remaining duplication clusters consolidated across stage1/stage3/stage4/stage5/stage6/tools -- 740 -> 684 tests -- see full accounting below |
+| 2026-08-27 | Plan 3.15 (Phase 4 of 8): test-scope audit across all 45 test files -- 11 pure re-tests dropped, 5 misplaced tests relocated, ~10 tests relabeled as wiring checks -- 684 -> 673 tests -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -3097,3 +3098,91 @@ up an empty test module for each -- deliberately checked before landing on the n
 Verification: full suite `Ran 684 tests ... OK` (740 -> 684, -56 across the six groups); every
 edited file was also run individually before the full-suite pass, and `python3 -m py_compile` was
 run across all 45 test files (plus the four helper modules) as a final syntax sanity check.
+
+## 2026-08-27 — Plan 3.15, Phase 4: test-scope audit
+
+The plan's own explicit thoroughness requirement: every one of the 45 test files, classified test
+by test into genuine unit coverage, a pure re-test of behavior already covered where that behavior
+is actually implemented (drop), a legitimate integration/wiring check (keep, but make it clearly
+labeled as one), or a misplaced test (relocate). Scale made this a research task first: 6 parallel
+read-only audit agents, each covering a group of files and required to cross-reference the actual
+production source (not just test names) before flagging anything, then the findings applied and
+verified by hand, file group by file group.
+
+**Dropped** (11 tests, pure re-tests of behavior already covered where it's actually implemented,
+confirmed by checking both sides): `test_stage3_rocprofsys_trace.py`'s `ReexportedPrimitivesTests`
+(asserted only object identity of functions re-exported unchanged from `stage3_rocprofsys_common`)
+and its `TagRowsTests.test_wrapper_branch_noise_sibling_derivation_still_works` (byte-identical
+fixture and assertions to `test_stage3_rocprofsys_common.py`'s own sibling-group test);
+`test_stage6_time_range_config.py`'s `test_no_range_active_describes_the_real_full_extent` (same
+fixture, same numeric fact as `test_stage4_rocprofsys_trace_aggregate.py`'s
+`GetRankTimeExtentTests`); `test_stage4_rocprofsys_trace_tree.py`'s
+`test_both_ranks_contribute_to_the_same_merged_position` (re-tests `MergeRankTreesTests`' own
+cross-rank-merge claim through real CSV rows instead of hand-built ones, with `merge_ranks()`
+adding no transformation of its own here); `test_stage5_calltree_view.py`'s
+`SamplingMissingFallbackTests.test_rank_without_sampling_file_falls_back_to_wall_clock` (calls
+`load_rank_trees()` directly, duplicating `test_stage4_rocprofsys_sample_tree.py`'s own fallback
+test); `test_extract_CPU_hotspots.py`'s `test_missing_metadata_json_leaves_fields_blank` and
+`test_extract_GPU_hotspots.py`'s `test_missing_config_json_leaves_fields_blank`/
+`test_num_ranks_none_when_no_files` (all three duplicate "missing data -> None" behavior already
+covered generically in `test_stage6_run_metadata.py`); `test_extract_pop_metrics.py`'s
+`test_column_order_matches_grouping` (duplicates `test_stage5_pop_metrics_table.py`'s own version
+exactly, adding a real fixture where the column-order fact doesn't depend on one); and
+`test_extract_wallclock_calltree.py`'s whole `ResolveTwoDirsTests` class (2 tests -- calls
+`resolve_two_dirs()` directly, already exhaustively covered in `test_stage1_run_dirs.py`, and the
+tool's actual wiring of the result is independently proven by `MainCliTests.test_cli_contract`'s
+own subTests already).
+
+One deliberately kept, not dropped, despite being flagged as a candidate: the audit agent for
+stage3 suggested `OpenMpiPrefixTests` was misplaced (only confirms `default_noise_patterns.json`'s
+real `mpi_territory` prefix *content*, owned by stage6). Closer inspection: the actual code under
+test in both its methods is `stage3_rocprofsys_common._label_matches()` -- a stage3 function, just
+exercised against real stage6 pattern data instead of synthetic `TAG_DEFS`. That's a genuine
+integration check between stage6's data and stage3's algorithm, not a misplaced test -- kept in
+`test_stage3_rocprofsys_common.py`, matching its own already-clear explanatory comment. Also kept
+(judgment call): `test_stage4_rocprofsys_trace_tree.py`'s
+`test_every_merged_node_matches_the_documented_tree_node_contract`, flagged as borderline -- checked
+whether `test_stage4_rocprofsys_common.py`'s `MergeRankTreesTests` asserts a merged node's *full*
+key set anywhere; it doesn't, only specific fields per test, so this is genuinely new
+completeness-contract coverage no other test provides.
+
+**Relocated** (5 tests, misplaced): `test_stage3_rocprofsys_common.py`'s `LoadDefaultPatternsTests`
+(calls `stage6_noise_config.load_default_patterns()` directly, exercises zero stage3 logic) moved
+to `test_stage6_noise_config.py`, reusing that file's own isolated `nc` module instance. Four tests
+from `test_stage5_wallclock_calltree_view.py`'s `LoadRankTreesTests`/`MultiRootDetectionTests`
+(`test_basic_two_rank_tree`, `test_raises_on_empty_input_is_just_empty_list`,
+`test_is_thread_root_flagged_case`, `test_depth_resets_to_zero_case`) all called
+`load_rank_trees()` directly with zero reference to the wallclock tool itself -- moved into
+`test_stage4_rocprofsys_sample_tree.py`'s own existing `LoadRankTreesTests` class, where the
+function is actually implemented, taking their needed fixture constants
+(`GPU_SPAWNED_THREAD_DIR`/`MULTI_METRIC_RANK_DIR`/`EMPTY_DIR`) with them. A stale
+`test_stage5_wallclock_calltree_view.py` comment cross-referencing the relocated
+`test_basic_two_rank_tree` by name was updated to point at the new location instead of silently
+going stale.
+
+**Relabeled as wiring checks** (kept, made identifiable): roughly a dozen tests across
+`test_stage3_rocprofsys_common.py` (`TagRowsFallbackTests` renamed `TagDefsFallbackWiringTests`),
+`test_stage6_time_range_config.py` (the one wiring test pulled out of `DescribeTimeRangeTests` into
+its own `DescribeTimeRangeStage4WiringTests` class, alongside the dropped duplicate above),
+`test_stage5_calltree_view.py` (`KernelAnchorBroadeningTests` and two `AggregationTests` methods --
+comments added explaining the arithmetic/matching logic is exhaustively covered directly against
+stage4, these confirm real-fixture wiring reaches the same result),
+`test_stage5_wallclock_calltree_view.py` (`RenderTreeTests.test_real_columns_not_bracketed_string`,
+`KernelIntegrationTests.test_multiple_anchors_split_proportionally`),
+`test_extract_CPU_hotspots.py`/`test_extract_GPU_hotspots.py` (the metadata/config-guessing tests
+that confirm each tool's own KEYS constants match a real fixture, distinct from the generic
+missing-data behavior dropped above), `test_extract_trace_hotspots.py`
+(`test_time_range_flag_restricts_the_report`'s exact clipped-self-time literal, already proven
+directly against `build_rank_aggregate()` in stage4's own tests, loosened to a non-zero check --
+caught and fixed a real bug introduced by the first attempt at this loosening, since `"35.000000"`
+literally contains the substring `"0.000000"`, breaking a naive `assertNotIn` check; fixed with an
+exact-token comparison on the split line instead), and `test_select_hotspot_kernels.py`
+(`LabelsFromTraceDirTests`' one trace-dir test renamed and re-commented to make clear it's
+confirming the loader's own composition, not the domain-filter rule tested directly in stage4).
+
+Verification: full suite `Ran 673 tests ... OK` (684 -> 673, -11: matches the 11 confirmed drops
+exactly, since every relocation was a straight move with no net count change). `python3 -m py_compile`
+across all 45 test files as a final syntax check; each of the 8 edit groups (stage3+stage6,
+stage6 time-range, stage4 trace-tree, stage5 wallclock+stage4 sample-tree relocation, stage5
+calltree-view, tools CPU/GPU hotspots, tools pop-metrics+wallclock-calltree, tools trace-hotspots+
+select-hotspot-kernels) run individually before the full-suite pass.

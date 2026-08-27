@@ -327,15 +327,6 @@ class ClosureTests(unittest.TestCase):
         self.assertFalse(is_pruned({"tags": set(), "structural_drop_tags": set()}))
 
 
-class LoadDefaultPatternsTests(unittest.TestCase):
-    def test_loads_expected_tag_names(self):
-        patterns = load_default_patterns()
-        self.assertEqual(
-            set(patterns.keys()),
-            {"gpu_api", "wrapper_noise", "mpi_territory", "compiler_runtime_noise", "wrapper_branch_noise"},
-        )
-
-
 class OpenMpiPrefixTests(unittest.TestCase):
     # ompi_/opal_/orte_ -- no real Open MPI test_apps capture exists yet, added as a
     # "most probable" list per real Open MPI naming conventions. Against the REAL
@@ -359,7 +350,7 @@ class OpenMpiPrefixTests(unittest.TestCase):
         ))
 
 
-class TagRowsFallbackTests(unittest.TestCase):
+class TagDefsFallbackWiringTests(unittest.TestCase):
     # tag_rows()'s own fallback to stage6_noise_config.tag_defs() -- every other test in this
     # file passes an explicit hand-built tag_defs and is unaffected by any of this.
     def tearDown(self):

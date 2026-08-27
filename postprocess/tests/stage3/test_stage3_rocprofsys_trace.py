@@ -7,8 +7,7 @@ from _test_helpers import load_module_by_path  # noqa: E402
 
 trace = load_module_by_path("stage3_rocprofsys_trace", "stage3", "stage3_rocprofsys_trace.py")
 
-import stage3_rocprofsys_common  # noqa: E402  (needs sys.path insert above first)
-import stage6_noise_config  # noqa: E402
+import stage6_noise_config  # noqa: E402  (needs sys.path insert above first)
 
 
 def make_category_row(name, category, parent=None):
@@ -75,16 +74,6 @@ class TagRowsTests(unittest.TestCase):
         trace.tag_rows([row])
         self.assertEqual(row["tags"], set())
 
-    def test_wrapper_branch_noise_sibling_derivation_still_works(self):
-        root = make_category_row("main", "host")
-        contaminated_top = make_category_row("std::pair<...>", "host", parent=root)
-        buried = make_category_row("gotcha_call", "host", parent=contaminated_top)
-        clean_sibling = make_category_row("run_simulation", "host", parent=root)
-        rows = [root, contaminated_top, buried, clean_sibling]
-        trace.tag_rows(rows)
-        self.assertIn("wrapper_branch_noise", contaminated_top["structural_drop_tags"])
-        self.assertEqual(clean_sibling["structural_drop_tags"], set())
-
     def test_numa_category_tagged_other(self):
         row = make_category_row("numa_migration_event", "numa")
         trace.tag_rows([row])
@@ -102,14 +91,6 @@ class TagRowsTests(unittest.TestCase):
         trace.tag_rows([row])
         self.assertIn("mpi_territory", row["tags"])
         self.assertIn("wrapper_noise", row["tags"])
-
-
-class ReexportedPrimitivesTests(unittest.TestCase):
-    def test_primitives_are_the_same_objects_as_stage3_rocprofsys_common(self):
-        self.assertIs(trace.remove_tagged_subtrees, stage3_rocprofsys_common.remove_tagged_subtrees)
-        self.assertIs(trace.splice_by_tag, stage3_rocprofsys_common.splice_by_tag)
-        self.assertIs(trace.make_collapses_children, stage3_rocprofsys_common.make_collapses_children)
-        self.assertIs(trace.make_is_pruned, stage3_rocprofsys_common.make_is_pruned)
 
 
 if __name__ == "__main__":

@@ -118,11 +118,6 @@ class DescribeTimeRangeTests(unittest.TestCase):
         shutil.rmtree(self.tmp)
         trc.configure(None)
 
-    def test_no_range_active_describes_the_real_full_extent(self):
-        trc.configure(None)
-        note = trc.describe_time_range(self.rank_inputs)
-        self.assertEqual(note, "  time range: 0.000s-100.000s (full run)\n")
-
     def test_active_range_is_described_directly(self):
         trc.configure("30:70")
         note = trc.describe_time_range(self.rank_inputs)
@@ -135,6 +130,22 @@ class DescribeTimeRangeTests(unittest.TestCase):
         trc.configure(None)
         note = trc.describe_time_range(rank_inputs)
         self.assertEqual(note, "  time range: 0.000s-100.000s (full run)\n")
+
+
+class DescribeTimeRangeStage4WiringTests(unittest.TestCase):
+    # The one deliberate stage6 -> stage4 import exception in the codebase (describe_time_range()
+    # calling stage4_rocprofsys_trace_aggregate.get_rank_time_extent() directly) -- this confirms
+    # the wiring reaches real data, not that get_rank_time_extent() itself is correct (that's
+    # test_stage4_rocprofsys_trace_aggregate.py::GetRankTimeExtentTests' job).
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.csv_path = os.path.join(self.tmp, "rank0.csv")
+        shutil.copy(TIME_RANGE_CSV, self.csv_path)
+        self.rank_inputs = [("r0", self.csv_path)]
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+        trc.configure(None)
 
     def test_uses_the_real_stage4_extent_accessor(self):
         # Confirms the deliberate stage6 -> stage4 dependency actually wires through to real data,

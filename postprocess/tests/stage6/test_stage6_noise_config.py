@@ -129,5 +129,14 @@ class ConfigureAndTagDefsTests(unittest.TestCase):
         self.assertEqual(nc.tag_defs()["other"]["substrings"], ["second"])
 
 
+class LoadDefaultPatternsTests(unittest.TestCase):
+    def test_loads_expected_tag_names(self):
+        patterns = nc.load_default_patterns()
+        self.assertEqual(
+            set(patterns.keys()),
+            {"gpu_api", "wrapper_noise", "mpi_territory", "compiler_runtime_noise", "wrapper_branch_noise"},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
