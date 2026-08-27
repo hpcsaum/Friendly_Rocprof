@@ -11,16 +11,21 @@ from stage5_table_render import render_table  # noqa: E402  (needs sys.path inse
 
 
 class GpuHotspotsColumnsTests(unittest.TestCase):
-    def test_includes_expected_columns(self):
-        entries = [{"label": "k", "count": 2, "sum": 0.001, "avg_us": 500.0, "pct_total": 12.5}]
-        table = render_table(gpu_table.GPU_HOTSPOTS_COLUMNS, entries)
-        self.assertIn("%total", table)
-        self.assertIn("avg(us)", table)
-        self.assertIn("12.5", table)
-        self.assertIn("500.00", table)
+    # Thin column-spec sanity check, not a render_table() test -- see
+    # test_stage5_cpu_hotspots_table.py's CpuHotspotsColumnsTests for why.
+    CASES = [
+        ("includes_expected_columns",
+         [{"label": "k", "count": 2, "sum": 0.001, "avg_us": 500.0, "pct_total": 12.5}],
+         ["%total", "avg(us)", "12.5", "500.00"]),
+        ("empty_entries", [], ["none found"]),
+    ]
 
-    def test_empty(self):
-        self.assertIn("none found", render_table(gpu_table.GPU_HOTSPOTS_COLUMNS, []))
+    def test_columns(self):
+        for name, entries, expect_substrings in self.CASES:
+            with self.subTest(case=name):
+                table = render_table(gpu_table.GPU_HOTSPOTS_COLUMNS, entries)
+                for substring in expect_substrings:
+                    self.assertIn(substring, table)
 
 
 if __name__ == "__main__":

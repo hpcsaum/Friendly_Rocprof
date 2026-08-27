@@ -1,4 +1,3 @@
-import glob
 import os
 import sys
 import tempfile
@@ -7,6 +6,7 @@ import unittest
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from _test_helpers import load_module_by_path  # noqa: E402
+from _tools_test_helpers import clear_agg_cache  # noqa: E402
 
 hotspots = load_module_by_path("extract_trace_hotspots", "tools", "extract_trace_hotspots.py")
 
@@ -16,14 +16,9 @@ TWO_RANK_DIR = os.path.join(FIXTURES, "trace_cli_two_rank")
 TIME_RANGE_DIR = os.path.join(FIXTURES, "trace_cli_time_range")
 
 
-def _clear_cache(directory=TWO_RANK_DIR):
-    for f in glob.glob(os.path.join(directory, "*.agg.json")):
-        os.remove(f)
-
-
 class WriteReportTests(unittest.TestCase):
     def tearDown(self):
-        _clear_cache()
+        clear_agg_cache(TWO_RANK_DIR)
         trc.configure(None)
 
     def test_end_to_end_fused_table_and_load_imbalance(self):
@@ -52,8 +47,8 @@ class WriteReportTests(unittest.TestCase):
 
 class MainCliTests(unittest.TestCase):
     def tearDown(self):
-        _clear_cache()
-        _clear_cache(TIME_RANGE_DIR)
+        clear_agg_cache(TWO_RANK_DIR)
+        clear_agg_cache(TIME_RANGE_DIR)
         trc.configure(None)
 
     def test_main_writes_report(self):

@@ -151,42 +151,23 @@ class KernelOwnerLabelTests(unittest.TestCase):
     def test_unchanged_without_ck_marker(self):
         self.assertEqual(s4c.kernel_owner_label("JacobiIterationKernel"), "JacobiIterationKernel")
 
-    # The following mirror the real rocprofv3 kernel_stats.csv "Name" values observed in
-    # test_apps/results/ for each language/compiler combo (Cray Fortran, covered above, is the
-    # only one NOT using this generic shape).
-    def test_amd_c_omp_offloading_plain_name(self):
-        self.assertEqual(
-            s4c.kernel_owner_label("__omp_offloading_4f_8fb8827_launch_omp_kernel_l6"),
-            "launch_omp_kernel",
-        )
+    # (language/compiler combo, real rocprofv3 kernel_stats.csv "Name" value) -- every one of
+    # these decodes to the same launch_omp_kernel owner despite the mangling differing per
+    # compiler; observed in test_apps/results/ for each combo (Cray Fortran, covered above via
+    # test_strips_ck_suffix, is the only one NOT using this generic shape).
+    OMP_OFFLOADING_CASES = [
+        ("amd_c", "__omp_offloading_4f_8fb8827_launch_omp_kernel_l6"),
+        ("cray_c_with_compiler_suffix", "__omp_offloading_34_8fb8827_launch_omp_kernel_l6_cce$noloop$form"),
+        ("amd_cpp_itanium_mangled", "__omp_offloading_4f_8fb8861__Z17launch_omp_kernelPdi_l6"),
+        ("cray_cpp_itanium_mangled_with_compiler_suffix",
+         "__omp_offloading_34_8fb8861__Z17launch_omp_kernelPdi_l6_cce$noloop$form"),
+        ("amd_fortran_flang_mangled", "__omp_offloading_4f_8fb7ea6__QMkernel_omp_modPlaunch_omp_kernel_l12"),
+    ]
 
-    def test_cray_c_omp_offloading_plain_name_with_compiler_suffix(self):
-        self.assertEqual(
-            s4c.kernel_owner_label("__omp_offloading_34_8fb8827_launch_omp_kernel_l6_cce$noloop$form"),
-            "launch_omp_kernel",
-        )
-
-    def test_amd_cpp_omp_offloading_itanium_mangled_name(self):
-        self.assertEqual(
-            s4c.kernel_owner_label("__omp_offloading_4f_8fb8861__Z17launch_omp_kernelPdi_l6"),
-            "launch_omp_kernel",
-        )
-
-    def test_cray_cpp_omp_offloading_itanium_mangled_name_with_compiler_suffix(self):
-        self.assertEqual(
-            s4c.kernel_owner_label(
-                "__omp_offloading_34_8fb8861__Z17launch_omp_kernelPdi_l6_cce$noloop$form",
-            ),
-            "launch_omp_kernel",
-        )
-
-    def test_amd_fortran_omp_offloading_flang_mangled_name(self):
-        self.assertEqual(
-            s4c.kernel_owner_label(
-                "__omp_offloading_4f_8fb7ea6__QMkernel_omp_modPlaunch_omp_kernel_l12",
-            ),
-            "launch_omp_kernel",
-        )
+    def test_omp_offloading_names_decode_to_launch_omp_kernel(self):
+        for name, kernel_name in self.OMP_OFFLOADING_CASES:
+            with self.subTest(case=name):
+                self.assertEqual(s4c.kernel_owner_label(kernel_name), "launch_omp_kernel")
 
     def test_hip_kernel_name_matches_neither_convention(self):
         # test_apps' native HIP kernel ("stencil_kernel") isn't affected by the OMPT-shared-entry-

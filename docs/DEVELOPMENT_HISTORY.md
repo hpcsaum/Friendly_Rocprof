@@ -65,6 +65,7 @@
 | 2026-08-27 | Plan 3.15 (Phase 0 of 8): test comment policy written into `postprocess/README.md`'s "Tests" section, ahead of a multi-phase `postprocess/tests/` maintainability cleanup -- see full accounting below |
 | 2026-08-27 | Plan 3.15 (Phase 1 of 8): new `postprocess/tests/_test_helpers.py` replaces the copy-pasted `importlib.util` module-loading dance in 41 test files; colliding `make_row`/`make_raw_row` helper names resolved to purpose-specific names; a reimplemented `flatten()` in one test file replaced with the real `flatten_tree()` -- see full accounting below |
 | 2026-08-27 | Plan 3.15 (Phase 2 of 8): `test_select_hotspot_kernels.py`/`test_select_instrumented_functions.py` consolidated -- 750 -> 740 tests, no coverage lost -- see full accounting below |
+| 2026-08-27 | Plan 3.15 (Phase 3 of 8): remaining duplication clusters consolidated across stage1/stage3/stage4/stage5/stage6/tools -- 740 -> 684 tests -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -3028,3 +3029,71 @@ top-N/unfiltered/mpi-2rank/dated-subdirectory tests were left as standalone test
 46 tests.
 
 Verification: full suite `Ran 740 tests ... OK` (750 -> 740, -10 total across the two files).
+
+## 2026-08-27 — Plan 3.15, Phase 3: remaining consolidation clusters
+
+Worked through the plan's remaining grouped duplication clusters -- same "extract to a subTest loop
+or shared helper, verify per group" rhythm as Phase 2, across all six areas the plan named:
+
+- **stage1/stage3**: `test_stage1_rocprofsys_sample.py`'s `CleanLabelTests` (2x2 matrix) and
+  `test_stage3_rocprofsys_trace.py`'s `TagForCategoryTests` (12 tests, one already itself
+  subTest-looping over a sub-list) each collapsed into one table-driven subTest method. The
+  category-mapping table folds in every case, including the sub-list, since all of them are the
+  exact same (category, expected_tag) shape.
+- **stage4**: `KernelOwnerLabelTests`' 5 OMP-offloading-naming-convention tests (all decode to the
+  same `launch_omp_kernel` owner, differing only in the exact mangled string) and
+  `IsKernelLaunchTests`' 5 tests both collapsed into subTest tables; `OverlapWithRangesTests`' 6
+  tests (one with 2 assertions folded into 2 separate cases) did the same. `ReanchorKernelsByOwnerAndTimeTests`
+  was deliberately left untouched on inspection -- its 9 tests each exercise a genuinely distinct
+  branch (exact match, no-marker skip, no-owner-found, temporal ordering, missing corr_id parent,
+  time-based tie-breaking among same-thread candidates, thread-scoping, generic naming, a real
+  end-to-end fixture), not literal-input variations of one shape -- forcing them into one loop would
+  have cost more in readability than it saved in line count, exactly the judgment call the plan
+  itself flagged as needed here.
+- **stage5**: `render()`/`_labels_only()`/`_NUMERIC_SUFFIX_RE`, byte-identical between
+  `test_stage5_calltree_view.py` and `test_stage5_wallclock_calltree_view.py`, moved into
+  `_test_helpers.py` as `render_calltree_view()` (takes the tool-specific `build_calltree_view`
+  function as a parameter, since that's the one thing that actually differs per file) and
+  `labels_only()`; each file's own `render()` shrank to a 1-line delegating wrapper. The thin
+  `*ColumnsTests` classes in `test_stage5_cpu_hotspots_table.py`/`test_stage5_gpu_hotspots_table.py`/
+  `test_stage5_fused_hotspots_table.py`/`test_stage5_load_imbalance_table.py` each collapsed into
+  one `test_columns` method per file (per the plan's own phrasing -- one check per module's
+  COLUMNS constant, not a single check merged across files); `load_imbalance_columns()` being a
+  function rather than a constant meant its cases also carry their own kwargs.
+- **stage6**: `test_stage6_cli_common.py`'s `AddSelectionArgsTests` (7 of 9 tests sharing the exact
+  "build parser, locate action by dest, assert substring in help" shape, one test's 2 internal
+  assertions split into 2 table rows) collapsed into one `test_help_text_substitution`;
+  `test_stage6_noise_config.py`'s two `SystemExit`-on-bad-tag clusters (3 unknown-tag tests, 2
+  derived-tag tests) each collapsed into one subTest method; `test_stage6_time_range_config.py`'s 6
+  malformed-segment tests (one with 2 internal assertions split into 2 rows) collapsed into one;
+  `test_stage6_report_builder.py`'s two tests sharing byte-identical setup
+  (`test_falsy_title_emits_no_title_line`/`test_zero_titled_sections_has_no_tables_listing`) merged
+  into one test with both assertions.
+- **tools**: `test_extract_calltree.py`'s and `test_extract_wallclock_calltree.py`'s near-identical
+  5-test `MainCliTests` classes (missing-directory/empty-input/end-to-end/explicit-two-directories/
+  extra-noise-config) both now delegate to one new `assert_extract_tool_cli_contract()`,
+  parametrized by tool module, fixture directory, and the one noise-config label each tool's own
+  fixture data supports -- each file's own `MainCliTests` shrank to a single `test_cli_contract`
+  method. The `--extra-noise-config` JSON-diff-writing boilerplate (write a tempfile, `json.dump`,
+  return the path) -- duplicated across `test_extract_pop_metrics.py`, `test_extract_CPU_hotspots.py`
+  (twice -- it also has an env-var-fallback variant of the same test), `test_extract_hotspot_callers.py`,
+  and `test_stage6_noise_config.py`'s own local `_write_diff` -- now all call the same new
+  `write_noise_config()`. The `_clear_cache()`/`tearDown()` `*.agg.json` cleanup pattern in the
+  three `test_extract_trace_*.py` files (two slightly different signatures -- optional vs. required
+  `directory` argument) unified into one required-argument `clear_agg_cache()`, called explicitly
+  at every site rather than relying on either file's own default.
+
+`_test_helpers.py` grew all four of these (`render_calltree_view()`/`labels_only()`,
+`write_noise_config()`, `assert_extract_tool_cli_contract()`/`clear_agg_cache()`) in the same pass
+that removed the duplication, and started feeling like the exact kind of grab-bag module this whole
+cleanup exists to avoid -- flagged in review before committing. Split into
+`_stage5_test_helpers.py`, `_stage6_test_helpers.py`, and `_tools_test_helpers.py`, one per area
+that actually needs its contents, leaving `_test_helpers.py` with only `load_module_by_path()`, the
+one truly universal helper every one of these (and every stage/tool test file) still depends on for
+its own sys.path/`_stage_paths` bootstrap. Named with the same leading-underscore convention as the
+original file, not `test_stageN_helpers.py`, so unittest's `test*.py` discovery pattern doesn't pick
+up an empty test module for each -- deliberately checked before landing on the naming.
+
+Verification: full suite `Ran 684 tests ... OK` (740 -> 684, -56 across the six groups); every
+edited file was also run individually before the full-suite pass, and `python3 -m py_compile` was
+run across all 45 test files (plus the four helper modules) as a final syntax sanity check.

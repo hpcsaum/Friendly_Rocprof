@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 import tempfile
@@ -12,6 +11,7 @@ FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 # manually (same as test_extract_hotspots.py).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from _test_helpers import load_module_by_path  # noqa: E402
+from _stage6_test_helpers import write_noise_config  # noqa: E402
 
 pop_tool = load_module_by_path("extract_pop_metrics", "tools", "extract_pop_metrics.py")
 
@@ -130,9 +130,7 @@ class MainCliTests(unittest.TestCase):
         self.addCleanup(stage6_noise_config.configure, None)
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "out.txt")
-            config_path = os.path.join(tmp, "noise_config.json")
-            with open(config_path, "w") as f:
-                json.dump({"disable": ["mpi_territory"]}, f)
+            config_path = write_noise_config(tmp, {"disable": ["mpi_territory"]})
             pop_tool.main([REF_DIR, "-o", dest, "--extra-noise-config", config_path])
             with open(dest) as f:
                 report = f.read()

@@ -64,43 +64,39 @@ class AddSelectionArgsTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parser.parse_args(["--top", "5", "--all"])
 
-    def test_default_verb_is_list(self):
-        parser = self._parser(plural_noun="kernels", threshold_unit_help="of total runtime")
-        top_action = next(a for a in parser._actions if a.dest == "top")
-        all_action = next(a for a in parser._actions if a.dest == "show_all")
-        self.assertIn("to list", top_action.help)
-        self.assertIn("list every kernel", all_action.help)
+    # (case, add_selection_args kwargs, dest of the argparse action to inspect, substring its
+    # .help text must contain) -- every case here builds a parser with one varied kwarg and
+    # checks one substituted phrase, the same shape each time.
+    HELP_TEXT_CASES = [
+        ("default_verb_is_list_top",
+         {"plural_noun": "kernels", "threshold_unit_help": "of total runtime"}, "top", "to list"),
+        ("default_verb_is_list_all",
+         {"plural_noun": "kernels", "threshold_unit_help": "of total runtime"}, "show_all", "list every kernel"),
+        ("verb_override",
+         {"plural_noun": "functions", "threshold_unit_help": "of total runtime", "verb": "select"},
+         "top", "to select"),
+        ("top_noun_defaults_to_plural_noun",
+         {"plural_noun": "kernels", "threshold_unit_help": "of total device time"},
+         "top", "number of kernels to list"),
+        ("top_noun_override",
+         {"plural_noun": "kernels", "threshold_unit_help": "of total device time", "top_noun": "hotspot kernels"},
+         "top", "number of hotspot kernels to list"),
+        ("singular_noun_defaults_by_stripping_trailing_s",
+         {"plural_noun": "kernels", "threshold_unit_help": "of total device time"}, "show_all", "every kernel,"),
+        ("singular_noun_override_for_irregular_plural",
+         {"plural_noun": "entries", "threshold_unit_help": "of total runtime", "singular_noun": "entry"},
+         "show_all", "every entry,"),
+        ("threshold_unit_help_substituted",
+         {"plural_noun": "entries", "threshold_unit_help": "of their table's total"},
+         "threshold", "of their table's total"),
+    ]
 
-    def test_verb_override(self):
-        parser = self._parser(plural_noun="functions", threshold_unit_help="of total runtime", verb="select")
-        top_action = next(a for a in parser._actions if a.dest == "top")
-        self.assertIn("to select", top_action.help)
-
-    def test_top_noun_defaults_to_plural_noun(self):
-        parser = self._parser(plural_noun="kernels", threshold_unit_help="of total device time")
-        top_action = next(a for a in parser._actions if a.dest == "top")
-        self.assertIn("number of kernels to list", top_action.help)
-
-    def test_top_noun_override(self):
-        parser = self._parser(plural_noun="kernels", threshold_unit_help="of total device time",
-                               top_noun="hotspot kernels")
-        top_action = next(a for a in parser._actions if a.dest == "top")
-        self.assertIn("number of hotspot kernels to list", top_action.help)
-
-    def test_singular_noun_defaults_by_stripping_trailing_s(self):
-        parser = self._parser(plural_noun="kernels", threshold_unit_help="of total device time")
-        all_action = next(a for a in parser._actions if a.dest == "show_all")
-        self.assertIn("every kernel,", all_action.help)
-
-    def test_singular_noun_override_for_irregular_plural(self):
-        parser = self._parser(plural_noun="entries", threshold_unit_help="of total runtime", singular_noun="entry")
-        all_action = next(a for a in parser._actions if a.dest == "show_all")
-        self.assertIn("every entry,", all_action.help)
-
-    def test_threshold_unit_help_substituted(self):
-        parser = self._parser(plural_noun="entries", threshold_unit_help="of their table's total")
-        threshold_action = next(a for a in parser._actions if a.dest == "threshold")
-        self.assertIn("of their table's total", threshold_action.help)
+    def test_help_text_substitution(self):
+        for name, kwargs, dest, expected_substring in self.HELP_TEXT_CASES:
+            with self.subTest(case=name):
+                parser = self._parser(**kwargs)
+                action = next(a for a in parser._actions if a.dest == dest)
+                self.assertIn(expected_substring, action.help)
 
     def test_returns_the_group_for_further_extension(self):
         parser = argparse.ArgumentParser()

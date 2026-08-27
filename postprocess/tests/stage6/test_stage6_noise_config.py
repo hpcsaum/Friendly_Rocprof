@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 import tempfile
@@ -6,19 +5,13 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from _test_helpers import load_module_by_path  # noqa: E402
+from _stage6_test_helpers import write_noise_config as _write_diff  # noqa: E402
 
 # isolated=True: stage3_rocprofsys_common.py captures a direct reference to this module's
 # tag_defs function at import time, so this test needs its own copy without disturbing the
 # shared sys.modules entry every other consumer resolves against -- see
 # load_module_by_path()'s own docstring for the full mechanism.
 nc = load_module_by_path("stage6_noise_config", "stage6", "stage6_noise_config.py", isolated=True)
-
-
-def _write_diff(tmp, diff):
-    path = os.path.join(tmp, "noise_config.json")
-    with open(path, "w") as f:
-        json.dump(diff, f)
-    return path
 
 
 class ConfigureAndTagDefsTests(unittest.TestCase):
@@ -91,35 +84,33 @@ class ConfigureAndTagDefsTests(unittest.TestCase):
             nc.configure(path)  # must not raise
         self.assertNotIn("compiler_runtime_noise", nc.tag_defs())
 
-    def test_unknown_tag_in_disable_raises(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = _write_diff(tmp, {"disable": ["not_a_real_tag"]})
-            with self.assertRaises(SystemExit):
-                nc.configure(path)
+    def test_unknown_tag_raises(self):
+        # Same shape for all three verbs -- only which diff-dict key names the unknown tag varies.
+        diffs = [
+            ("disable", {"disable": ["not_a_real_tag"]}),
+            ("add", {"add": {"not_a_real_tag": ["x"]}}),
+            ("remove", {"remove": {"not_a_real_tag": ["x"]}}),
+        ]
+        for verb, diff in diffs:
+            with self.subTest(verb=verb):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = _write_diff(tmp, diff)
+                    with self.assertRaises(SystemExit):
+                        nc.configure(path)
 
-    def test_unknown_tag_in_add_raises(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = _write_diff(tmp, {"add": {"not_a_real_tag": ["x"]}})
-            with self.assertRaises(SystemExit):
-                nc.configure(path)
-
-    def test_unknown_tag_in_remove_raises(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = _write_diff(tmp, {"remove": {"not_a_real_tag": ["x"]}})
-            with self.assertRaises(SystemExit):
-                nc.configure(path)
-
-    def test_add_targeting_derived_tag_raises(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = _write_diff(tmp, {"add": {"wrapper_branch_noise": ["x"]}})
-            with self.assertRaises(SystemExit):
-                nc.configure(path)
-
-    def test_remove_targeting_derived_tag_raises(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = _write_diff(tmp, {"remove": {"wrapper_branch_noise": ["x"]}})
-            with self.assertRaises(SystemExit):
-                nc.configure(path)
+    def test_add_or_remove_targeting_derived_tag_raises(self):
+        # "disable" is the only verb allowed to target the derived wrapper_branch_noise tag --
+        # see test_disable_targeting_derived_tag_succeeds below.
+        diffs = [
+            ("add", {"add": {"wrapper_branch_noise": ["x"]}}),
+            ("remove", {"remove": {"wrapper_branch_noise": ["x"]}}),
+        ]
+        for verb, diff in diffs:
+            with self.subTest(verb=verb):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = _write_diff(tmp, diff)
+                    with self.assertRaises(SystemExit):
+                        nc.configure(path)
 
     def test_disable_targeting_derived_tag_succeeds(self):
         with tempfile.TemporaryDirectory() as tmp:

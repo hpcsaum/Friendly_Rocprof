@@ -1,4 +1,3 @@
-import glob
 import os
 import sys
 import tempfile
@@ -7,6 +6,7 @@ import unittest
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from _test_helpers import load_module_by_path  # noqa: E402
+from _tools_test_helpers import clear_agg_cache  # noqa: E402
 
 pop_metrics = load_module_by_path("extract_trace_pop_metrics", "tools", "extract_trace_pop_metrics.py")
 
@@ -16,14 +16,9 @@ TWO_RANK_DIR = os.path.join(FIXTURES, "trace_cli_two_rank")
 TIME_RANGE_DIR = os.path.join(FIXTURES, "trace_cli_time_range")
 
 
-def _clear_cache(directory=TWO_RANK_DIR):
-    for f in glob.glob(os.path.join(directory, "*.agg.json")):
-        os.remove(f)
-
-
 class WriteReportTests(unittest.TestCase):
     def tearDown(self):
-        _clear_cache()
+        clear_agg_cache(TWO_RANK_DIR)
         trc.configure(None)
 
     def test_single_run_reports_gpu_columns(self):
@@ -45,8 +40,8 @@ class WriteReportTests(unittest.TestCase):
 
 class MainCliTests(unittest.TestCase):
     def tearDown(self):
-        _clear_cache()
-        _clear_cache(TIME_RANGE_DIR)
+        clear_agg_cache(TWO_RANK_DIR)
+        clear_agg_cache(TIME_RANGE_DIR)
         trc.configure(None)
 
     def test_main_requires_scaling_flag_with_scaled_dirs(self):

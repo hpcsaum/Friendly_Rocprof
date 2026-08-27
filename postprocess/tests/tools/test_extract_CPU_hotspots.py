@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 import tempfile
@@ -13,6 +12,7 @@ FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 # manually (same as test_extract_hotspots.py).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from _test_helpers import load_module_by_path  # noqa: E402
+from _stage6_test_helpers import write_noise_config  # noqa: E402
 
 hotspots = load_module_by_path("extract_CPU_hotspots", "tools", "extract_CPU_hotspots.py")
 
@@ -187,9 +187,7 @@ class MainCliTests(unittest.TestCase):
         # actually reaches stage3's tagging, end to end through main().
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "hotspots.txt")
-            config_path = os.path.join(tmp, "noise_config.json")
-            with open(config_path, "w") as f:
-                json.dump({"add": {"other": ["apply_boundary"]}}, f)
+            config_path = write_noise_config(tmp, {"add": {"other": ["apply_boundary"]}})
             hotspots.main([
                 os.path.join(FIXTURES, "single_rank"), "-o", dest,
                 "--extra-noise-config", config_path,
@@ -202,9 +200,7 @@ class MainCliTests(unittest.TestCase):
     def test_friendly_rocprof_noise_config_env_var_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "hotspots.txt")
-            config_path = os.path.join(tmp, "noise_config.json")
-            with open(config_path, "w") as f:
-                json.dump({"add": {"other": ["apply_boundary"]}}, f)
+            config_path = write_noise_config(tmp, {"add": {"other": ["apply_boundary"]}})
             with unittest.mock.patch.dict(os.environ, {"FRIENDLY_ROCPROF_NOISE_CONFIG": config_path}):
                 hotspots.main([os.path.join(FIXTURES, "single_rank"), "-o", dest])
             with open(dest) as f:

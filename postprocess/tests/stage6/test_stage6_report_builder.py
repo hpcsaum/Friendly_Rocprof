@@ -52,13 +52,11 @@ class RenderReportTests(unittest.TestCase):
         # and it's not counted in the tables: listing either
         self.assertEqual(joined.count("  - "), 2)
 
-    def test_falsy_title_emits_no_title_line(self):
+    def test_falsy_title_emits_no_title_line_and_no_tables_listing(self):
         parts = rb.render_report("HEADER\n", [(None, "Body\n")])
-        self.assertEqual("".join(parts), "HEADER\nBody\n\n")
-
-    def test_zero_titled_sections_has_no_tables_listing(self):
-        parts = rb.render_report("HEADER\n", [(None, "Body\n")])
-        self.assertNotIn("tables:", "".join(parts))
+        rendered = "".join(parts)
+        self.assertEqual(rendered, "HEADER\nBody\n\n")
+        self.assertNotIn("tables:", rendered)
 
     def test_empty_footer_emits_nothing_extra(self):
         parts = rb.render_report("HEADER\n", [(None, "Body\n")], "")

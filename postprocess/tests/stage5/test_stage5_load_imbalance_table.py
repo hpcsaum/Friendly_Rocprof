@@ -94,26 +94,26 @@ class ComputeLoadImbalanceTests(unittest.TestCase):
 
 
 class LoadImbalanceColumnsTests(unittest.TestCase):
-    def test_default_item_label_is_function(self):
-        entries = [{"label": "foo", "avg": 1.0, "std_dev": 0.5, "min": 0.5, "max": 1.5, "cv_pct": 50.0}]
-        table = render_table(imb.load_imbalance_columns(), entries)
-        self.assertIn("avg(s)", table)
-        self.assertIn("std_dev", table)
-        self.assertIn("min(s)", table)
-        self.assertIn("max(s)", table)
-        self.assertIn("function", table)
-        self.assertIn("foo", table)
+    # Thin column-spec sanity check, not a render_table() test -- see
+    # test_stage5_cpu_hotspots_table.py's CpuHotspotsColumnsTests for why. Unlike the other three
+    # X_COLUMNS constants, load_imbalance_columns() is a function (item_label is dynamic, not
+    # baked into a constant), so each case also carries its own columns_kwargs.
+    CASES = [
+        ("default_item_label_is_function", {},
+         [{"label": "foo", "avg": 1.0, "std_dev": 0.5, "min": 0.5, "max": 1.5, "cv_pct": 50.0}],
+         ["avg(s)", "std_dev", "min(s)", "max(s)", "function", "foo"]),
+        ("item_label_override_for_gpu", {"item_label": "kernel"},
+         [{"label": "my_kernel", "avg": 1.0, "std_dev": 0.5, "min": 0.5, "max": 1.5, "cv_pct": 50.0}],
+         ["kernel"]),
+        ("empty_entries", {}, [], ["none found"]),
+    ]
 
-    def test_item_label_override_for_gpu(self):
-        table = render_table(imb.load_imbalance_columns(item_label="kernel"), [])
-        # empty entries short-circuits to "(none found)" before the header would show --
-        # confirm the header text itself with one real entry instead.
-        entries = [{"label": "my_kernel", "avg": 1.0, "std_dev": 0.5, "min": 0.5, "max": 1.5, "cv_pct": 50.0}]
-        table = render_table(imb.load_imbalance_columns(item_label="kernel"), entries)
-        self.assertIn("kernel", table)
-
-    def test_empty_entries(self):
-        self.assertIn("none found", render_table(imb.load_imbalance_columns(), []))
+    def test_columns(self):
+        for name, columns_kwargs, entries, expect_substrings in self.CASES:
+            with self.subTest(case=name):
+                table = render_table(imb.load_imbalance_columns(**columns_kwargs), entries)
+                for substring in expect_substrings:
+                    self.assertIn(substring, table)
 
 
 class ImbalanceNoteTests(unittest.TestCase):

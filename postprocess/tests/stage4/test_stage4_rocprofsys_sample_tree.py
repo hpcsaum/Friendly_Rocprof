@@ -49,25 +49,23 @@ NEVER_PRUNED = lambda node: False  # noqa: E731
 
 
 class IsKernelLaunchTests(unittest.TestCase):
-    def test_matches_known_prefixes(self):
-        self.assertTrue(s4t.is_kernel_launch("hipLaunchKernel"))
-        self.assertTrue(s4t.is_kernel_launch("hipModuleLaunchKernel"))
+    CASES = [
+        ("hip_prefix", "hipLaunchKernel", True),
+        ("hip_module_prefix", "hipModuleLaunchKernel", True),
+        # substring match, not startswith -- catches a demangled C++ symbol where the launch
+        # call isn't the first thing in the label.
+        ("namespace_qualified_symbol", "hip::hipModuleLaunchKernel(ihipModuleSymbol_t*, ...)", True),
+        ("cray_acc_entry_point", "__cray_start_acc_kernel", True),
+        # LLVM libomptarget's launch entry point -- confirmed in real test_apps HPC data under
+        # both amdclang++ and Cray CCE.
+        ("omp_target_offload_entry_point", "__tgt_target_kernel", True),
+        ("unrelated_label", "compute_stencil", False),
+    ]
 
-    def test_matches_namespace_qualified_symbol(self):
-        # substring match, not startswith -- catches a demangled C++ symbol
-        # where the launch call isn't the first thing in the label.
-        self.assertTrue(s4t.is_kernel_launch("hip::hipModuleLaunchKernel(ihipModuleSymbol_t*, ...)"))
-
-    def test_matches_cray_acc_entry_point(self):
-        self.assertTrue(s4t.is_kernel_launch("__cray_start_acc_kernel"))
-
-    def test_matches_omp_target_offload_entry_point(self):
-        # LLVM libomptarget's launch entry point -- confirmed in real
-        # test_apps HPC data under both amdclang++ and Cray CCE.
-        self.assertTrue(s4t.is_kernel_launch("__tgt_target_kernel"))
-
-    def test_rejects_unrelated_label(self):
-        self.assertFalse(s4t.is_kernel_launch("compute_stencil"))
+    def test_is_kernel_launch(self):
+        for name, label, expected in self.CASES:
+            with self.subTest(case=name):
+                self.assertEqual(s4t.is_kernel_launch(label), expected)
 
 
 class KernelAnchorAttributionTests(unittest.TestCase):

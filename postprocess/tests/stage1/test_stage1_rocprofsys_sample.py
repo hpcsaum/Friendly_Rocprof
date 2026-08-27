@@ -10,17 +10,18 @@ stage1 = load_module_by_path("stage1_rocprofsys_sample", "stage1", "stage1_rocpr
 
 
 class CleanLabelTests(unittest.TestCase):
-    def test_single_rank_no_indent(self):
-        self.assertEqual(stage1.clean_label("00>>>main"), "main")
+    # (rank prefix x indent) 2x2 matrix -- clean_label() must strip both independently of the other.
+    CASES = [
+        ("single_rank_no_indent", "00>>>main", "main"),
+        ("single_rank_with_indent", "00>>>|_compute_stencil", "compute_stencil"),
+        ("mpi_rank_prefix_no_indent", "00|00>>>main", "main"),
+        ("mpi_rank_prefix_with_indent", "00|00>>>|_compute_stencil", "compute_stencil"),
+    ]
 
-    def test_single_rank_with_indent(self):
-        self.assertEqual(stage1.clean_label("00>>>|_compute_stencil"), "compute_stencil")
-
-    def test_mpi_rank_prefix_no_indent(self):
-        self.assertEqual(stage1.clean_label("00|00>>>main"), "main")
-
-    def test_mpi_rank_prefix_with_indent(self):
-        self.assertEqual(stage1.clean_label("00|00>>>|_compute_stencil"), "compute_stencil")
+    def test_strips_rank_prefix_and_indent(self):
+        for name, raw, expected in self.CASES:
+            with self.subTest(case=name):
+                self.assertEqual(stage1.clean_label(raw), expected)
 
 
 class ParseTableFileTests(unittest.TestCase):

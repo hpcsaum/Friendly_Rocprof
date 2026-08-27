@@ -16,43 +16,29 @@ def make_category_row(name, category, parent=None):
 
 
 class TagForCategoryTests(unittest.TestCase):
-    def test_hip_api_maps_to_gpu_api(self):
-        self.assertEqual(trace.tag_for_category("rocm_hip_api"), "gpu_api")
+    # (category, expected_tag) -- the full mapping table, one input to one output each, plus the
+    # case-insensitivity and unknown/None fallback rules. Table-driven since every case is the
+    # same shape.
+    CASES = [
+        ("rocm_hip_api", "gpu_api"),
+        ("rocm_rccl", "gpu_kernel"),
+        ("rocm_rccl_api", "gpu_api"),  # distinct from the plain rccl (collective op) mapping above
+        ("rocm_kernel_dispatch", "gpu_kernel"),
+        ("rocm_memory_copy", "gpu_memcpy"),
+        ("mpi", "mpi_territory"),
+        ("numa", "other"),
+        ("amd_smi_power", "other"),  # amd_smi_* prefix
+        ("rocm_totally_new_category_v99", "other"),  # unrecognized future category falls back
+        (None, "other"),
+        ("ROCM_HIP_API", "gpu_api"),  # matching is case-insensitive
+        ("host", None), ("ompt", None), ("pthread", None), ("sampling", None),
+        ("python", None), ("user", None), ("kokkos", None), ("none", None),  # cpu-ish: no tag
+    ]
 
-    def test_rccl_collective_op_maps_to_gpu_kernel(self):
-        self.assertEqual(trace.tag_for_category("rocm_rccl"), "gpu_kernel")
-
-    def test_rccl_api_maps_to_gpu_api_distinct_from_rccl_op(self):
-        self.assertEqual(trace.tag_for_category("rocm_rccl_api"), "gpu_api")
-
-    def test_kernel_dispatch_maps_to_gpu_kernel(self):
-        self.assertEqual(trace.tag_for_category("rocm_kernel_dispatch"), "gpu_kernel")
-
-    def test_memory_copy_maps_to_gpu_memcpy(self):
-        self.assertEqual(trace.tag_for_category("rocm_memory_copy"), "gpu_memcpy")
-
-    def test_mpi_maps_to_mpi_territory(self):
-        self.assertEqual(trace.tag_for_category("mpi"), "mpi_territory")
-
-    def test_numa_maps_to_other(self):
-        self.assertEqual(trace.tag_for_category("numa"), "other")
-
-    def test_amd_smi_prefix_maps_to_other(self):
-        self.assertEqual(trace.tag_for_category("amd_smi_power"), "other")
-
-    def test_cpu_ish_categories_get_no_category_tag(self):
-        for category in ("host", "ompt", "pthread", "sampling", "python", "user", "kokkos", "none"):
+    def test_category_maps_to_expected_tag(self):
+        for category, expected in self.CASES:
             with self.subTest(category=category):
-                self.assertIsNone(trace.tag_for_category(category))
-
-    def test_unrecognized_future_category_falls_back_to_other(self):
-        self.assertEqual(trace.tag_for_category("rocm_totally_new_category_v99"), "other")
-
-    def test_none_category_falls_back_to_other(self):
-        self.assertEqual(trace.tag_for_category(None), "other")
-
-    def test_matching_is_case_insensitive(self):
-        self.assertEqual(trace.tag_for_category("ROCM_HIP_API"), "gpu_api")
+                self.assertEqual(trace.tag_for_category(category), expected)
 
 
 class TagRowsTests(unittest.TestCase):

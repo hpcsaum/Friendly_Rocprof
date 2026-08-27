@@ -256,38 +256,26 @@ class ReanchorKernelsByOwnerAndTimeTests(unittest.TestCase):
 
 
 class OverlapWithRangesTests(unittest.TestCase):
-    def test_fully_inside_a_range_keeps_the_whole_width(self):
-        width, touches = agg._overlap_with_ranges(5.0, 2.0, [(0.0, 10.0)])
-        self.assertAlmostEqual(width, 2.0)
-        self.assertTrue(touches)
+    # (case, ts, duration, ranges, expected_width, expected_touches)
+    CASES = [
+        ("fully_inside_a_range_keeps_the_whole_width", 5.0, 2.0, [(0.0, 10.0)], 2.0, True),
+        ("fully_outside_every_range_is_zero_and_does_not_touch", 20.0, 2.0, [(0.0, 10.0)], 0.0, False),
+        ("straddling_a_boundary_clips_to_the_overlapping_portion",  # [8,13) vs [0,10)
+         8.0, 5.0, [(0.0, 10.0)], 2.0, True),
+        ("zero_duration_event_exactly_on_a_boundary_touches_but_has_no_width",
+         10.0, 0.0, [(0.0, 10.0)], 0.0, True),
+        ("open_start_bound_is_honored", -100.0, 5.0, [(None, 0.0)], 5.0, True),
+        ("open_end_bound_is_honored", 1000.0, 5.0, [(500.0, None)], 5.0, True),
+        ("multiple_disjoint_ranges_sum_their_own_overlaps",
+         0.0, 20.0, [(2.0, 5.0), (10.0, 12.0)], 5.0, True),
+    ]
 
-    def test_fully_outside_every_range_is_zero_and_does_not_touch(self):
-        width, touches = agg._overlap_with_ranges(20.0, 2.0, [(0.0, 10.0)])
-        self.assertEqual(width, 0.0)
-        self.assertFalse(touches)
-
-    def test_straddling_a_boundary_clips_to_the_overlapping_portion(self):
-        width, touches = agg._overlap_with_ranges(8.0, 5.0, [(0.0, 10.0)])  # [8,13) vs [0,10)
-        self.assertAlmostEqual(width, 2.0)
-        self.assertTrue(touches)
-
-    def test_zero_duration_event_exactly_on_a_boundary_touches_but_has_no_width(self):
-        width, touches = agg._overlap_with_ranges(10.0, 0.0, [(0.0, 10.0)])
-        self.assertEqual(width, 0.0)
-        self.assertTrue(touches)
-
-    def test_open_start_and_open_end_bounds_are_honored(self):
-        width, touches = agg._overlap_with_ranges(-100.0, 5.0, [(None, 0.0)])
-        self.assertAlmostEqual(width, 5.0)
-        self.assertTrue(touches)
-        width2, touches2 = agg._overlap_with_ranges(1000.0, 5.0, [(500.0, None)])
-        self.assertAlmostEqual(width2, 5.0)
-        self.assertTrue(touches2)
-
-    def test_multiple_disjoint_ranges_sum_their_own_overlaps(self):
-        width, touches = agg._overlap_with_ranges(0.0, 20.0, [(2.0, 5.0), (10.0, 12.0)])
-        self.assertAlmostEqual(width, 5.0)
-        self.assertTrue(touches)
+    def test_overlap_width_and_touches(self):
+        for name, ts, duration, ranges, expected_width, expected_touches in self.CASES:
+            with self.subTest(case=name):
+                width, touches = agg._overlap_with_ranges(ts, duration, ranges)
+                self.assertAlmostEqual(width, expected_width)
+                self.assertEqual(touches, expected_touches)
 
 
 class TimeRangeClippingAndExtentTests(unittest.TestCase):

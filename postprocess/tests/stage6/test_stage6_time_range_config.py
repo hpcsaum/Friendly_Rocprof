@@ -49,31 +49,24 @@ class ParseTimeRangeTests(unittest.TestCase):
     def test_unbounded_segment_absorbs_everything_after_it(self):
         self.assertEqual(trc.parse_time_range("5:,0:3"), [(0.0, 3.0), (5.0, None)])
 
-    def test_segment_without_a_colon_raises(self):
-        with self.assertRaisesRegex(SystemExit, "no ':'"):
-            trc.parse_time_range("10")
+    # (case, malformed input, expected error message substring) -- every case is the same
+    # assertRaisesRegex(SystemExit, ...) shape, differing only in the malformed segment and which
+    # of parse_time_range()'s validation messages it should trip.
+    MALFORMED_CASES = [
+        ("segment_without_a_colon", "10", "no ':'"),
+        ("empty_string", "", "no ':'"),
+        ("neither_bound_given", ":", "needs at least a start or an end"),
+        ("start_equal_to_end", "5:5", "start must be less than end"),
+        ("start_greater_than_end", "10:5", "start must be less than end"),
+        ("non_numeric_start", "a:5", "isn't a number"),
+        ("non_numeric_end", "5:b", "isn't a number"),
+    ]
 
-    def test_empty_string_raises(self):
-        with self.assertRaisesRegex(SystemExit, "no ':'"):
-            trc.parse_time_range("")
-
-    def test_neither_bound_given_raises(self):
-        with self.assertRaisesRegex(SystemExit, "needs at least a start or an end"):
-            trc.parse_time_range(":")
-
-    def test_start_equal_to_end_raises(self):
-        with self.assertRaisesRegex(SystemExit, "start must be less than end"):
-            trc.parse_time_range("5:5")
-
-    def test_start_greater_than_end_raises(self):
-        with self.assertRaisesRegex(SystemExit, "start must be less than end"):
-            trc.parse_time_range("10:5")
-
-    def test_non_numeric_bound_raises(self):
-        with self.assertRaisesRegex(SystemExit, "isn't a number"):
-            trc.parse_time_range("a:5")
-        with self.assertRaisesRegex(SystemExit, "isn't a number"):
-            trc.parse_time_range("5:b")
+    def test_malformed_segment_raises(self):
+        for name, segment, expected_message in self.MALFORMED_CASES:
+            with self.subTest(case=name):
+                with self.assertRaisesRegex(SystemExit, expected_message):
+                    trc.parse_time_range(segment)
 
 
 class ConfigureAndActiveRangesTests(unittest.TestCase):

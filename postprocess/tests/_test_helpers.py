@@ -4,9 +4,14 @@ Owns the by-path module-loading mechanism every test file that can't do a plain 
 import y` needs: tool tests (tools are meant to be run as scripts, not imported) and the handful of
 stage tests that specifically want a fresh, isolated module instance -- see postprocess/README.md's
 "Tests" section for why both styles exist. Bootstraps postprocess/_stage_paths.py itself on import,
-so a caller only needs this module on sys.path, not also _stage_paths separately.
+so a caller only needs this module on sys.path, not also _stage_paths separately -- every
+_stageN_test_helpers.py/_tools_test_helpers.py module in this directory relies on that by importing
+this module first.
 
-Exposes one function: load_module_by_path().
+Stage/tool-specific test plumbing lives in its own file instead of here, one per area that needs
+it: _stage5_test_helpers.py, _stage6_test_helpers.py, _tools_test_helpers.py.
+
+Exposes: load_module_by_path().
 """
 
 import importlib.util

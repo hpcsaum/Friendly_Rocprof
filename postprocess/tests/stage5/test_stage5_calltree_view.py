@@ -1,15 +1,16 @@
 import json
 import os
-import re
 import sys
 import tempfile
 import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _stage5_test_helpers import labels_only, render_calltree_view  # noqa: E402
 
 POSTPROCESS_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
 sys.path.insert(0, os.path.abspath(POSTPROCESS_DIR))
 import _stage_paths  # noqa: E402  (adds every stageN/tools dir to sys.path)
 
-from stage1_run_dirs import resolve_run_dirs  # noqa: E402  (needs sys.path insert above first)
 from stage5_calltree_view import build_calltree_view, strip_wrapper_noise  # noqa: E402
 from stage4_rocprofsys_sample_tree import load_rank_trees  # noqa: E402
 import stage6_noise_config  # noqa: E402
@@ -22,9 +23,7 @@ MULTI_RANK_DIR = os.path.join(FIXTURES, "calltree_sampling_multi_rank")
 
 
 def render(run_dir, **kwargs):
-    cpu_dir, gpu_dir = resolve_run_dirs(run_dir)
-    view = build_calltree_view(run_dir, cpu_dir, gpu_dir, **kwargs)
-    return view["tree_text"] + view["fallback_text"]
+    return render_calltree_view(build_calltree_view, run_dir, **kwargs)
 
 
 def _line_for(report, label):
@@ -32,17 +31,6 @@ def _line_for(report, label):
         if label in line:
             return line
     raise AssertionError(f"no rendered line for {label!r} found")
-
-
-_NUMERIC_SUFFIX_RE = re.compile(r"(?:\s{2,}-?[\d.]+)+\s*$")
-
-
-def _labels_only(report):
-    """Strips each physical line's trailing numeric-cell columns (if any), then joins every line
-    back together with no separator -- reconstructs each row's own label text contiguously, so a
-    test can search for a label substring regardless of exactly where
-    stage5_tree_render.wrap_leading_labels() cut a too-long label across physical lines."""
-    return "".join(_NUMERIC_SUFFIX_RE.sub("", line) for line in report.splitlines())
 
 
 class GpuNoiseTierTests(unittest.TestCase):
@@ -72,7 +60,7 @@ class GpuNoiseTierTests(unittest.TestCase):
         # This label is long enough that stage5_tree_render.wrap_leading_labels() hard-wraps it
         # across 2 physical lines -- reconstruct labels-only text first so the substring search
         # sees it whole.
-        flat = _labels_only(report)
+        flat = labels_only(report)
         self.assertIn("llvm::omp::target::plugin::GenericPluginTy::load_binary", flat)
         self.assertIn("clang::CodeGen::mergeDefaultFunctionDefinition", flat)
 
@@ -217,7 +205,7 @@ class KernelAnchorBroadeningTests(unittest.TestCase):
         # long enough that wrap_leading_labels() may hard-wrap it across physical lines --
         # reconstruct labels-only text first so the substring search sees it whole regardless of
         # the exact cut point.
-        flat = _labels_only(report)
+        flat = labels_only(report)
         self.assertIn("~67% estimate: this site issued 100/150", flat)
         self.assertIn("~33% estimate: this site issued 50/150", flat)
         i_a = report.index("compute_a")

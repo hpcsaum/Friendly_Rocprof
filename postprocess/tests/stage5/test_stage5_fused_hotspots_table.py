@@ -109,14 +109,21 @@ class BuildCombinedViewTests(unittest.TestCase):
 
 
 class FusedHotspotsColumnsTests(unittest.TestCase):
-    def test_includes_domain_column(self):
-        entries = [{"label": "k", "domain": "GPU", "count": 1, "sum": 1.0, "self_sum": 1.0, "pct_total": 50.0}]
-        table = render_table(fused.FUSED_HOTSPOTS_COLUMNS, entries)
-        self.assertIn("dom", table)
-        self.assertIn("GPU", table)
+    # Thin column-spec sanity check, not a render_table() test -- see
+    # test_stage5_cpu_hotspots_table.py's CpuHotspotsColumnsTests for why.
+    CASES = [
+        ("includes_domain_column",
+         [{"label": "k", "domain": "GPU", "count": 1, "sum": 1.0, "self_sum": 1.0, "pct_total": 50.0}],
+         ["dom", "GPU"]),
+        ("empty_entries", [], ["none found"]),
+    ]
 
-    def test_empty_entries(self):
-        self.assertIn("none found", render_table(fused.FUSED_HOTSPOTS_COLUMNS, []))
+    def test_columns(self):
+        for name, entries, expect_substrings in self.CASES:
+            with self.subTest(case=name):
+                table = render_table(fused.FUSED_HOTSPOTS_COLUMNS, entries)
+                for substring in expect_substrings:
+                    self.assertIn(substring, table)
 
 
 if __name__ == "__main__":

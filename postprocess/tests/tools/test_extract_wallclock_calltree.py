@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 import tempfile
@@ -12,6 +11,7 @@ FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 # manually (same as test_extract_hotspots.py).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from _test_helpers import load_module_by_path  # noqa: E402
+from _tools_test_helpers import assert_extract_tool_cli_contract  # noqa: E402
 
 ct_tool = load_module_by_path("extract_wallclock_calltree", "tools", "extract_wallclock_calltree.py")
 
@@ -45,40 +45,12 @@ class HeaderProseTests(unittest.TestCase):
 
 
 class MainCliTests(unittest.TestCase):
-    def test_missing_directory_raises_clear_error(self):
-        with self.assertRaises(SystemExit):
-            ct_tool.main(["/no/such/directory"])
-
-    def test_empty_input_raises_clear_error(self):
-        with self.assertRaises(SystemExit):
-            ct_tool.main([EMPTY_DIR])
-
-    def test_end_to_end_writes_file(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            dest = os.path.join(tmp, "out.txt")
-            ct_tool.main([MPI_2RANK_DIR, "-o", dest, "--max-depth", "1"])
-            self.assertTrue(os.path.isfile(dest))
-
-    def test_explicit_two_directories(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            dest = os.path.join(tmp, "out.txt")
-            ct_tool.main([MPI_2RANK_DIR, MPI_2RANK_DIR, "-o", dest])
-            with open(dest) as f:
-                report = f.read()
-            self.assertIn("CPU run directory:", report)
-            self.assertIn("GPU run directory:", report)
-
-    def test_extra_noise_config_flag_excludes_a_configured_row(self):
+    # The baseline CLI contract every extract_*_calltree.py tool shares (missing/empty input,
+    # end-to-end write, explicit two directories, --extra-noise-config) -- see
+    # assert_extract_tool_cli_contract()'s own docstring for the full shape.
+    def test_cli_contract(self):
         self.addCleanup(stage6_noise_config.configure, None)
-        with tempfile.TemporaryDirectory() as tmp:
-            dest = os.path.join(tmp, "out.txt")
-            config_path = os.path.join(tmp, "noise_config.json")
-            with open(config_path, "w") as f:
-                json.dump({"add": {"other": ["compute_stencil"]}}, f)
-            ct_tool.main([MPI_2RANK_DIR, "-o", dest, "--extra-noise-config", config_path])
-            with open(dest) as f:
-                report = f.read()
-        self.assertNotIn("compute_stencil", report)
+        assert_extract_tool_cli_contract(self, ct_tool, MPI_2RANK_DIR, EMPTY_DIR, "compute_stencil")
 
 
 if __name__ == "__main__":

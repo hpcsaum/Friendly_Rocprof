@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 import tempfile
@@ -11,6 +10,7 @@ FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 # when loaded here by explicit file path, so replicate that manually (same as the other tool tests).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from _test_helpers import load_module_by_path  # noqa: E402
+from _stage6_test_helpers import write_noise_config  # noqa: E402
 
 hc_tool = load_module_by_path("extract_hotspot_callers", "tools", "extract_hotspot_callers.py")
 
@@ -213,9 +213,7 @@ class MainCliTests(unittest.TestCase):
         # caller-chain section, proving --extra-noise-config reaches this tool's ranking too.
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "out.txt")
-            config_path = os.path.join(tmp, "noise_config.json")
-            with open(config_path, "w") as f:
-                json.dump({"add": {"other": ["apply_boundary"]}}, f)
+            config_path = write_noise_config(tmp, {"add": {"other": ["apply_boundary"]}})
             hc_tool.main([SINGLE_RANK_DIR, "-o", dest, "--all", "--extra-noise-config", config_path])
             with open(dest) as f:
                 report = f.read()
