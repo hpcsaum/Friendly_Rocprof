@@ -67,6 +67,7 @@
 | 2026-08-27 | Plan 3.15 (Phase 2 of 8): `test_select_hotspot_kernels.py`/`test_select_instrumented_functions.py` consolidated -- 750 -> 740 tests, no coverage lost -- see full accounting below |
 | 2026-08-27 | Plan 3.15 (Phase 3 of 8): remaining duplication clusters consolidated across stage1/stage3/stage4/stage5/stage6/tools -- 740 -> 684 tests -- see full accounting below |
 | 2026-08-27 | Plan 3.15 (Phase 4 of 8): test-scope audit across all 45 test files -- 11 pure re-tests dropped, 5 misplaced tests relocated, ~10 tests relabeled as wiring checks -- 684 -> 673 tests -- see full accounting below |
+| 2026-08-27 | Plan 3.15 (Phase 5 of 8): trivial-test cleanup -- one brittle exact-string assertion loosened to a relational check, two duplicate-assertion test pairs merged/dropped -- 673 -> 671 tests -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -3186,3 +3187,44 @@ across all 45 test files as a final syntax check; each of the 8 edit groups (sta
 stage6 time-range, stage4 trace-tree, stage5 wallclock+stage4 sample-tree relocation, stage5
 calltree-view, tools CPU/GPU hotspots, tools pop-metrics+wallclock-calltree, tools trace-hotspots+
 select-hotspot-kernels) run individually before the full-suite pass.
+
+## 2026-08-27 — Plan 3.15, Phase 5: trivial-test cleanup
+
+The plan's three specific, judgment-based items, each independently re-confirmed against the
+original audit note before touching it:
+
+**`test_stage1_rocprofsys_trace.py::LabelKeyTests::test_label_key_names_the_name_column`** --
+flagged as a candidate trivial self-check (just asserts a string constant equals itself). Checked
+whether anything external depends on it: `stage3_rocprofsys_trace.py` and
+`stage4_rocprofsys_trace_aggregate.py` both import `LABEL_KEY` directly and pass it as
+`merge_rank_trees()`/`tag_rows()`'s own `label_key=` parameter. Per the plan's own fallback for
+exactly this case, kept (not dropped) with a one-line comment explaining what actually depends on
+it, instead of leaving a reader to wonder why a seemingly-trivial constant check exists.
+
+**`test_stage5_table_render.py`'s two flagged exact-whitespace tests** --
+`test_continuation_lines_indented_to_exact_prefix_width` turned out to already be relational (it
+compares against `len(prefix)`, a caller-supplied value, not a hardcoded literal) -- left
+unchanged, no actual brittleness present. `test_left_aligned_column` was genuinely brittle
+(`lines[1].startswith("  r0")`, hardcoding render_table()'s row-prefix width inside a single
+opaque literal). Investigated whether a truly prefix-width-agnostic version was possible: it isn't,
+for a single hardcoded string -- there's no externally-known prefix to compare a leading-whitespace
+count against, unlike the wrap_trailing_label-style tests the plan's own example was modeled on.
+Instead made it genuinely relational a different way: renders the same column both left- and
+right-aligned within the same test and asserts the left-aligned line's leading whitespace is
+strictly less than the right-aligned line's, rather than hardcoding either exact width -- a
+row-prefix change now shifts both measurements together and the comparison stays valid.
+
+**Redundant-pair merges**: `test_stage2_rocprofsys_sample.py`'s `test_same_thread_as_parent_is_not_a_thread_root`
+turned out to be a full duplicate, not just redundant setup -- its one assertion
+(`rows[2]["is_thread_root"]` is `False`) is already literally present in
+`test_chain_within_one_thread`. Dropped outright rather than "merged" (merging would have been a
+no-op), moving its documentation value (the contrast with the thread-change test right below it) to
+a comment on the existing assertion instead. `test_stage1_rocprofsys_trace.py`'s
+`test_parent_slice_id_stays_on_the_row` shared identical setup with
+`test_multi_level_parent_chain_resolves_to_real_objects` but checked a genuinely different field
+(`parent_slice_id`, not parent-object identity) -- merged into the parent test as an additional
+assertion with a one-line comment, then the now-empty standalone test removed.
+
+Verification: full suite `Ran 671 tests ... OK` (673 -> 671, -2: the two duplicate/merged tests).
+`python3 -m py_compile` across all 45 test files; each of the 3 edited files run individually
+before the full-suite pass.

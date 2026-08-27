@@ -107,10 +107,19 @@ class RenderTableTests(unittest.TestCase):
         self.assertIn("  1", table)
 
     def test_left_aligned_column(self):
-        columns = [{"header": "run", "width": 6, "align": "left", "value": lambda e, i: "r0"}]
-        table = tr.render_table(columns, [{"label": "a"}])
-        lines = table.splitlines()
-        self.assertTrue(lines[1].startswith("  r0"))
+        left_columns = [{"header": "run", "width": 6, "align": "left", "value": lambda e, i: "r0"}]
+        right_columns = [{"header": "run", "width": 6, "align": "right", "value": lambda e, i: "r0"}]
+        left_line = tr.render_table(left_columns, [{"label": "a"}]).splitlines()[1]
+        right_line = tr.render_table(right_columns, [{"label": "a"}]).splitlines()[1]
+        # Left-aligned puts the value flush against the row's own leading whitespace;
+        # right-aligned (the default) pads it further right -- compared relationally against the
+        # same column's right-aligned output, rather than a hardcoded row-prefix width, so a
+        # future padding-width tweak to render_table() doesn't spuriously break this alongside
+        # unrelated tests.
+        left_indent = len(left_line) - len(left_line.lstrip())
+        right_indent = len(right_line) - len(right_line.lstrip())
+        self.assertLess(left_indent, right_indent)
+        self.assertTrue(left_line.lstrip().startswith("r0"))
 
     def test_width_none_column_is_unpadded_trailing(self):
         columns = [

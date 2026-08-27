@@ -96,6 +96,9 @@ class AttachAncestryTests(unittest.TestCase):
         self.assertIs(sweep["parent"], main)
         self.assertIs(launch["parent"], sweep)
         self.assertIs(barrier["parent"], sweep)
+        # attach_ancestry() resolves parent_slice_id into a real object reference (above) without
+        # removing the raw id it was resolved from.
+        self.assertEqual(sweep["parent_slice_id"], 1)
 
     def test_untethered_gpu_root_gets_none_parent_with_no_warning(self):
         buf = io.StringIO()
@@ -104,11 +107,6 @@ class AttachAncestryTests(unittest.TestCase):
         kernel = by_label(rows, "jacobi_kernel.kd")
         self.assertIsNone(kernel["parent"])
         self.assertEqual(buf.getvalue(), "")
-
-    def test_parent_slice_id_stays_on_the_row(self):
-        rows = stage1.attach_ancestry(stage1.parse_trace_csv(SINGLE_RANK_CSV))
-        sweep = by_label(rows, "jacobi_sweep")
-        self.assertEqual(sweep["parent_slice_id"], 1)
 
     def test_partitioned_set_resolves_identically_to_single_file(self):
         combined = stage1.attach_ancestry(
@@ -136,6 +134,10 @@ class AttachAncestryTests(unittest.TestCase):
 
 class LabelKeyTests(unittest.TestCase):
     def test_label_key_names_the_name_column(self):
+        # Not a self-check: stage3_rocprofsys_trace.py and stage4_rocprofsys_trace_aggregate.py
+        # both import this constant directly and pass it as merge_rank_trees()/tag_rows()'s own
+        # label_key= parameter -- a silent change here would break which dict key those functions
+        # treat as a row's display name, with no local error to catch it.
         self.assertEqual(stage1.LABEL_KEY, "name")
 
 

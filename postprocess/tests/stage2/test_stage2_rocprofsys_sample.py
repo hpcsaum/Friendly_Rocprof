@@ -21,6 +21,8 @@ class AttachAncestryTests(unittest.TestCase):
         self.assertIs(rows[1]["parent"], rows[0])
         self.assertFalse(rows[1]["is_thread_root"])
         self.assertIs(rows[2]["parent"], rows[1])
+        # contrast with test_thread_change_relative_to_parent_flags_thread_root below: same
+        # thread_id as its parent must not flag as a thread root.
         self.assertFalse(rows[2]["is_thread_root"])
 
     def test_sibling_depth_zero_rows_have_no_parent(self):
@@ -41,15 +43,6 @@ class AttachAncestryTests(unittest.TestCase):
         stage2.attach_ancestry(rows)
         self.assertIs(rows[2]["parent"], rows[1])
         self.assertTrue(rows[2]["is_thread_root"])
-
-    def test_same_thread_as_parent_is_not_a_thread_root(self):
-        rows = [
-            {"label": "a", "depth": 0, "thread_id": "0"},
-            {"label": "b", "depth": 1, "thread_id": "0"},
-            {"label": "c", "depth": 2, "thread_id": "0"},
-        ]
-        stage2.attach_ancestry(rows)
-        self.assertFalse(rows[2]["is_thread_root"])
 
 
 if __name__ == "__main__":
