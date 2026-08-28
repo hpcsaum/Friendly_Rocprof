@@ -1,3 +1,9 @@
+"""Tests for stage1_run_dirs.py's run-directory resolution helpers.
+
+ResolveRunDirsTests  -- resolve_run_dirs() paired-subdir detection and un-nested fallback
+ResolveTwoDirsTests  -- resolve_two_dirs() explicit-dirs vs. auto-resolve-from-one-dir dispatch
+"""
+
 import os
 import sys
 import tempfile

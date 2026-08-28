@@ -1,3 +1,17 @@
+"""Tests for stage5_pop_metrics_table.py -- the POP-inspired Load Balance/Communication
+Efficiency/Parallel Efficiency metrics, their scaling-study (Computation/Global Efficiency) and
+paired-GPU extensions, and the "=== Metrics ===" table's column spec and legend prose.
+
+ComputeRunMetricsTests        -- per-rank totals and single-run LB/CommE/PE arithmetic
+GatherComputeSplitTests       -- gather_timing_summary_per_rank()/compute_metrics_from_per_rank() split
+MpiPrefixReconciliationTests  -- MPIDI-prefixed and Fortran-shim-suffixed labels count as comm time
+CombinedPoolTests             -- paired rocprofv3 GPU-kernel time and sync-wait subtraction
+ComputeScalingMetricsTests    -- strong vs weak scaling's CompE/GE
+ComputeGpuEfficiencyTests     -- GPU-Eff strong vs weak, and the no-GPU-data None cases
+FormatMetricsTableTests       -- column visibility (GPU cols, scaling cols) and ordering
+MetricsLegendTests            -- metrics_legend()'s bullet set per column-visibility combination
+"""
+
 import os
 import statistics
 import sys

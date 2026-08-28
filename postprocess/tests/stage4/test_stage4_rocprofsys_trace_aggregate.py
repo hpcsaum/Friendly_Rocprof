@@ -1,3 +1,15 @@
+"""Tests for stage4_rocprofsys_trace_aggregate.py's per-rank build-and-cache path for the
+Perfetto trace-CSV pipeline.
+
+BuildRankAggregateTests             -- self_sum math, exact/no-match/ambiguous corr_id kernel-to-launch joining, repeated-call collapsing, tag_rows ordering
+GetRankAggregateCacheTests          -- on-disk aggregate cache: miss/hit/staleness/corruption, and cached-vs-fresh field equality
+ReanchorKernelsByOwnerAndTimeTests  -- _reanchor_kernels_by_owner_and_time()'s owner-name + same-thread + chronological-precedence matching
+OverlapWithRangesTests              -- _overlap_with_ranges()'s width/touches math against one or more time ranges
+TimeRangeClippingAndExtentTests     -- --time-range row clipping (count/self_sum/sum, straddling calls, reanchored kernels) vs the always-unclipped extent
+RangeAwareCacheTests                -- cache keyed by active time range: overwrite-not-proliferate, hit/miss per range, legacy cache-format fallback
+GetRankTimeExtentTests              -- get_rank_time_extent()'s always-real (range-independent) extent, with cache-miss fallback
+"""
+
 import contextlib
 import io
 import json

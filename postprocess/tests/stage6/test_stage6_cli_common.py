@@ -1,3 +1,13 @@
+"""Tests for stage6_cli_common.py's shared argparse/validation helpers used across the CLI tools.
+
+RequireDirectoryTests   -- require_directory() pass/raise on a single path
+RequireDirectoriesTests -- require_directories() over multiple paths, None-skipping, first-missing reporting
+ResolveDestTests        -- resolve_dest()'s explicit-vs-default-path resolution
+AddSelectionArgsTests   -- add_selection_args()'s -n/--top/--threshold/--all group and its help-text substitution
+AddMaxDepthArgTests     -- add_max_depth_arg()'s --max-depth flag and its default/overridden help text
+AddNoiseTierArgsTests   -- add_noise_tier_args()'s per-tier --show-* flags and the --show-all-internals shorthand
+"""
+
 import argparse
 import os
 import sys

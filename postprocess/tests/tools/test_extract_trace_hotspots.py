@@ -1,3 +1,10 @@
+"""Tests for extract_trace_hotspots.py, the combined CPU+GPU hotspots report built from a
+rocprof-sys Perfetto trace-CSV export (fused table, load imbalance, POP-style header notes).
+
+WriteReportTests -- default fused table + load imbalance, --show-all, always-present time-range note
+MainCliTests     -- CLI entry point: end-to-end write, --time-range windowing, bad --time-range syntax
+"""
+
 import os
 import sys
 import tempfile

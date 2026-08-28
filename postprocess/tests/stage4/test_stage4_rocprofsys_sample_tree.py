@@ -1,3 +1,16 @@
+"""Tests for stage4_rocprofsys_sample_tree.py's rank loading and rocprofv3-kernel-onto-CPU-subroutine
+attachment for the sample (timemory text-table) calltree pipeline.
+
+IsKernelLaunchTests                   -- label patterns recognized as a GPU kernel-launch call site
+KernelAnchorAttributionTests          -- real GPU kernel data split across one or more launch-call anchors, by owner-name match or launch-count proportion
+MakeKernelNodeParentTests             -- make_kernel_node()'s parent defaulting/override
+AttachKernelSummariesCollectIntoTests -- collect_into gathering the synthetic group/kernel nodes attach_kernel_summaries() creates
+LoadRankTreesTests                    -- per-rank parse+ancestry loading, thread-root detection, primary/fallback file pattern selection, postprocess hook
+KernelTotalsWithCountsTests           -- per-rank (count, seconds) totals from rocprofv3's kernel_stats.csv
+PairGpuPerRankTests                   -- pairing CPU rank keys to GPU kernel data, only when rank counts match
+AttachGpuKernelsTests                 -- end-to-end wiring of load_rank_trees()+merge+attach_kernel_summaries() into one tree
+"""
+
 import os
 import sys
 import unittest

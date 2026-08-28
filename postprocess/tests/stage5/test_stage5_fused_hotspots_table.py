@@ -1,3 +1,11 @@
+"""Tests for stage5_fused_hotspots_table.py -- combining CPU (stage4_rocprofsys_sample_flat) and GPU
+(stage4_rocprofv3) entries into one ranked pool, correcting for the CPU-side GPU-sync-wait
+double-count, plus the fused table's own column spec.
+
+BuildCombinedViewTests      -- subtraction/recombination arithmetic against build_combined_view()
+FusedHotspotsColumnsTests   -- FUSED_HOTSPOTS_COLUMNS wiring (domain column, empty-entries case)
+"""
+
 import os
 import sys
 import unittest

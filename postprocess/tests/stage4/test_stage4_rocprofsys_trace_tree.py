@@ -1,3 +1,8 @@
+"""Tests for stage4_rocprofsys_trace_tree.py's cross-rank tree merge (merge_ranks()) -- the merged
+node shape contract, corr_id-joined kernels and tags surviving the merge, and the postprocess hook
+applied per rank before merging.
+"""
+
 import os
 import sys
 import unittest

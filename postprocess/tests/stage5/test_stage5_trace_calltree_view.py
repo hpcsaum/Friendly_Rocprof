@@ -1,3 +1,11 @@
+"""Tests for stage5_trace_calltree_view.py's build_calltree_view() -- the trace-CSV calltree tool's
+(extract_trace_calltree.py) --show-*-driven noise tiers and its --time-range zero-overlap subtree
+pruning.
+
+BuildCalltreeViewTests  -- --show-* tiers (gpu_api, rocprofsys_internals, compiler_runtime), "other" folding
+TimeRangePruningTests   -- zero-time-overlap subtree pruning when a --time-range is active
+"""
+
 import glob
 import os
 import sys
@@ -84,6 +92,9 @@ class TimeRangePruningTests(unittest.TestCase):
         self.assertIn("compute_phase", text)
 
     def test_entirely_out_of_range_subtrees_are_cut(self):
+        # trace_time_range/rank0.csv (ts/dur converted ns -> seconds by stage1): init_phase spans
+        # [0,20]s, compute_phase [20,80]s, teardown_phase [80,100]s -- 30:70 sits entirely inside
+        # compute_phase, so init/teardown have zero overlap with it and get cut wholesale.
         trc.configure("30:70")
         text = view.build_calltree_view(TIME_RANGE_RANK_INPUTS)["tree_text"]
         self.assertNotIn("init_phase", text)

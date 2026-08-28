@@ -1,3 +1,11 @@
+"""Tests for extract_hotspot_callers.py, the top-hotspots-plus-caller-chains report tool.
+
+RenderChainTests         -- _render_chain()'s own upward max-depth truncation math, isolated from real tree data
+WriteReportTests         -- CPU-only end-to-end reports: chains, root-only functions, unfiltered ranking
+GpuAwareWriteReportTests -- Phase B fused CPU+GPU reports: kernel anchoring, multi-site, unplaceable kernels
+MainCliTests             -- CLI flags: default --top, --extra-noise-config, GPU dir auto-resolution
+"""
+
 import os
 import sys
 import tempfile
@@ -32,6 +40,9 @@ KERNEL_NO_ANCHOR_DIR = os.path.join(FIXTURES, "calltree_kernel_no_anchor")
 
 
 def _stub_node_values(node):
+    # Shape matches make_node_values()'s real 6-tuple (calls_avg, self_avg/std/min/max,
+    # total_avg), but the content is arbitrary -- the tests below only ever check the
+    # rendered text column, never these values.
     return (1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 

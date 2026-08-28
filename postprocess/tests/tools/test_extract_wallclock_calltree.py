@@ -1,3 +1,11 @@
+"""Tests for extract_wallclock_calltree.py, the timemory-text-driven call tree tool (exact where
+GOTCHA-instrumented, falling back to sampling per rank; GPU kernel placement is name-match-then-
+structural-guess, not per-dispatch-exact like extract_trace_calltree.py).
+
+HeaderProseTests -- report header states the aggregated rank count
+MainCliTests     -- the shared extract_*_calltree.py CLI contract (assert_extract_tool_cli_contract())
+"""
+
 import os
 import sys
 import tempfile

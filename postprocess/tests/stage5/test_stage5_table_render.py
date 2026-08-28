@@ -1,3 +1,16 @@
+"""Tests for stage5_table_render.py -- the generic stage-5 table backend: ranking/filtering entries
+(select_entries()), rendering them as fixed-width text (render_table()), hard-wrapping/reconstructing
+a too-long trailing label (wrap_trailing_label()/iter_table_rows()), and the shared bulleted-prose
+helpers every table uses.
+
+SelectEntriesTests     -- ranking, top-n truncation, threshold filtering, deterministic tie-break
+RenderTableTests        -- column alignment/padding, empty-entries case, end-to-end label wrapping
+WrapTrailingLabelTests  -- wrap_trailing_label()'s chunking, indentation, and pathological-width floor
+IterTableRowsTests      -- iter_table_rows() round-tripping unwrapped and wrapped rows back out
+PctTotalNoteTests       -- pct_total_note()'s prose
+RankingNoteTests        -- ranking_note()'s self-time vs inclusive-time wording
+"""
+
 import os
 import sys
 import unittest

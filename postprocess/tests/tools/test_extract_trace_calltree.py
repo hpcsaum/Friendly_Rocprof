@@ -1,3 +1,10 @@
+"""Tests for extract_trace_calltree.py, the trace-CSV-driven call tree tool (exact GPU kernel
+placement via corr_id, unlike the sampling-based extract_calltree.py/extract_wallclock_calltree.py).
+
+WriteReportTests -- default GPU-API hiding, --show-gpu-api/--show-all-internals tier reveal
+MainCliTests     -- CLI entry point: --show-all-internals end to end, --time-range windowing
+"""
+
 import os
 import sys
 import tempfile

@@ -1,3 +1,11 @@
+"""Tests for stage5_calltree_text_parser.py's flat_rows_from_calltree_text(), the only class here
+(FlatRowsFromCalltreeTextTests) covering parent-link reconstruction, hard-wrapped label rejoining,
+and the tree-block boundary (max-depth marker line, trailing report notes) parsing is documented to
+rely on -- exercised against real render_forest()/format_aligned_rows() output built via this file's
+own render_block()/make_report_text() helpers, so fixtures are byte-exact to actual report text
+rather than hand-typed guesses.
+"""
+
 import os
 import sys
 import unittest

@@ -1,3 +1,11 @@
+"""Tests for extract_trace_pop_metrics.py, the POP-inspired parallel-efficiency metrics report
+computed from one or more rocprof-sys Perfetto trace-CSV exports.
+
+WriteReportTests -- single-run report: GPU columns, unified-source note, always-present time-range note
+MainCliTests     -- CLI entry point: scaling-flag requirement with multiple dirs, end-to-end write,
+                     --time-range windowing
+"""
+
 import os
 import sys
 import tempfile

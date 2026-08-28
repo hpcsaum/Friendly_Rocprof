@@ -1,3 +1,13 @@
+"""Tests for stage6_time_range_config.py's --time-range parsing, singleton, and report-note formatting.
+
+ParseTimeRangeTests                -- parse_time_range()'s segment parsing, bound merging, and malformed-input errors
+ConfigureAndActiveRangesTests      -- configure()/active_ranges()'s process-wide singleton lifecycle
+FormatNoteTests                    -- _format_note()'s full-run vs active-range report-line formatting
+DescribeTimeRangeTests             -- describe_time_range()'s active-range and multi-rank-extent-combining behavior
+DescribeTimeRangeStage4WiringTests -- confirms describe_time_range() wires through to the real stage4 extent
+                                       accessor, not a reimplementation
+"""
+
 import os
 import shutil
 import sys

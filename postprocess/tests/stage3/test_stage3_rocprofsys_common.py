@@ -1,3 +1,18 @@
+"""Tests for stage3_rocprofsys_common.py's shared noise-tagging and tree-surgery engine.
+
+SelfScopeMatchingTests      -- prefix/substring/suffix label matching against a row's own tags
+FilenameHintTests           -- filename_substrings hint applying to every row in a batch
+SelfTagsTests               -- self_tags vs. tags: which matches come from the row itself
+AncestorForThreadRootsTests -- ancestor_for_thread_roots inheritance onto a thread-root row
+SiblingGroupTests           -- wrapper_branch_noise sibling-group contamination marking
+FirstRealDescendantTests    -- first_real_descendant_skip_tag inheritance through wrapper hops
+RemoveTaggedSubtreesTests   -- remove_tagged_subtrees() drops a tagged node and its whole subtree
+SpliceByTagTests            -- splice_by_tag() reparenting, fold vs. discard of removed self-time
+ClosureTests                -- make_collapses_children()/make_is_pruned() closure factories
+OpenMpiPrefixTests          -- real default_noise_patterns.json's mpi_territory prefix list
+TagDefsFallbackWiringTests  -- tag_rows()'s fallback to the process-wide stage6_noise_config
+"""
+
 import json
 import os
 import sys

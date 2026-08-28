@@ -1,3 +1,18 @@
+"""Tests for stage5_tree_render.py -- shared calltree rendering: drawing tree connectors and
+truncating by depth (render_forest()), aligning rows into fixed-width columns
+(format_aligned_rows()/wrap_leading_labels()), the GPU-kernel-fallback table
+(render_gpu_kernel_fallback()), the render_calltree_text() end-to-end wrapper, and the two calltree
+tools' shared bulleted-note text.
+
+RenderingTests                -- render_forest() connectors, max-depth truncation, collapses_children
+FormatAlignedRowsTests        -- format_aligned_rows() column formatting and long-label wrapping
+WrapLeadingLabelsTests        -- wrap_leading_labels() chunking and capped label-column width
+RenderGpuKernelFallbackTests  -- fallback table text for kernels attach_gpu_kernels() left unattached
+RenderCalltreeTextTests       -- render_calltree_text() end to end, incl. collapses_children
+AggregationNoteTests          -- aggregation_note()'s fixed prose
+TreeViewNoteTests             -- tree_view_note()'s per-tier (shown/hidden) prose
+"""
+
 import os
 import sys
 import unittest

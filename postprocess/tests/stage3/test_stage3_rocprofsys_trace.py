@@ -1,3 +1,9 @@
+"""Tests for stage3_rocprofsys_trace.py's category-based tagger for trace-CSV rows.
+
+TagForCategoryTests -- tag_for_category()'s full category-to-tag mapping table
+TagRowsTests        -- tag_rows() combining category-derived tags with delegated name-pattern tags
+"""
+
 import os
 import sys
 import unittest
@@ -42,6 +48,11 @@ class TagForCategoryTests(unittest.TestCase):
 
 class TagRowsTests(unittest.TestCase):
     def setUp(self):
+        # Unlike stage3_rocprofsys_common.tag_rows(), trace.tag_rows() takes no tag_defs
+        # parameter -- it always resolves wrapper_noise/mpi_territory name patterns through
+        # stage6_noise_config, so this resets to the bundled default_noise_patterns.json rather
+        # than a test-local synthetic vocabulary. The wrapper_noise/mpi_territory assertions
+        # below are exercising real shipped patterns, not a private fixture.
         stage6_noise_config.configure(None)
 
     def test_gpu_api_category_tagged(self):

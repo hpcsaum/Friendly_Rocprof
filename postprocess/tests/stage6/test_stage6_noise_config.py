@@ -1,3 +1,12 @@
+"""Tests for stage6_noise_config.py's noise-pattern configuration singleton.
+
+ConfigureAndTagDefsTests -- configure()/tag_defs() lifecycle: bundled defaults, add/remove/disable
+                             diffs, case-insensitivity, derived-tag protection, and
+                             full-replace-not-merge semantics
+LoadDefaultPatternsTests -- load_default_patterns() returns the bundled tag set directly, bypassing
+                             configure()
+"""
+
 import os
 import sys
 import tempfile

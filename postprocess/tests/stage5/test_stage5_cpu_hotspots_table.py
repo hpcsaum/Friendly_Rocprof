@@ -1,3 +1,9 @@
+"""Tests for stage5_cpu_hotspots_table.py's CPU_HOTSPOTS_COLUMNS column spec -- confirms self/total
+time, %total, %self, and calls all render with the right headers and formatting; render_table()
+itself is exhaustively covered in test_stage5_table_render.py, so this is only a wiring check on the
+column spec (CpuHotspotsColumnsTests).
+"""
+
 import os
 import sys
 import unittest

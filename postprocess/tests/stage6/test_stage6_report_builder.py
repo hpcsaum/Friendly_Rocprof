@@ -1,3 +1,12 @@
+"""Tests for stage6_report_builder.py's shared report-assembly primitives.
+
+WriteReportFileTests -- write_report_file() joins parts, writes to disk, and returns the same string
+RenderReportTests    -- render_report()'s header/tables-listing/numbered-section/footer assembly rules
+CommandHeaderTests   -- command_header()'s single-line vs wrapped-continuation rendering
+HelpRedirectTests    -- help_redirect()'s default script-name resolution
+StandardHeaderTests  -- standard_header()'s per-run metadata block, blank fields, and multi-directory caveat
+"""
+
 import os
 import sys
 import tempfile

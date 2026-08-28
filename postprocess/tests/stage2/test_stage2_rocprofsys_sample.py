@@ -1,3 +1,8 @@
+"""Tests for stage2_rocprofsys_sample.py's ancestry-tree reconstruction: parent linking from the
+DEPTH column via a depth-stack walk, and is_thread_root flagging on a thread_id change relative
+to the parent.
+"""
+
 import os
 import sys
 import unittest

@@ -1,3 +1,9 @@
+"""Tests for extract_hotspots.py, the combined CPU+GPU hotspots report tool.
+
+WriteReportTests -- four/six-table report content matches each standalone tool's own output exactly
+MainCliTests     -- explicit two-directory vs auto-resolved combined-directory invocation, noise config
+"""
+
 import json
 import os
 import sys

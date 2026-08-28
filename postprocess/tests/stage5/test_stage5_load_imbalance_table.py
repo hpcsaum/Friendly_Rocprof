@@ -1,3 +1,11 @@
+"""Tests for stage5_load_imbalance_table.py -- the avg/std_dev/min/max load-imbalance table shared
+by both the CPU and GPU hotspots tools.
+
+ComputeLoadImbalanceTests  -- compute_load_imbalance()'s stats, top-n/threshold selection, tie-break
+LoadImbalanceColumnsTests  -- load_imbalance_columns() wiring, incl. its dynamic item_label
+ImbalanceNoteTests         -- imbalance_note()'s per-(item_label, basis) prose
+"""
+
 import os
 import statistics
 import sys

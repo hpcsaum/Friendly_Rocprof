@@ -1,3 +1,10 @@
+"""Tests for extract_calltree.py, the sampling-based call-tree report tool.
+
+HeaderProseTests      -- multi-rank header states how many MPI ranks were aggregated
+ShowAllInternalsTests -- --show-all-internals is equivalent to enabling all four individual show flags
+MainCliTests          -- baseline extract-tool CLI contract, via assert_extract_tool_cli_contract()
+"""
+
 import os
 import sys
 import tempfile

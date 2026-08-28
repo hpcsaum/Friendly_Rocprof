@@ -1,3 +1,16 @@
+"""Tests for stage5_wallclock_calltree_view.py's build_calltree_view() -- the traced/wall_clock-based
+calltree tool's (extract_wallclock_calltree.py) single --show-gpu-api prune tier, .kd-artifact
+filtering, GPU-kernel-anchor attribution, and cross-rank aggregation. Renders through
+render()/labels_only(), thin wrappers around the shared _stage5_test_helpers.py plumbing also used
+by test_stage5_calltree_view.py.
+
+RenderTreeTests           -- --show-gpu-api gating, max-depth truncation, tree connectors
+KdArtifactFilteringTests  -- .kd-suffixed rows hidden by default, shown with --show-gpu-api
+KernelIntegrationTests    -- single/multiple kernel-anchor attribution, no-anchor fallback section
+AggregationTests          -- cross-rank merge, no per-rank sections, no node duplication
+OtherTagConfigTests       -- user-configured "other" tags reach this tool via _splice_other()
+"""
+
 import json
 import os
 import sys

@@ -1,3 +1,21 @@
+"""Tests for stage5_calltree_view.py's build_calltree_view() -- the sampling-based calltree tool's
+(extract_calltree.py) --show-*-driven noise tiers, wrapper-frame splicing, kernel-anchor
+attribution, and cross-rank aggregation. Renders through render()/labels_only(), thin wrappers
+around the shared _stage5_test_helpers.py plumbing also used by
+test_stage5_wallclock_calltree_view.py.
+
+GpuNoiseTierTests                       -- --show-gpu-api gating of GPU-API calls and omp-target-offload internals
+RocprofsysWrapperSpliceTests            -- --show-rocprofsys-internals wrapper-frame splicing/reparenting
+WrapperContaminatedBranchTests          -- whole sibling subtrees hidden when wrapper-contaminated
+OtherTagConfigTests                     -- user-configured "other" tags reach this tool via strip_wrapper_noise()
+UntetheredThreadRootGpuPropagationTests -- background-thread roots reclassified as GPU noise
+MpiCollapseTierTests                    -- --show-mpi-internals gating of MPI internals below the first frame
+CompilerRuntimeTierTests                -- --show-compiler-runtime gating, whole subtree pruned
+SamplingMissingFallbackTests            -- sampling_wall_clock -> wall_clock fallback reaches the rendered report
+KernelAnchorBroadeningTests             -- namespace-qualified/__cray_start_acc_kernel anchor matching end to end
+AggregationTests                        -- cross-rank merge and load-balance columns end to end
+"""
+
 import json
 import os
 import sys

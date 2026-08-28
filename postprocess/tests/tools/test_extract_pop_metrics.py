@@ -1,3 +1,9 @@
+"""Tests for extract_pop_metrics.py, the POP-inspired parallel-efficiency metrics report tool.
+
+WriteReportTests -- single-run vs scaling-study report content, GPU columns shown only when GPU data exists
+MainCliTests     -- --scaling requirement, single/multi-directory end-to-end runs, --extra-noise-config
+"""
+
 import os
 import sys
 import tempfile
@@ -76,6 +82,8 @@ class WriteReportTests(unittest.TestCase):
 
     def test_gpu_eff_shown_only_when_both_runs_have_gpu_data(self):
         with tempfile.TemporaryDirectory() as tmp:
+            # COMBINED_DIR used as both reference and scaled run -- only need two runs that both
+            # carry GPU data, not a real scaling relationship between them.
             both_gpu = pop_tool.write_report(
                 [COMBINED_DIR, COMBINED_DIR], os.path.join(tmp, "a.txt"), scaling="strong"
             )

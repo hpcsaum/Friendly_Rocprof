@@ -1,3 +1,9 @@
+"""Tests for stage4_rocprofsys_trace_ranks.py's trace-CSV rank discovery (discover_ranks()) --
+numeric rank-key sorting, preferring a rank's partitioned (gpu/mpi/other) file set over its
+unfiltered file when both exist, falling back to whichever form is present, and raising when a
+directory has no matching files at all.
+"""
+
 import os
 import sys
 import tempfile

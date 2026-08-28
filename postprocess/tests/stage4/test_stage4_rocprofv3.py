@@ -1,3 +1,9 @@
+"""Tests for stage4_rocprofv3.py's rank merge for rocprofv3's GPU kernel view.
+
+AggregateTests         -- global by-kernel-name totals across ranks (sum/pct_total/avg_us), empty-data case
+AggregatePerRankTests  -- per-rank {kernel_name: seconds} breakdown, empty-data case
+"""
+
 import os
 import sys
 import unittest
@@ -14,6 +20,8 @@ class AggregateTests(unittest.TestCase):
         entries, scanned, total_ns = v3.aggregate(os.path.join(FIXTURES, "rocprofv3_single_rank"))
         self.assertEqual(len(scanned), 1)
         by_label = {e["label"]: e for e in entries}
+        # These three values are rocprofv3_single_rank's kernel_stats.csv TotalDurationNs column,
+        # one per row (JacobiIterationKernel, BoundaryKernel, __hipRegisterFatBinary) -- not arbitrary.
         expected_total_ns = 537449866 + 58000000 + 9000
         self.assertAlmostEqual(total_ns, expected_total_ns)
         self.assertAlmostEqual(by_label["JacobiIterationKernel"]["sum"], 537449866 / 1e9)
@@ -24,6 +32,7 @@ class AggregateTests(unittest.TestCase):
         entries, scanned, total_ns = v3.aggregate(os.path.join(FIXTURES, "rocprofv3_mpi_2rank"))
         self.assertEqual(len(scanned), 2)
         by_label = {e["label"]: e for e in entries}
+        # Each rank's own kernel_stats.csv TotalDurationNs for that kernel, summed across the two ranks.
         jacobi_ns = 268724933 + 268000000
         boundary_ns = 16000000 + 17000000
         expected_total_ns = jacobi_ns + boundary_ns

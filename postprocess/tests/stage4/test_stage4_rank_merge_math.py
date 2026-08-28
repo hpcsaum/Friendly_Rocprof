@@ -1,3 +1,8 @@
+"""Tests for stage4_rank_merge_math.py's cross-rank stats primitive (stats_across_ranks()) --
+average/std_dev/min/max over a list of per-rank numeric values, including the empty-list,
+single-value, and explicit-zero-for-a-missing-rank edge cases.
+"""
+
 import os
 import sys
 import unittest

@@ -1,3 +1,17 @@
+"""Tests for convert_trace_to_csv.py, the tool that turns a rocprof-sys trace-mode run's per-rank
+Perfetto `.proto` files into the flat trace-CSV files this project's trace-based tools consume.
+
+ParseTraceProcessorCsvTests -- trace_processor_shell's own quoted-CSV format, "[NULL]" -> ""
+PivotArgsBySliceIdTests     -- long-format args rows pivoted into one dict per slice_id
+WriteUnfilteredCsvTests     -- the plain 11-column CSV round-trips through stage1's own parser
+WritePartitionedCsvsTests   -- gpu/mpi/other bucketing by category tag, args columns gpu-only
+DiscoverProtoRanksTests     -- per-rank *.proto discovery, numeric sort, merged-file exclusion
+ResolveTraceProcessorTests  -- trace_processor_shell resolution precedence: CLI arg > env var > PATH
+RunTraceProcessorTests      -- non-zero subprocess exit surfaces as SystemExit with stderr
+ConvertRankTests            -- one rank's conversion, with/without the --unfiltered extra file
+MainCliTests                -- end-to-end smoke test plus missing-directory error handling
+"""
+
 import argparse
 import csv
 import io
@@ -211,6 +225,8 @@ class RunTraceProcessorTests(unittest.TestCase):
 
 class ConvertRankTests(unittest.TestCase):
     def test_default_writes_only_the_partitioned_trio(self):
+        # side_effect order matches convert_rank()'s own two _run_trace_processor calls: the base
+        # slices query first, the args query second.
         with mock.patch.object(conv, "_run_trace_processor", side_effect=[BASE_ROWS_CSV, ARGS_ROWS_CSV]):
             with tempfile.TemporaryDirectory() as tmp:
                 written = conv.convert_rank("/anywhere/perfetto-trace-0.proto", tmp, "/bin/tp", False)

@@ -1,3 +1,26 @@
+"""Tests for select_instrumented_functions.py, which resolves CPU hotspot function names into
+rocprof-sys-instrument "-R" input: escaping, selection from an output dir or report, the
+--gpu-output-dir/--ancestor-depth selection-widening additions, and the separate
+--check-instrumented lost-function-warning mode.
+
+EscapeForInstrumentRegexTests   -- escape_for_instrument_regex()'s metachar escaping
+LabelsFromOutputDirTests        -- labels_from_output_dir(): threshold/top/unfiltered selection,
+                                    MPI aggregation, dated-subdirectory discovery
+LabelsFromReportTests           -- labels_from_report(): CPU-only and combined-report parsing,
+                                    column-count regression, malformed/missing-file errors
+FindLostFunctionsTests          -- find_lost_functions()'s substring match against instrumented.json,
+                                    missing/corrupt file handling
+MainResolveModeTests            -- resolve-mode CLI: mutually-exclusive flags, printed label/regex
+                                    pairs, --extra-noise-config
+MainCheckInstrumentedModeTests  -- --check-instrumented mode: conflicting flags, always-zero exit,
+                                    missing instrumented file handling
+FlatTreeForAncestorsTests       -- flat_tree_for_ancestors()'s output-dir vs report-mode tree sourcing
+MainAncestorExpansionTests      -- --ancestor-depth expansion end to end, including report-mode's
+                                    sibling calltree.txt requirement
+MainGpuOutputDirTests           -- --gpu-output-dir kernel-owner resolution and dedup against an
+                                    already-selected owner
+"""
+
 import contextlib
 import io
 import json

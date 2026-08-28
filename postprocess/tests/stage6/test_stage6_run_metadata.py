@@ -1,3 +1,13 @@
+"""Tests for stage6_run_metadata.py's best-effort run-metadata guessing helpers.
+
+LoadJsonFileTests      -- load_json_file()'s never-raises find-and-parse behavior on missing/corrupt/non-dict files
+FindFirstKeyTests      -- find_first_key()'s case-insensitive, one-level-nested key search
+GuessExecutableTests   -- guess_executable()'s basename-of-first-token extraction, including list-wrapped values
+GuessTotalRuntimeTests -- guess_total_runtime()'s numeric-vs-string formatting
+GuessRunDatetimeTests  -- guess_run_datetime()'s key lookup and directory-name/scanned-files fallback chain
+GuessNumRanksTests     -- guess_num_ranks()'s keyed lookup vs PID-counting fallback from scanned filenames
+"""
+
 import os
 import re
 import sys

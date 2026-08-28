@@ -1,3 +1,12 @@
+"""Tests for stage4_rocprofsys_trace_flat.py's cross-rank flat/per-rank derivations for the
+Perfetto trace-CSV pipeline.
+
+AggregateTests                   -- global by-label totals across ranks, total_runtime, CPU/GPU domain tagging
+AggregatePerRankTests            -- per-rank {label: value} breakdown, GPU rows included, self vs unfiltered time
+GatherTimingSummaryPerRankTests  -- per-rank total/comm/gpu_busy/cpu_only/useful-compute timing summary
+AggregateGpuKernelsTests         -- kernel-only aggregation excluding CPU and GPU-API (launch-call) labels, pct_total against kernel-only time
+"""
+
 import os
 import sys
 import unittest

@@ -68,6 +68,7 @@
 | 2026-08-27 | Plan 3.15 (Phase 3 of 8): remaining duplication clusters consolidated across stage1/stage3/stage4/stage5/stage6/tools -- 740 -> 684 tests -- see full accounting below |
 | 2026-08-27 | Plan 3.15 (Phase 4 of 8): test-scope audit across all 45 test files -- 11 pure re-tests dropped, 5 misplaced tests relocated, ~10 tests relabeled as wiring checks -- 684 -> 673 tests -- see full accounting below |
 | 2026-08-27 | Plan 3.15 (Phase 5 of 8): trivial-test cleanup -- one brittle exact-string assertion loosened to a relational check, two duplicate-assertion test pairs merged/dropped -- 673 -> 671 tests -- see full accounting below |
+| 2026-08-27 | Plan 3.15 (Phase 6 of 8): final comments pass -- a module docstring (with a per-class table of contents) added to all 45 test files, plus 7 targeted inline comments; 671 tests unchanged, purely additive -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -3228,3 +3229,49 @@ assertion with a one-line comment, then the now-empty standalone test removed.
 Verification: full suite `Ran 671 tests ... OK` (673 -> 671, -2: the two duplicate/merged tests).
 `python3 -m py_compile` across all 45 test files; each of the 3 edited files run individually
 before the full-suite pass.
+
+## 2026-08-27 — Plan 3.15, Phase 6: final comments pass
+
+The plan's own closing phase, deliberately last so the docstrings describe the file layout Phases
+1-5 already settled into, rather than needing a second pass for helper code that got moved/renamed
+or tests Phase 4/5 ended up dropping. Applied the Phase 0 policy (`postprocess/README.md`'s "Test
+comments" section) suite-wide: 6 parallel agents, each given the exact policy text and template to
+match, one per file group (stage1-3, stage4, stage5, stage6, tools split in two), each required to
+read every class/test fresh before writing anything -- not assume the pre-cleanup shape.
+
+**Module docstrings**: all 45 test files gained a top-of-file docstring naming the module/tool under
+test, its functional scope, and a one-line-per-class table of contents (single-class files got a
+direct scope description instead, per the policy's own allowance). Several files needed their
+docstring to reflect test churn from Phases 1-5 specifically -- `test_stage4_rocprofsys_sample_tree.py`'s
+`LoadRankTreesTests` entry covers the 4 tests relocated into it in Phase 4;
+`test_stage3_rocprofsys_common.py`'s list reflects `LoadDefaultPatternsTests` moving out and
+`TagRowsFallbackTests` renaming to `TagDefsFallbackWiringTests`; `test_stage6_time_range_config.py`'s
+list includes the split-out `DescribeTimeRangeStage4WiringTests` class; `test_select_hotspot_kernels.py`'s
+list leads with the new `SelectionKwargsTests` class instead of the ~14 separate tests it replaced.
+Spot-checked several of these (`test_stage4_rocprofsys_sample_tree.py`,
+`test_stage3_rocprofsys_common.py`'s 11-class list, `test_select_instrumented_functions.py`'s 9-class
+list) by diffing the written table of contents against `grep "^class "` on the actual file -- all
+matched exactly, in order.
+
+**Inline comments** (7 total, added conservatively -- most tests in the suite already had adequate
+comments from prior phases, so each agent was instructed to add only where a genuine gap remained):
+a hidden invariant in `test_stage3_rocprofsys_trace.py`'s `TagRowsTests.setUp` (unlike its sibling
+file, this one has no synthetic `tag_defs` override, so its tests are silently pinned to the real
+shipped `default_noise_patterns.json` content); two fixture-tied magic-number annotations in
+`test_stage4_rocprofv3.py` (nanosecond literals traced back to the real `kernel_stats.csv` fixture
+columns); one fixture-content annotation in `test_stage5_trace_calltree_view.py` (where `"30:70"`
+falls relative to the fixture's three labeled phases, traced through `stage1_rocprofsys_trace.py`'s
+ns-to-seconds conversion and the fixture CSV itself); and three in the tools group (a mock
+call-order dependency in `test_convert_trace_to_csv.py`, an arbitrary-vs-significant flag on a stub
+return value in `test_extract_hotspot_callers.py`, and a deliberate same-directory-twice fixture
+choice in `test_extract_pop_metrics.py`).
+
+Verification: full suite `Ran 671 tests ... OK`, count unchanged from Phase 5 (purely additive --
+no test logic, assertions, fixture data, or names touched, confirmed by `git diff --stat` showing
+insertions only across all 45 files). `python3 -m py_compile` across all 45 test files; each of the
+6 groups run individually before the full-suite pass.
+
+---
+
+This closes the active-editing phases of plan 3.15. Phase 7 (post-refactor coverage check against
+the real codebase, including the known `-h`/`--help`-content coverage gap) remains open.

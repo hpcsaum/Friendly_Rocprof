@@ -1,3 +1,7 @@
+"""Tests for stage1_rocprofv3.py's kernel_stats.csv parser: row extraction, scientific-notation
+numeric parsing, and rejection of CSVs that lack the expected columns.
+"""
+
 import os
 import sys
 import unittest

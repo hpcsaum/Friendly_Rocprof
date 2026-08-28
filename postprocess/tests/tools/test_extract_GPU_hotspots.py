@@ -1,3 +1,9 @@
+"""Tests for extract_GPU_hotspots.py, the GPU kernel (rocprofv3 kernel_stats.csv) hotspots report tool.
+
+ConfigJsonGuessingTests -- CONFIG_*_KEYS constants match a real *_config.json fixture, num-ranks-from-PIDs
+WriteReportTests        -- end-to-end report content: tables, header, threshold/show-all/load imbalance
+"""
+
 import os
 import sys
 import tempfile

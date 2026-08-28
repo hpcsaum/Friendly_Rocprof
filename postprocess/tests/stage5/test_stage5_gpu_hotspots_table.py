@@ -1,3 +1,9 @@
+"""Tests for stage5_gpu_hotspots_table.py's GPU_HOTSPOTS_COLUMNS column spec -- confirms total time,
+%total, calls, and avg(us) render with the right headers and formatting; render_table() itself is
+exhaustively covered in test_stage5_table_render.py, so this is only a wiring check on the column
+spec (GpuHotspotsColumnsTests).
+"""
+
 import os
 import sys
 import unittest

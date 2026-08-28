@@ -1,3 +1,9 @@
+"""Tests for stage1_rocprofsys_sample.py's timemory pipe-delimited text-table parser.
+
+CleanLabelTests     -- clean_label() stripping rank prefix and hierarchy indent, independently
+ParseTableFileTests -- parse_table_file() header detection, row extraction, non-table rejection
+"""
+
 import os
 import sys
 import unittest

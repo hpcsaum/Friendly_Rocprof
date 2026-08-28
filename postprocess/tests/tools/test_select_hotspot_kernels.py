@@ -1,3 +1,18 @@
+"""Tests for select_hotspot_kernels.py, which resolves GPU hotspot kernel names into
+rocprof-compute "-k" input from a hotspots report, a rocprofv3 output directory, or a
+rocprof-sys trace directory.
+
+SelectionKwargsTests       -- shared selection semantics (require_multiple_calls, top, threshold,
+                               no-data errors) exercised once per applicable loader via subTest
+LabelsFromOutputDirTests   -- labels_from_output_dir()-specific behavior: single-call exclusion
+                               source, MPI aggregation, sorted/deduped output
+LabelsFromReportTests      -- labels_from_report(): combined-report table selection, column-count
+                               regression, malformed/missing-file errors
+LabelsFromTraceDirTests    -- labels_from_trace_dir()'s discover/aggregate/select wiring end to end
+MainCLITests               -- CLI entry point: source requirement, mutually-exclusive flags,
+                               --trace-dir output, --time-range acceptance
+"""
+
 import contextlib
 import glob
 import io

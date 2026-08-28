@@ -1,3 +1,10 @@
+"""Tests for stage1_rocprofsys_trace.py's Perfetto trace-CSV parser and ancestry resolver.
+
+ParseTraceCsvTests  -- parse_trace_csv() column preservation, unit conversion, multi-file concat
+AttachAncestryTests -- attach_ancestry() parent_slice_id resolution, orphan/warning handling
+LabelKeyTests       -- LABEL_KEY stays "name", the key downstream stages depend on directly
+"""
+
 import contextlib
 import io
 import os

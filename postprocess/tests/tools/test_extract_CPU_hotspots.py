@@ -1,3 +1,11 @@
+"""Tests for extract_CPU_hotspots.py, the CPU-side (timemory text output) hotspots report tool.
+
+MetadataGuessingTests        -- EXECUTABLE_KEYS/RUN_DATETIME_KEYS/etc. match a real metadata.json/filenames
+WriteReportTests             -- end-to-end report content: tables, header, threshold/show-all/load imbalance
+NestedDatedSubdirectoryTests -- ROCPROFSYS_TIME_OUTPUT's default timestamped subdirectory nesting
+MainCliTests                 -- --extra-noise-config via CLI flag and FRIENDLY_ROCPROF_NOISE_CONFIG env var
+"""
+
 import os
 import sys
 import tempfile

@@ -1,3 +1,14 @@
+"""Tests for stage4_rocprofsys_common.py's shared tree-merge engine.
+
+MergeRankTreesTests            -- cross-rank tree merge by structural position, tag union, label_key override
+AggregateNodeStatsTests        -- avg/std_dev/min/max across ranks for one merged node's per_rank stats
+CallerChainsForLabelTests      -- root-to-target ancestry chains for every call site of a label
+KernelOwnerLabelTests          -- $ck-suffix and OMP-offloading kernel name decoding to a CPU owner label
+ExpandLabelsWithAncestorsTests -- adding N levels of real ancestors to a base label selection
+ResolveKernelOwnersTests       -- decoding a set of raw kernel names to their real owner labels
+MakeZeroTimePrunedTests        -- is_pruned() predicate for subtrees with entirely zero self_sum
+"""
+
 import os
 import sys
 import unittest

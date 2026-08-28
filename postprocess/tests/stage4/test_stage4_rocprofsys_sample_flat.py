@@ -1,3 +1,15 @@
+"""Tests for stage4_rocprofsys_sample_flat.py's rank merge for rocprof-sys's flat CPU/GPU view.
+
+AggregateTests                       -- global by-label aggregation, self_sum/pct_total math, noise exclusion, empty dirs
+OtherTagConfigTests                  -- a user-configured "other" noise tag excludes a row same as a built-in tag
+ScanRanksMultiMetricFileTests        -- multi-metric-file-per-rank counting, wall_clock vs sampling precedence, total_runtime correctness
+RocrClassificationTests              -- ROCr runtime internals land in the GPU bucket, not CPU
+WrapperContaminatedBranchFixtureTests -- a whole noise branch, including intermediate generic layers, vanishes end to end
+GpuSpawnedThreadFixtureTests         -- same-labeled thread-root rows kept distinct across the CPU/GPU bucket split
+AggregatePerRankTests                -- per-rank {label: value} breakdown, self vs unfiltered (inclusive) time
+NestedDatedSubdirectoryTests         -- files found one level down inside rocprof-sys's timestamped output subdirectory
+"""
+
 import json
 import os
 import sys
