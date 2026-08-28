@@ -71,6 +71,7 @@
 | 2026-08-27 | Plan 3.15 (Phase 6 of 8): final comments pass -- a module docstring (with a per-class table of contents) added to all 45 test files, plus 7 targeted inline comments; 671 tests unchanged, purely additive -- see full accounting below |
 | 2026-08-28 | Plan 3.15 (Phase 7 of 8): post-refactor coverage check against the real codebase -- `-h`/`--help` content coverage (13 tools) plus a curated high-value subset of a 69-item coverage-gap audit (21 items); 671 -> 714 tests -- see full accounting below |
 | 2026-08-28 | Fixed a real-HPC-system bug: on systems where the underlying AMD tool doesn't auto-create its own output directory, `rocprofv3`/`rocprof-sys`/`rocprof-compute` segfault instead of failing cleanly -- all six `scripts/*.sh` launchers now explicitly `mkdir -p` their output directory right before invoking the profiling tool -- see full accounting below |
+| 2026-08-28 | Plan 4.1: two new debugging launchers -- `debug_crash.sh` (wraps a run in `rocgdb` from process start to catch a fatal signal live) and `debug_hang.py` (adopted from a colleague's HPC-validated `hangwatch.py`, watches for output silence and live-attaches across every node) -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -3378,3 +3379,65 @@ created) and only a real invocation creates anything on disk.
 Verification: `bash -n` across all six edited scripts; `shellcheck` isn't installed in this
 environment so couldn't be run (per `CLAUDE.md`'s own environment-constraints note, this can only
 be confirmed working end-to-end on real HPC hardware by the user).
+
+## 2026-08-28 — Plan 4.1: rocgdb-based crash/hang debugging for MPI jobs
+
+New tool family, `debug_<what>`, for when a job is outright broken rather than just slow -- neither
+case was covered by any existing tool, and attaching `rocgdb` correctly across many MPI ranks (with
+GPU debugging actually working) is fiddly enough that users don't do it themselves. This closes
+plan 4.1's 4-phase roadmap; full plan at
+[docs/plans/4.1-rocgdb-crash-hang-debugging.md](plans/4.1-rocgdb-crash-hang-debugging.md).
+
+**Phase 1 -- `scripts/debug_hang.py`, adopted from a colleague's `hangwatch.py`.** A colleague
+had already solved the *hang* half of this problem for a real case and validated it end-to-end on
+HLRS's Hunter (PBS, also supports Slurm): watch a job's output for silence, then live-attach
+`rocgdb -p PID --batch` to every GPU-holding rank on every node (via `pbsdsh`/`srun --overlap`,
+scheduler auto-detected), collect a backtrace from each, and cancel the job so the allocation isn't
+wasted. Its one genuinely non-obvious finding, carried over unchanged: the remote collection step
+must run `rocgdb` under the *submitting shell's own environment* (captured after module-load) or
+`amd-dbgapi` version-mismatches against the app's ROCm build and GPU wavefronts silently disappear
+from the backtrace. Brought into this repo (`hangwatch-backtrace-kill/hangwatch.py`, outside this
+repo and left untouched) and up to its conventions:
+- Renamed `hangwatch` -> `debug_hang` throughout, to match the new `debug_crash.sh` and this
+  repo's `debug_<what>` naming.
+- Added `--mpi "<launch cmd>"`, the same convention every other `scripts/` launcher uses, replacing
+  the original's "bake the launcher into the trailing command" shape.
+- Added the `CLAUDE.md`-mandated jargon-free `-h`/`--help` intro ending in a link to rocgdb's docs,
+  split from the module's own (kept, more technical) docstring.
+- Added explicit dependency checks (`rocgdb` always; `pbsdsh`/`srun` only when that scheduler is
+  actually detected -- a single-rank/no-scheduler run must not be blocked on either) and a
+  `--dry-run` flag matching every other launcher's contract.
+- Refactored `main()`'s inline argument handling into a standalone `parse_args()` so CLI parsing
+  (`--mpi` prefixing, `--` stripping, `--log` defaulting) is testable without triggering `watch()`'s
+  real subprocess/monitoring side effects.
+
+**Phase 2 -- new `scripts/debug_crash.sh`, the immediate-crash case `debug_hang.py` doesn't cover**
+(a rank that segfaults outright just exits -- no hang, no backtrace collected there). Wraps the
+given command in `rocgdb -q --batch -nx -ex "set pagination off" -ex run -ex "thread apply all bt"
+-ex quit --args <cmd>` from process start, so the debugger is already attached when a fatal signal
+arrives. Non-MPI writes straight to `backtrace.txt`; with `--mpi`, each rank resolves its own
+identity at its *own* runtime (not the launcher's) via a small `bash -c` wrapper reading
+`OMPI_COMM_WORLD_RANK`/`PMI_RANK`/`PMIX_RANK`/`SLURM_PROCID` (falling back to PID), writing its own
+`rank_<id>.bt`. Structured like `profile_CPU_hotspots.sh` (`usage()`, arg loop, dependency check,
+`--dry-run`, `mkdir -p`).
+
+**Phase 3 -- docs.** New "Debugging crashes and hangs" section in `README.md` covering both tools;
+`CLAUDE.md`'s naming-conventions sentence now lists `debug_<what>` alongside
+`profile_<what>`/`extract_<what>`; this plan's full text written to `docs/plans/`.
+
+**Phase 4 -- tests.** New `scripts/tests/test_debug_hang.py` (19 tests) covering the pure-logic
+pieces that don't need real HPC hardware: `pbs_node_indices()`'s dedup/index-mapping (including the
+missing-host positional fallback), `load_env()`'s NUL-separated round-trip, `detect_scheduler()`'s
+env-var-then-`PATH` precedence (all monkeypatched), and `parse_args()`'s `--mpi`/`--`/`--log`
+handling. Deliberately out of scope: anything needing `rocgdb`/`rocm-smi`/`pbsdsh`/`srun`.
+
+Verification: `python3 scripts/debug_hang.py -h`/`--dry-run` (plain and `--mpi`) exercised directly;
+missing-`rocgdb` and missing-`pbsdsh`/`srun` (only when that scheduler is actually detected)
+confirmed to fail cleanly via a faked `PATH`. `bash -n scripts/debug_crash.sh` passes; its
+`--dry-run` resolves both the plain and per-rank-wrapped forms correctly, and its real (non-dry-run)
+execution path was exercised end-to-end against a fake `rocgdb`/`mpirun` on `PATH`, confirming 4
+simulated ranks each correctly resolved their own rank and wrote their own `rank_<id>.bt` with the
+app command/args intact. `python3 -m unittest scripts.tests.test_debug_hang -v` -> `Ran 19 tests
+... OK`. As with every other script in this repo, actual `rocgdb` behavior against a real crash/hang
+can only be confirmed by the user on real HPC hardware, per `CLAUDE.md`'s environment-constraints
+note.

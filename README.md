@@ -8,7 +8,8 @@ C/C++/Fortran + MPI(+OpenMP) codebases. Retro-compatible with ROCm 7.0.2. See
 ## Layout
 
 - `scripts/` — bash launcher scripts that run the profiling tools for you and generate a
-  report automatically.
+  report automatically, plus a couple of debugging launchers (`debug_crash.sh`, and
+  `debug_hang.py` — Python, since it needs to orchestrate across multiple nodes).
 - `postprocess/tools/` — the post-processing scripts that turn raw profiler output into the
   reports described below. Each one also works standalone against output you already have.
   See [postprocess/README.md](postprocess/README.md) if you're extending or debugging them.
@@ -414,3 +415,51 @@ small JSON file via `--extra-noise-config path/to/config.json` (or set
 `$FRIENDLY_ROCPROF_NOISE_CONFIG` once for every run) to add, remove, or disable patterns
 without touching any code. See [postprocess/README.md](postprocess/README.md) for the file
 format and how this fits into the rest of the architecture.
+
+## Debugging crashes and hangs
+
+Two launchers for when your program is outright broken rather than just slow, both using the
+same `--mpi "<launch cmd>"` convention as the profiling tools above and both working fine on a
+single rank with no MPI at all.
+
+### Catching a crash — `debug_crash.sh`
+
+Runs your program under a debugger from the moment it starts, so a fatal signal (segfault,
+abort, ...) is caught live and every thread's backtrace is printed before the process is gone —
+under the hood, `rocgdb -batch -ex run -ex "thread apply all bt"`.
+
+```bash
+# non-MPI
+scripts/debug_crash.sh -o results/crash1 -- ./app arg1 arg2
+
+# MPI: one debugger per rank, each writing its own backtrace file
+scripts/debug_crash.sh --mpi "mpirun -np 4" -o results/crash1 -- ./app arg1 arg2
+```
+
+Writes `results/crash1/backtrace.txt` (non-MPI) or one `results/crash1/rank_<id>.bt` per rank
+(MPI, rank identified via `OMPI_COMM_WORLD_RANK`/`PMI_RANK`/`PMIX_RANK`/`SLURM_PROCID`). Use this
+once you already have a reproducible crash — every rank runs noticeably slower than a normal
+launch, so it's a one-off debugging run, not something to leave in your job scripts. It does
+**not** help with a job that hangs with no crash and no signal — see below for that case.
+
+### Catching a hang — `debug_hang.py`
+
+Watches your job's output for silence — no output for `--timeout` seconds counts as a hang — and
+when that happens, live-attaches a debugger to every rank on every node and writes a backtrace
+snapshot for each, then cancels the job so the allocation isn't wasted. Auto-detects Slurm or
+PBS from the job environment (falling back to a local, single-rank/no-scheduler mode).
+
+```bash
+# non-MPI, no scheduler
+python3 scripts/debug_hang.py --timeout 300 -- ./app arg1 arg2
+
+# MPI, inside a submitted PBS/Slurm job script
+python3 scripts/debug_hang.py --mpi "mpirun -n 8 --ppn 4" --timeout 300 -- ./app
+```
+
+Backtraces land under one directory per node, `<outdir>/<hostname>/pid<pid>.bt`, alongside a
+`manifest.txt` mapping each collected PID to its process name. Load your ROCm module *before*
+launching — the collect step reruns under that same captured environment so GPU-side stacks
+resolve correctly, rather than the job's own environment, which can otherwise version-mismatch
+against the app's ROCm build and silently drop GPU wavefronts from the backtrace. Pass
+`--no-cancel` to collect a snapshot without ending the job.
