@@ -149,6 +149,16 @@ class AncestorForThreadRootsTests(unittest.TestCase):
         s3.tag_rows([ancestor, thread_root], TAG_DEFS)
         self.assertIn("mpi_territory", thread_root["tags"])
 
+    def test_thread_root_inherits_from_a_grandparent_not_just_the_immediate_parent(self):
+        # ancestor_match() walks arbitrarily far up (self_match[parent] | ancestor_match(parent)),
+        # not just row["parent"] itself -- an untagged frame directly between the GPU ancestor and
+        # the thread root must not block inheritance.
+        grandparent = make_taggable_row("hipLaunchKernel")
+        untagged_parent = make_taggable_row("some_intermediate_frame", parent=grandparent)
+        thread_root = make_taggable_row("start_thread", parent=untagged_parent, is_thread_root=True)
+        s3.tag_rows([grandparent, untagged_parent, thread_root], TAG_DEFS)
+        self.assertIn("gpu_api", thread_root["tags"])
+
     def test_non_thread_root_ignores_matching_ancestor(self):
         ancestor = make_taggable_row("hipLaunchKernel")
         child = make_taggable_row("start_thread", parent=ancestor, is_thread_root=False)
@@ -327,6 +337,22 @@ class SpliceByTagTests(unittest.TestCase):
         s3.splice_by_tag(rows, "wrapper_noise", fold=False)
         self.assertAlmostEqual(root["self_sum"], 1.0)
         self.assertAlmostEqual(root["sum"], 10.0)
+
+    def test_fold_true_with_no_surviving_ancestor_discards_rather_than_raising(self):
+        # Whole ancestor chain tagged (same shape as
+        # test_whole_ancestor_chain_matched_promotes_new_root above) -- fold=True has nowhere to
+        # fold each matched row's self_sum into (new_parent is None), so it must silently discard
+        # rather than raise or fold into the wrong node.
+        wrapper1 = make_taggable_row("gotcha_a", self_sum=5.0, sum_=5.0)
+        wrapper2 = make_taggable_row("gotcha_b", parent=wrapper1, self_sum=3.0, sum_=3.0)
+        real_root_candidate = make_taggable_row("main", parent=wrapper2, self_sum=1.0, sum_=1.0)
+        rows = [wrapper1, wrapper2, real_root_candidate]
+        s3.tag_rows(rows, TAG_DEFS)
+        result = s3.splice_by_tag(rows, "wrapper_noise", fold=True)
+        self.assertEqual([r["label"] for r in result], ["main"])
+        self.assertIsNone(real_root_candidate["parent"])
+        self.assertAlmostEqual(real_root_candidate["self_sum"], 1.0)
+        self.assertAlmostEqual(real_root_candidate["sum"], 1.0)
 
 
 class ClosureTests(unittest.TestCase):

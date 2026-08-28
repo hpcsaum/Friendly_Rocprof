@@ -14,7 +14,7 @@ import unittest
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from _test_helpers import load_module_by_path  # noqa: E402
-from _tools_test_helpers import clear_agg_cache  # noqa: E402
+from _tools_test_helpers import assert_help_leads_with_explanation, clear_agg_cache  # noqa: E402
 
 pop_metrics = load_module_by_path("extract_trace_pop_metrics", "tools", "extract_trace_pop_metrics.py")
 
@@ -73,6 +73,11 @@ class MainCliTests(unittest.TestCase):
             with open(dest) as f:
                 report = f.read()
         self.assertIn("time range: 30.000s-70.000s", report)
+
+
+class HelpTextTests(unittest.TestCase):
+    def test_help_leads_with_explanation(self):
+        assert_help_leads_with_explanation(self, pop_metrics, "rocprofiler-systems/en/latest")
 
 
 if __name__ == "__main__":

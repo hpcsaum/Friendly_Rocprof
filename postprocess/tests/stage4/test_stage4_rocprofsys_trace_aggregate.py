@@ -163,6 +163,18 @@ class GetRankAggregateCacheTests(unittest.TestCase):
             cached_parent = cached_row["parent"]["label"] if cached_row["parent"] else None
             self.assertEqual(fresh_parent, cached_parent)
 
+    def test_list_of_csv_paths_staleness_checks_every_path_not_just_the_first(self):
+        second_csv_path = os.path.join(self.tmp, "rank0-2.csv")
+        shutil.copy(SINGLE_RANK_CSV, second_csv_path)
+        paths = [self.csv_path, second_csv_path]
+        agg.get_rank_aggregate(paths, "r0")  # populate the cache
+
+        future = time.time() + 10
+        os.utime(second_csv_path, (future, future))  # only the SECOND path is now newer
+        with mock.patch.object(agg, "build_rank_aggregate", wraps=agg.build_rank_aggregate) as mocked:
+            agg.get_rank_aggregate(paths, "r0")
+            mocked.assert_called_once()
+
 
 def make_raw_trace_row(name, tid=None, ts=0.0, category="host", parent=None, corr_id=None):
     """A minimal raw (pre-merge) row -- the shape _reanchor_kernels_by_owner_and_time() operates
@@ -442,6 +454,15 @@ class GetRankTimeExtentTests(unittest.TestCase):
         trc.configure(None)
         agg.get_rank_aggregate(self.csv_path, "r0")
         os.remove(os.path.join(self.tmp, "r0.agg.json"))
+        extent = agg.get_rank_time_extent(self.csv_path, "r0")
+        self.assertEqual(extent, (0.0, 100.0))
+
+    def test_falls_back_to_a_fresh_build_if_the_cache_payload_is_missing_the_extent_field(self):
+        trc.configure(None)
+        agg.get_rank_aggregate(self.csv_path, "r0")
+        cache_path = os.path.join(self.tmp, "r0.agg.json")
+        with open(cache_path, "w") as f:
+            json.dump({"ranges": None, "rows": []}, f)  # valid JSON, but no "extent" key
         extent = agg.get_rank_time_extent(self.csv_path, "r0")
         self.assertEqual(extent, (0.0, 100.0))
 

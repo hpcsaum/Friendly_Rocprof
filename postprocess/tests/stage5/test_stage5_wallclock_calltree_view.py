@@ -9,6 +9,7 @@ KdArtifactFilteringTests  -- .kd-suffixed rows hidden by default, shown with --s
 KernelIntegrationTests    -- single/multiple kernel-anchor attribution, no-anchor fallback section
 AggregationTests          -- cross-rank merge, no per-rank sections, no node duplication
 OtherTagConfigTests       -- user-configured "other" tags reach this tool via _splice_other()
+NoDataFoundTests          -- SystemExit when no timemory text table is found under run_dir
 """
 
 import json
@@ -175,6 +176,14 @@ class OtherTagConfigTests(unittest.TestCase):
             stage6_noise_config.configure(path)
             report_configured = render(MPI_2RANK_DIR)
         self.assertNotIn("compute_stencil", report_configured)
+
+
+class NoDataFoundTests(unittest.TestCase):
+    def test_empty_run_dir_raises_system_exit(self):
+        with tempfile.TemporaryDirectory() as empty_dir:
+            with self.assertRaises(SystemExit) as ctx:
+                render(empty_dir)
+        self.assertIn("no rocprof-sys timemory text table found", str(ctx.exception))
 
 
 if __name__ == "__main__":

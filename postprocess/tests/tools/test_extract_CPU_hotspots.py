@@ -20,6 +20,7 @@ FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 # manually (same as test_extract_hotspots.py).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from _test_helpers import load_module_by_path  # noqa: E402
+from _tools_test_helpers import assert_help_leads_with_explanation  # noqa: E402
 from _stage6_test_helpers import write_noise_config  # noqa: E402
 
 hotspots = load_module_by_path("extract_CPU_hotspots", "tools", "extract_CPU_hotspots.py")
@@ -212,6 +213,11 @@ class MainCliTests(unittest.TestCase):
             with open(dest) as f:
                 report = f.read()
         self.assertNotIn("apply_boundary", report)
+
+
+class HelpTextTests(unittest.TestCase):
+    def test_help_leads_with_explanation(self):
+        assert_help_leads_with_explanation(self, hotspots, "rocprofiler-systems/en/latest")
 
 
 if __name__ == "__main__":

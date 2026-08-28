@@ -12,6 +12,7 @@ UntetheredThreadRootGpuPropagationTests -- background-thread roots reclassified 
 MpiCollapseTierTests                    -- --show-mpi-internals gating of MPI internals below the first frame
 CompilerRuntimeTierTests                -- --show-compiler-runtime gating, whole subtree pruned
 SamplingMissingFallbackTests            -- sampling_wall_clock -> wall_clock fallback reaches the rendered report
+NoDataFoundTests                        -- SystemExit when no timemory text table is found under run_dir
 KernelAnchorBroadeningTests             -- namespace-qualified/__cray_start_acc_kernel anchor matching end to end
 AggregationTests                        -- cross-rank merge and load-balance columns end to end
 """
@@ -207,6 +208,14 @@ class SamplingMissingFallbackTests(unittest.TestCase):
         report = render(FALLBACK_DIR)
         self.assertIn("main_fallback", report)
         self.assertIn("instrumented_leaf", report)
+
+
+class NoDataFoundTests(unittest.TestCase):
+    def test_empty_run_dir_raises_system_exit(self):
+        with tempfile.TemporaryDirectory() as empty_dir:
+            with self.assertRaises(SystemExit) as ctx:
+                render(empty_dir)
+        self.assertIn("no rocprof-sys timemory text table found", str(ctx.exception))
 
 
 class KernelAnchorBroadeningTests(unittest.TestCase):

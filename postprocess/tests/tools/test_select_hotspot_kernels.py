@@ -10,7 +10,7 @@ LabelsFromReportTests      -- labels_from_report(): combined-report table select
                                regression, malformed/missing-file errors
 LabelsFromTraceDirTests    -- labels_from_trace_dir()'s discover/aggregate/select wiring end to end
 MainCLITests               -- CLI entry point: source requirement, mutually-exclusive flags,
-                               --trace-dir output, --time-range acceptance
+                               --report/--output-dir/--trace-dir output, --time-range acceptance
 """
 
 import contextlib
@@ -29,6 +29,7 @@ FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 # test_select_instrumented_functions.py).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from _test_helpers import load_module_by_path  # noqa: E402
+from _tools_test_helpers import assert_help_leads_with_explanation  # noqa: E402
 
 selector = load_module_by_path("select_hotspot_kernels", "tools", "select_hotspot_kernels.py")
 
@@ -239,6 +240,23 @@ class MainCLITests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             selector.main(["--output-dir", "/nonexistent/dir"])
 
+    def test_output_dir_source_prints_kernel_labels(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            selector.main(["--output-dir", GPU_MPI_2RANK, "--all-dispatches"])
+        printed = set(buf.getvalue().splitlines())
+        self.assertEqual(printed, {"BoundaryKernel", "JacobiIterationKernel"})
+
+    def test_report_source_prints_kernel_labels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = os.path.join(tmp, "hotspots.txt")
+            gpu_tool.write_report(GPU_MPI_2RANK, report_path, show_all=True)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                selector.main(["--report", report_path, "--all-dispatches"])
+        printed = set(buf.getvalue().splitlines())
+        self.assertEqual(printed, {"BoundaryKernel", "JacobiIterationKernel"})
+
     def test_trace_dir_source_prints_kernel_labels(self):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -256,6 +274,11 @@ class MainCLITests(unittest.TestCase):
         # still contributes some in-window time, so it should still show up; the main point of
         # this test is that --time-range is accepted at all on the --trace-dir path.
         self.assertIn("kernel_a.kd", printed)
+
+
+class HelpTextTests(unittest.TestCase):
+    def test_help_leads_with_explanation(self):
+        assert_help_leads_with_explanation(self, selector, "rocprofiler-compute/en/latest")
 
 
 if __name__ == "__main__":

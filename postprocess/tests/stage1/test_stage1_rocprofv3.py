@@ -4,6 +4,7 @@ numeric parsing, and rejection of CSVs that lack the expected columns.
 
 import os
 import sys
+import tempfile
 import unittest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
@@ -35,6 +36,18 @@ class ParseKernelStatsCsvTests(unittest.TestCase):
     def test_non_matching_csv_returns_none(self):
         path = os.path.join(FIXTURES, "rocprofv3_no_data", "myhost", "1_agent_info.csv")
         self.assertIsNone(stage1.parse_kernel_stats_csv(path))
+
+    def test_row_with_non_numeric_calls_or_duration_is_skipped(self):
+        header = "Name,Calls,TotalDurationNs\n"
+        good_row = "GoodKernel,10,1000\n"
+        bad_calls_row = "BadCallsKernel,not_a_number,1000\n"
+        bad_duration_row = "BadDurationKernel,10,not_a_number\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "kernel_stats.csv")
+            with open(path, "w") as f:
+                f.write(header + good_row + bad_calls_row + bad_duration_row)
+            rows = stage1.parse_kernel_stats_csv(path)
+        self.assertEqual({r["label"] for r in rows}, {"GoodKernel"})
 
 
 if __name__ == "__main__":

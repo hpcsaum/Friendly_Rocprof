@@ -9,6 +9,7 @@ import contextlib
 import io
 import os
 import sys
+import tempfile
 import unittest
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
@@ -89,6 +90,18 @@ class ParseTraceCsvTests(unittest.TestCase):
         self.assertEqual(set(combined_by_id.keys()), set(single_by_id.keys()))
         for slice_id, row in single_by_id.items():
             self.assertEqual(combined_by_id[slice_id], row)
+
+    def test_row_with_non_numeric_ts_or_dur_is_skipped_entirely(self):
+        header = "pid,tid,slice_id,parent_slice_id,depth,name,category,ts,dur\n"
+        good_row = "1000,1000,1,,0,main,host,1.0,1.0\n"
+        bad_ts_row = "1000,1000,2,1,1,broken_ts,host,,1.0\n"
+        bad_dur_row = "1000,1000,3,1,1,broken_dur,host,1.0,not_a_number\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "malformed.csv")
+            with open(path, "w") as f:
+                f.write(header + good_row + bad_ts_row + bad_dur_row)
+            rows = stage1.parse_trace_csv(path)
+        self.assertEqual({r["name"] for r in rows}, {"main"})
 
 
 class AttachAncestryTests(unittest.TestCase):

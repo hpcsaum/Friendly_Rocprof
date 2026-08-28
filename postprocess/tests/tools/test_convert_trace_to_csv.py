@@ -23,6 +23,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from _test_helpers import load_module_by_path  # noqa: E402
+from _tools_test_helpers import assert_help_leads_with_explanation  # noqa: E402
 
 conv = load_module_by_path("convert_trace_to_csv", "tools", "convert_trace_to_csv.py")
 
@@ -256,6 +257,11 @@ class MainCliTests(unittest.TestCase):
     def test_missing_directory_raises_clear_error(self):
         with self.assertRaises(SystemExit):
             conv.main(["/no/such/directory", "--trace-processor", "/bin/trace_processor_shell"])
+
+
+class HelpTextTests(unittest.TestCase):
+    def test_help_leads_with_explanation(self):
+        assert_help_leads_with_explanation(self, conv, "perfetto.dev/docs/analysis/trace-processor")
 
 
 if __name__ == "__main__":

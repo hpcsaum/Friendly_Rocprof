@@ -59,6 +59,12 @@ class ParseTimeRangeTests(unittest.TestCase):
     def test_unbounded_segment_absorbs_everything_after_it(self):
         self.assertEqual(trc.parse_time_range("5:,0:3"), [(0.0, 3.0), (5.0, None)])
 
+    def test_open_ended_segment_absorbs_a_later_overlapping_bounded_segment(self):
+        # Unlike the disjoint case above, "8:12" starts inside "5:"'s open-ended span, so it's
+        # merged away rather than kept as its own entry -- the open end must stay open (None), not
+        # get clobbered back down to the bounded segment's own end (12.0).
+        self.assertEqual(trc.parse_time_range("5:,8:12"), [(5.0, None)])
+
     # (case, malformed input, expected error message substring) -- every case is the same
     # assertRaisesRegex(SystemExit, ...) shape, differing only in the malformed segment and which
     # of parse_time_range()'s validation messages it should trip.

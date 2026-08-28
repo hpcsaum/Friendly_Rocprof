@@ -117,6 +117,23 @@ class KernelAnchorAttributionTests(unittest.TestCase):
         self.assertIn("~60% estimate: this site issued 300/500", node_a["label"])
         self.assertIn("~40% estimate: this site issued 200/500", node_b["label"])
 
+    def test_multiple_anchors_all_zero_weight_split_evenly_not_divide_by_zero(self):
+        # Both launch-call anchors have count=0 -- total_weight is 0, so the proportional-split
+        # fraction (weight/total_weight) would divide by zero; must fall back to an even split
+        # across the anchors instead.
+        main = make_merged_tree_node("main")
+        compute_a = make_merged_tree_node("compute_a", parent=main)
+        compute_b = make_merged_tree_node("compute_b", parent=main)
+        launch_a = make_merged_tree_node("hipLaunchKernel", parent=compute_a, count=0)
+        launch_b = make_merged_tree_node("hipLaunchKernel", parent=compute_b, count=0)
+        rows = [main, compute_a, compute_b, launch_a, launch_b]
+
+        s4t.attach_kernel_summaries(rows, {RANK: {"K": (1, 1.0)}}, NEVER_PRUNED)
+        node_a = compute_a["static_children"][0]
+        node_b = compute_b["static_children"][0]
+        self.assertAlmostEqual(rank_values(node_a)[2], 0.5)  # even 50/50 split of 1.0s
+        self.assertAlmostEqual(rank_values(node_b)[2], 0.5)
+
     def test_no_launch_call_anywhere_returns_remainder_unattached(self):
         main = make_merged_tree_node("main")
         rows = [main]

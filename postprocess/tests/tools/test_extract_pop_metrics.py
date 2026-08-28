@@ -17,6 +17,7 @@ FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 # manually (same as test_extract_hotspots.py).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from _test_helpers import load_module_by_path  # noqa: E402
+from _tools_test_helpers import assert_help_leads_with_explanation  # noqa: E402
 from _stage6_test_helpers import write_noise_config  # noqa: E402
 
 pop_tool = load_module_by_path("extract_pop_metrics", "tools", "extract_pop_metrics.py")
@@ -133,6 +134,11 @@ class MainCliTests(unittest.TestCase):
             line for line in report.splitlines() if line.strip().startswith(pop_tool.run_label(REF_DIR))
         )
         self.assertIn("1.000", metrics_line)
+
+
+class HelpTextTests(unittest.TestCase):
+    def test_help_leads_with_explanation(self):
+        assert_help_leads_with_explanation(self, pop_tool, "rocprofiler-systems/en/latest")
 
 
 if __name__ == "__main__":

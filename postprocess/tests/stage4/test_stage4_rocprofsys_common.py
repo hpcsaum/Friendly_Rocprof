@@ -186,6 +186,21 @@ class KernelOwnerLabelTests(unittest.TestCase):
         # so it must return unchanged, same as any other unrecognized name.
         self.assertEqual(s4c.kernel_owner_label("stencil_kernel"), "stencil_kernel")
 
+    def test_bare_flang_mangling_with_no_module_prefix_decodes(self):
+        # _QP<name> (no "_QM<module>P" prefix) -- a Fortran subroutine not nested in a module.
+        self.assertEqual(
+            s4c.kernel_owner_label("__omp_offloading_4f_8fb8827__QPlaunch_omp_kernel_l6"),
+            "launch_omp_kernel",
+        )
+
+    def test_itanium_mangling_with_a_length_longer_than_the_remaining_string_is_left_unmangled(self):
+        # _Z99... declares a 99-character name, but only 9 characters actually follow --
+        # len(rest) < n must return the mangled segment as-is, not slice past the end of the string.
+        self.assertEqual(
+            s4c.kernel_owner_label("__omp_offloading_4f_8fb8861__Z99tooshort_l6"),
+            "_Z99tooshort",
+        )
+
 
 class ExpandLabelsWithAncestorsTests(unittest.TestCase):
     def test_depth_1_adds_only_the_immediate_parent(self):

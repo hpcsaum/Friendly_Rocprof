@@ -2,14 +2,17 @@
 
 Owns assert_extract_tool_cli_contract() (the baseline CLI contract
 extract_calltree.py/extract_wallclock_calltree.py's tests both independently verified in full
-before this existed) and clear_agg_cache() (the get_rank_aggregate() on-disk-cache cleanup the
+before this existed), clear_agg_cache() (the get_rank_aggregate() on-disk-cache cleanup the
 three test_extract_trace_*.py files each need in their own tearDown() -- a stale rank1.agg.json/etc.
-left over from a prior test run would otherwise mask what the test under test actually produced).
+left over from a prior test run would otherwise mask what the test under test actually produced),
+and assert_help_leads_with_explanation() (CLAUDE.md's -h/--help convention every tool must follow).
 
-Exposes: assert_extract_tool_cli_contract(), clear_agg_cache().
+Exposes: assert_extract_tool_cli_contract(), clear_agg_cache(), assert_help_leads_with_explanation().
 """
 
+import contextlib
 import glob
+import io
 import os
 import tempfile
 
@@ -67,3 +70,26 @@ def clear_agg_cache(directory):
     later test (or a later run) never reads a cache file an earlier test left behind."""
     for path in glob.glob(os.path.join(directory, "*.agg.json")):
         os.remove(path)
+
+
+def assert_help_leads_with_explanation(test_case, tool_module, docs_url_substring):
+    """Confirms main(["--help"]) exits 0 and prints tool_module.HELP_BLURB's own explanation text
+    before the "positional arguments:"/"options:" sections argparse appends -- CLAUDE.md's
+    "-h/--help must lead with a short, jargon-free explanation... before the existing
+    options/flags table" convention every postprocess/tools/*.py CLI must follow. docs_url_substring
+    should be a fragment of the specific documentation URL this tool's own HELP_BLURB ends with
+    (not always a ROCm URL -- e.g. convert_trace_to_csv.py's real "under the hood" dependency is
+    Perfetto's trace_processor_shell, not an AMD tool, so its closing line and docs link differ
+    accordingly), confirming the closing "under the hood" line survived, not just that the blurb
+    is nonempty."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        with test_case.assertRaises(SystemExit) as ctx:
+            tool_module.main(["--help"])
+    test_case.assertEqual(ctx.exception.code, 0)
+
+    output = buf.getvalue()
+    first_blurb_line = tool_module.HELP_BLURB.strip().splitlines()[0]
+    test_case.assertIn(first_blurb_line, output)
+    test_case.assertIn(docs_url_substring, output)
+    test_case.assertLess(output.index(first_blurb_line), output.index("options:"))

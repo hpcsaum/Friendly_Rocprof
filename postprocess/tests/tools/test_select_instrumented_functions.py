@@ -11,7 +11,8 @@ LabelsFromReportTests           -- labels_from_report(): CPU-only and combined-r
 FindLostFunctionsTests          -- find_lost_functions()'s substring match against instrumented.json,
                                     missing/corrupt file handling
 MainResolveModeTests            -- resolve-mode CLI: mutually-exclusive flags, printed label/regex
-                                    pairs, --extra-noise-config
+                                    pairs, no-flags default-threshold fallback, --threshold,
+                                    --extra-noise-config
 MainCheckInstrumentedModeTests  -- --check-instrumented mode: conflicting flags, always-zero exit,
                                     missing instrumented file handling
 FlatTreeForAncestorsTests       -- flat_tree_for_ancestors()'s output-dir vs report-mode tree sourcing
@@ -38,6 +39,7 @@ FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 # manually (same technique as test_extract_hotspots.py).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from _test_helpers import load_module_by_path  # noqa: E402
+from _tools_test_helpers import assert_help_leads_with_explanation  # noqa: E402
 
 selector = load_module_by_path("select_instrumented_functions", "tools", "select_instrumented_functions.py")
 
@@ -241,6 +243,33 @@ class MainResolveModeTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             selector.main(["--output-dir", "/nonexistent/dir"])
 
+    def test_no_selection_flags_defaults_to_1_percent_threshold(self):
+        # No --top/--threshold/--all at all -- main()'s own "args.top is None and args.threshold
+        # is None and not args.show_all" branch must fall back to threshold=1.0 itself; compare
+        # against LabelsFromOutputDirTests.test_default_threshold_excludes_gpu_api_entries's own
+        # explicit threshold=1.0 call, which is the direct-function-call form of this same case.
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            selector.main(["--output-dir", SINGLE_RANK])
+        printed = buf.getvalue()
+        self.assertIn("compute_stencil\tcompute_stencil", printed)
+        self.assertIn("apply_boundary\tapply_boundary", printed)
+        self.assertIn("main\tmain", printed)
+        self.assertNotIn("hipMemcpy", printed)
+        self.assertNotIn("hipLaunchKernel", printed)
+
+    def test_threshold_flag_through_main_changes_the_selection(self):
+        # A --threshold of 20% should exclude apply_boundary/main, which the default 1.0%
+        # threshold (test above) includes -- proves --threshold itself reaches
+        # labels_from_output_dir(), not just that some default silently always applies.
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            selector.main(["--output-dir", SINGLE_RANK, "--threshold", "20"])
+        printed = buf.getvalue()
+        self.assertIn("compute_stencil\tcompute_stencil", printed)
+        self.assertNotIn("apply_boundary", printed)
+        self.assertNotIn("main\tmain", printed)
+
     def test_extra_noise_config_flag_excludes_a_configured_row(self):
         self.addCleanup(stage6_noise_config.configure, None)
         with tempfile.TemporaryDirectory() as tmp:
@@ -407,6 +436,11 @@ class MainGpuOutputDirTests(unittest.TestCase):
     def test_gpu_output_dir_requires_an_existing_directory(self):
         with self.assertRaises(SystemExit):
             selector.main(["--output-dir", MPI_2RANK, "--top", "1", "--gpu-output-dir", "/nonexistent/dir"])
+
+
+class HelpTextTests(unittest.TestCase):
+    def test_help_leads_with_explanation(self):
+        assert_help_leads_with_explanation(self, selector, "rocprofiler-systems/en/docs-7.0.2")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,8 @@
 """Tests for stage1_rocprofsys_sample.py's timemory pipe-delimited text-table parser.
 
-CleanLabelTests     -- clean_label() stripping rank prefix and hierarchy indent, independently
-ParseTableFileTests -- parse_table_file() header detection, row extraction, non-table rejection
+CleanLabelTests           -- clean_label() stripping rank prefix and hierarchy indent, independently
+ThreadIdFromRawLabelTests -- thread_id_from_raw_label()'s thread-half extraction from the prefix
+ParseTableFileTests       -- parse_table_file() header detection, row extraction, non-table rejection
 """
 
 import os
@@ -28,6 +29,21 @@ class CleanLabelTests(unittest.TestCase):
         for name, raw, expected in self.CASES:
             with self.subTest(case=name):
                 self.assertEqual(stage1.clean_label(raw), expected)
+
+
+class ThreadIdFromRawLabelTests(unittest.TestCase):
+    # (case, raw_label, expected thread_id) -- the last "|"-delimited segment before ">>>", which
+    # for an MPI-form prefix ("rank|thread>>>") is the thread half, distinct from the rank half.
+    CASES = [
+        ("single_rank_prefix", "00>>>main", "00"),
+        ("mpi_rank_and_thread_prefix", "05|12>>>main", "12"),
+        ("no_prefix_at_all", ">>>main", ""),
+    ]
+
+    def test_extracts_the_thread_half(self):
+        for name, raw, expected in self.CASES:
+            with self.subTest(case=name):
+                self.assertEqual(stage1.thread_id_from_raw_label(raw), expected)
 
 
 class ParseTableFileTests(unittest.TestCase):

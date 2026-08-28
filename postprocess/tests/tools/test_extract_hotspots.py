@@ -18,6 +18,7 @@ FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 # but not when loaded here by explicit file path, so replicate that manually.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from _test_helpers import load_module_by_path  # noqa: E402
+from _tools_test_helpers import assert_help_leads_with_explanation  # noqa: E402
 
 combined = load_module_by_path("extract_hotspots", "tools", "extract_hotspots.py")
 
@@ -217,6 +218,11 @@ class MainCliTests(unittest.TestCase):
             with open(dest) as f:
                 report = f.read()
         self.assertNotIn("compute_stencil", report)
+
+
+class HelpTextTests(unittest.TestCase):
+    def test_help_leads_with_explanation(self):
+        assert_help_leads_with_explanation(self, combined, "rocprofiler-systems/en/latest")
 
 
 if __name__ == "__main__":

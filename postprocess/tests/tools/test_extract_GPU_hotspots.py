@@ -2,6 +2,7 @@
 
 ConfigJsonGuessingTests -- CONFIG_*_KEYS constants match a real *_config.json fixture, num-ranks-from-PIDs
 WriteReportTests        -- end-to-end report content: tables, header, threshold/show-all/load imbalance
+MainCliTests            -- main()'s own argv wiring: missing-dir error, -o write, --all flag reaches write_report
 """
 
 import os
@@ -17,6 +18,7 @@ FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 # manually (same as test_extract_hotspots.py).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from _test_helpers import load_module_by_path  # noqa: E402
+from _tools_test_helpers import assert_help_leads_with_explanation  # noqa: E402
 
 hotspots = load_module_by_path("extract_GPU_hotspots", "tools", "extract_GPU_hotspots.py")
 
@@ -103,6 +105,32 @@ class WriteReportTests(unittest.TestCase):
             dest = os.path.join(tmp, "hotspots.txt")
             report = hotspots.write_report(os.path.join(FIXTURES, "rocprofv3_single_rank"), dest)
             self.assertIn("GPU kernel load imbalance across ranks -- skipped: only 1 rank/file found", report)
+
+
+class MainCliTests(unittest.TestCase):
+    def test_missing_directory_raises_clear_error(self):
+        with self.assertRaises(SystemExit):
+            hotspots.main(["/no/such/directory"])
+
+    def test_end_to_end_writes_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "out.txt")
+            hotspots.main([os.path.join(FIXTURES, "rocprofv3_mpi_2rank"), "-o", dest])
+            self.assertTrue(os.path.isfile(dest))
+
+    def test_all_flag_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "out.txt")
+            hotspots.main([os.path.join(FIXTURES, "rocprofv3_mpi_2rank"), "-o", dest, "--all"])
+            with open(dest) as f:
+                report = f.read()
+        self.assertIn("showing all", report)
+        self.assertIn("BoundaryKernel", report)
+
+
+class HelpTextTests(unittest.TestCase):
+    def test_help_leads_with_explanation(self):
+        assert_help_leads_with_explanation(self, hotspots, "rocprofiler-sdk/en/latest")
 
 
 if __name__ == "__main__":

@@ -69,6 +69,7 @@
 | 2026-08-27 | Plan 3.15 (Phase 4 of 8): test-scope audit across all 45 test files -- 11 pure re-tests dropped, 5 misplaced tests relocated, ~10 tests relabeled as wiring checks -- 684 -> 673 tests -- see full accounting below |
 | 2026-08-27 | Plan 3.15 (Phase 5 of 8): trivial-test cleanup -- one brittle exact-string assertion loosened to a relational check, two duplicate-assertion test pairs merged/dropped -- 673 -> 671 tests -- see full accounting below |
 | 2026-08-27 | Plan 3.15 (Phase 6 of 8): final comments pass -- a module docstring (with a per-class table of contents) added to all 45 test files, plus 7 targeted inline comments; 671 tests unchanged, purely additive -- see full accounting below |
+| 2026-08-28 | Plan 3.15 (Phase 7 of 8): post-refactor coverage check against the real codebase -- `-h`/`--help` content coverage (13 tools) plus a curated high-value subset of a 69-item coverage-gap audit (21 items); 671 -> 714 tests -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -3271,7 +3272,73 @@ no test logic, assertions, fixture data, or names touched, confirmed by `git dif
 insertions only across all 45 files). `python3 -m py_compile` across all 45 test files; each of the
 6 groups run individually before the full-suite pass.
 
+## 2026-08-28 — Plan 3.15, Phase 7: post-refactor coverage check against the real codebase
+
+The plan's final phase: everything through Phase 6 only ever removed or reshaped existing tests,
+so this closed the loop by cross-checking each cleaned-up module's exposed functions/CLI flags
+against what its test file actually exercises, and adding coverage for genuine gaps.
+
+**`-h`/`--help` content coverage** (the gap already known before this phase started): added a
+shared `assert_help_leads_with_explanation(test_case, tool_module, docs_url_substring)` to
+`_tools_test_helpers.py`, confirming `main(["--help"])` exits 0, the tool's `HELP_BLURB` explanation
+text appears before argparse's own `options:` section, and the tool's own docs-link substring
+appears -- `docs_url_substring` is per-tool rather than hardcoded, since `convert_trace_to_csv.py`'s
+real "under the hood" dependency is Perfetto's `trace_processor_shell`, not an AMD tool (a
+legitimate, deliberate technical accuracy, not a bug -- left as-is). Added a `HelpTextTests` class
+to all 13 `postprocess/tools/*.py` files.
+
+**Coverage-gap audit**: 6 parallel agents (one per stage/tools group) inventoried every module's
+public functions and every tool's CLI flags against its own test file, surfacing 69 raw gaps. The
+dominant pattern (~45 items) was near-identical None-fallback/zero-denominator edge cases judged
+low-value; the remaining ~24 were curated into a higher-value shortlist and presented for a
+scope decision -- chose to implement a ~20-item high-value subset rather than all 69 or none,
+explicitly deferring the None-fallback cluster as a documented backlog, not a silent gap.
+
+**Implemented (21 items, 671 -> 714 tests)**:
+- `stage4_rocprofsys_trace_aggregate.py`: multi-file `csv_paths` list staleness (max-mtime across
+  every path, not just the first); `get_rank_time_extent()`'s fallback when the cache payload is
+  valid JSON but missing its `"extent"` key.
+- `stage5_calltree_view.py`/`stage5_wallclock_calltree_view.py`: the "no rocprof-sys timemory text
+  table found" `SystemExit` path, via an empty run directory.
+- `stage6_time_range_config.py`: an open-ended segment (`"5:"`) absorbing a later overlapping
+  bounded segment (`"8:12"`) into itself rather than keeping it as a separate disjoint range.
+- `extract_GPU_hotspots.py`: a new `MainCliTests` class (missing-dir error, end-to-end `-o` write,
+  `--all` reaching `write_report()` through `main()`).
+- `extract_calltree.py`: a real paired-`rocprofv3`-directory GPU-kernel-nesting test through
+  `main()`/`write_report()` (previously only exercised at the `stage5_calltree_view.py` level, never
+  through this tool's own CLI wiring); each of the four `--show-*` noise-tier flags tested alone
+  (not just bundled via `--show-all-internals`).
+- `extract_trace_calltree.py`: `--max-depth` truncation asserted with a real "more node(s) hidden"
+  check; each `--show-*` flag alone (`--show-mpi-internals` exercised for wiring/no-crash only --
+  the fixture has no label that distinguishes its effect, unlike the other three); `--extra-noise-config`
+  end to end. This surfaced a real, deliberate design point worth recording: the trace pipeline's
+  `"other"` tag is purely category-derived (`stage3_rocprofsys_trace.tag_for_category()`), not
+  reachable via `--extra-noise-config`'s `add`/`remove` at all -- only the three delegated
+  `wrapper_noise`/`compiler_runtime_noise`/`wrapper_branch_noise` patterns are user-tunable for this
+  pipeline (see that module's own docstring: "nothing here for a user to tune" for the category
+  map). The test was written against `wrapper_noise` instead of `other` once this was confirmed by
+  reading the source, not assumed from the sample pipeline's different behavior.
+- `extract_trace_hotspots.py`: `--top`, `--threshold`, and `--unfiltered` (ranking-field switch from
+  self-time to inclusive-time, changing which row survives `--top 1`) wired through `main()` with
+  real table-scoped assertions. `--extra-noise-config` was deliberately not tested here: reading
+  `stage4_rocprofsys_trace_flat.aggregate()` confirmed it applies no tag-based filtering at all, so
+  the flag (present on this tool's CLI for consistency) has zero observable effect on its report --
+  a test asserting an effect would be vacuous, so this sub-item was skipped rather than faked.
+- `extract_wallclock_calltree.py`: `--show-gpu-api` tested through `main()`; `--max-depth` given a
+  real truncation assertion (the shared `assert_extract_tool_cli_contract()` helper's own
+  `--max-depth 1` check only confirmed the file was written, not that anything was actually cut).
+- `select_hotspot_kernels.py`: `main()`'s `--report` and `--output-dir` success paths (previously
+  only their error cases were tested through `main()` -- success was only exercised at the
+  `labels_from_*()` function level).
+- `select_instrumented_functions.py`: the no-flags-at-all default-threshold-fallback path
+  (`args.threshold = 1.0`) verified through `main()` against the same expected labels as the
+  equivalent direct `labels_from_output_dir(threshold=1.0)` call; `--threshold` itself changing the
+  selection through `main()`.
+
+Verification: full suite `python3 -m unittest discover -s tests -t .` -> `Ran 714 tests ... OK`
+(671 -> 714, +43: 13 `--help` tests + 21 coverage-gap items, several of which added more than one
+test method or a `subTest` loop). `.agg.json` cache artifacts cleaned after every run.
+
 ---
 
-This closes the active-editing phases of plan 3.15. Phase 7 (post-refactor coverage check against
-the real codebase, including the known `-h`/`--help`-content coverage gap) remains open.
+This closes plan 3.15's full 8-phase roadmap.

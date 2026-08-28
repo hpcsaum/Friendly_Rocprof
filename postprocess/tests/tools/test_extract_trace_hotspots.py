@@ -2,7 +2,8 @@
 rocprof-sys Perfetto trace-CSV export (fused table, load imbalance, POP-style header notes).
 
 WriteReportTests -- default fused table + load imbalance, --show-all, always-present time-range note
-MainCliTests     -- CLI entry point: end-to-end write, --time-range windowing, bad --time-range syntax
+MainCliTests     -- CLI entry point: end-to-end write, --time-range windowing, bad --time-range
+                    syntax, --top/--threshold/--unfiltered selection wiring
 """
 
 import os
@@ -13,7 +14,7 @@ import unittest
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from _test_helpers import load_module_by_path  # noqa: E402
-from _tools_test_helpers import clear_agg_cache  # noqa: E402
+from _tools_test_helpers import assert_help_leads_with_explanation, clear_agg_cache  # noqa: E402
 
 hotspots = load_module_by_path("extract_trace_hotspots", "tools", "extract_trace_hotspots.py")
 
@@ -95,6 +96,62 @@ class MainCliTests(unittest.TestCase):
             dest = os.path.join(tmp, "hotspots.txt")
             with self.assertRaises(SystemExit):
                 hotspots.main([TIME_RANGE_DIR, "--time-range", "not-a-range", "-o", dest])
+
+    @staticmethod
+    def _hotspots_table_only(report):
+        # Scoped to just the "1. CPU+GPU hotspots" table's own rows -- the report also contains
+        # a second "2. Load imbalance" table (its own separate top/threshold selection, ranked by
+        # std_dev) whose row labels would otherwise leak into an unscoped substring search.
+        start = report.index("=== 1. CPU+GPU hotspots")
+        end = report.index("=== 2. Load imbalance")
+        return report[start:end]
+
+    def test_top_flag_limits_entries_end_to_end(self):
+        # By self_sum (default ranking field): jacobi_sweep (12.9s) > jacobi_kernel.kd (7.0s) >
+        # main (5.0s) > MPI_Barrier (3.0s) > hipLaunchKernel (1.1s) -- --top 2 keeps only the
+        # first two.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            hotspots.main([TWO_RANK_DIR, "-o", dest, "--top", "2"])
+            with open(dest) as f:
+                report = f.read()
+        table = self._hotspots_table_only(report)
+        self.assertIn("jacobi_sweep", table)
+        self.assertIn("jacobi_kernel.kd", table)
+        self.assertNotIn("MPI_Barrier", table)
+        self.assertNotIn("hipLaunchKernel", table)
+
+    def test_threshold_flag_filters_by_pct_total_end_to_end(self):
+        # pct_total (self_sum / total_runtime): jacobi_sweep 58.6%, jacobi_kernel.kd 31.8%, main
+        # 22.7%, MPI_Barrier 13.6%, hipLaunchKernel 5.0% -- threshold=40 keeps only the first two.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            hotspots.main([TWO_RANK_DIR, "-o", dest, "--threshold", "40"])
+            with open(dest) as f:
+                report = f.read()
+        table = self._hotspots_table_only(report)
+        self.assertIn("jacobi_sweep", table)
+        self.assertNotIn("jacobi_kernel.kd", table)
+        self.assertNotIn("MPI_Barrier", table)
+
+    def test_unfiltered_flag_switches_the_ranking_field_to_inclusive_sum(self):
+        # Filtered (self_sum) ranks jacobi_sweep (12.9s) above main (5.0s); --unfiltered switches
+        # the ranking field to inclusive "sum", where main (22.0s, the whole process) outranks
+        # jacobi_sweep (17.0s) -- --top 1 makes the field switch observable as which single row
+        # survives.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "hotspots.txt")
+            hotspots.main([TWO_RANK_DIR, "-o", dest, "--top", "1", "--unfiltered"])
+            with open(dest) as f:
+                report = f.read()
+        table = self._hotspots_table_only(report)
+        self.assertIn("main", table)
+        self.assertNotIn("jacobi_sweep", table)
+
+
+class HelpTextTests(unittest.TestCase):
+    def test_help_leads_with_explanation(self):
+        assert_help_leads_with_explanation(self, hotspots, "rocprofiler-systems/en/latest")
 
 
 if __name__ == "__main__":
