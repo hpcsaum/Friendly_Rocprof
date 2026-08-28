@@ -410,6 +410,8 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
+mkdir -p "$TRACE_OUTPUT_DIR"
+
 set +e
 "${RUN_CMD[@]}"
 APP_EXIT=$?

@@ -70,6 +70,7 @@
 | 2026-08-27 | Plan 3.15 (Phase 5 of 8): trivial-test cleanup -- one brittle exact-string assertion loosened to a relational check, two duplicate-assertion test pairs merged/dropped -- 673 -> 671 tests -- see full accounting below |
 | 2026-08-27 | Plan 3.15 (Phase 6 of 8): final comments pass -- a module docstring (with a per-class table of contents) added to all 45 test files, plus 7 targeted inline comments; 671 tests unchanged, purely additive -- see full accounting below |
 | 2026-08-28 | Plan 3.15 (Phase 7 of 8): post-refactor coverage check against the real codebase -- `-h`/`--help` content coverage (13 tools) plus a curated high-value subset of a 69-item coverage-gap audit (21 items); 671 -> 714 tests -- see full accounting below |
+| 2026-08-28 | Fixed a real-HPC-system bug: on systems where the underlying AMD tool doesn't auto-create its own output directory, `rocprofv3`/`rocprof-sys`/`rocprof-compute` segfault instead of failing cleanly -- all six `scripts/*.sh` launchers now explicitly `mkdir -p` their output directory right before invoking the profiling tool -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -3342,3 +3343,38 @@ test method or a `subTest` loop). `.agg.json` cache artifacts cleaned after ever
 ---
 
 This closes plan 3.15's full 8-phase roadmap.
+
+## 2026-08-28 — Explicit `mkdir -p` before every launcher's profiling invocation
+
+Reported from a real HPC system: `rocprofv3`/`rocprof-sys`/`rocprof-compute` don't reliably
+auto-create their own `-o`/`-d`/`-p` output directory on every filesystem -- on a system where
+they don't, the tool segfaults instead of failing with a clear error. None of the six
+`scripts/*.sh` launchers ever created their own output directory before this; each now calls
+`mkdir -p` on it explicitly, immediately before the line that actually invokes the AMD tool, so
+the directory is always guaranteed to exist by the time that happens regardless of the underlying
+tool's own behavior.
+
+Placement follows each script's own `--dry-run` convention: the `mkdir -p` sits right after that
+script's `--dry-run` early-exit, so a dry-run preview stays fully side-effect-free (no directory
+created) and only a real invocation creates anything on disk.
+
+- `profile_CPU_hotspots.sh` / `profile_GPU_hotspots.sh`: `mkdir -p "$OUTPUT_DIR"` before
+  `rocprof-sys-sample`/`rocprofv3` respectively.
+- `profile_hotspots.sh`: `mkdir -p "$CPU_DIR" "$GPU_DIR"` before delegating to the two sub-launchers
+  above (each of which also creates its own directory now -- harmless double coverage, not relied
+  on alone, since this script's own combined `hotspots.txt`/`calltree.txt` are written straight
+  into `$OUTPUT_DIR`, the parent of both).
+- `profile_hotspot_kernels.sh` / `profile_traced_hotspot_kernels.sh`: `mkdir -p` on the
+  `rocprof-compute profile -p ...` output directory (`$WORKLOAD_DIR` / `$OUTPUT_DIR` respectively)
+  before that command.
+- `instrument_hotspots.sh`: gained `mkdir -p "$TRACE_OUTPUT_DIR"` before `rocprof-sys-run` (trace
+  mode's own direct tool invocation) -- its `$OUTPUT_DIR` (the auto-profiling scan directory) was
+  already covered by a pre-existing `mkdir -p` (added for the instrumented-binary-copy step, not
+  originally for this reason, but it already closed this same gap for that directory).
+- `profile_traced_hotspots.sh` needed no direct change: it never invokes an AMD tool itself, only
+  delegates its whole profiling step to `instrument_hotspots.sh` via `-o "$SCAN_DIR"
+  --trace-output-dir "$TRACE_DIR"`, both now covered by that script's own two `mkdir -p` calls.
+
+Verification: `bash -n` across all six edited scripts; `shellcheck` isn't installed in this
+environment so couldn't be run (per `CLAUDE.md`'s own environment-constraints note, this can only
+be confirmed working end-to-end on real HPC hardware by the user).

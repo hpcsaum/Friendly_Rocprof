@@ -156,6 +156,8 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
+mkdir -p "$CPU_DIR" "$GPU_DIR"
+
 # No `set +e` around either call, deliberately: if the CPU run fails, abort
 # before ever starting the GPU run, rather than combining a failed run's
 # partial data with a fresh one. Each sub-launcher already checks its own

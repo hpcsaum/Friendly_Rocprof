@@ -241,6 +241,8 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
+mkdir -p "$OUTPUT_DIR"
+
 set +e
 "${PROFILE_CMD[@]}"
 APP_EXIT=$?
