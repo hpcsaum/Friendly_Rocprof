@@ -148,6 +148,10 @@ export ROCPROFSYS_TEXT_OUTPUT=1
 export ROCPROFSYS_JSON_OUTPUT=1
 export ROCPROFSYS_FLAT_PROFILE=0
 export ROCPROFSYS_TRACE=0
+# Timemory backend: the only source of the wall_clock-*/sampling_*-* text and
+# JSON files the extractors parse. Newer rocprof-sys leaves it off by default
+# (rocpd is the default output), so it must be enabled explicitly.
+export ROCPROFSYS_PROFILE=1
 
 MPI_ARR=()
 if [[ -n "$MPI_STR" ]]; then
@@ -165,6 +169,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "  ROCPROFSYS_JSON_OUTPUT=$ROCPROFSYS_JSON_OUTPUT"
   echo "  ROCPROFSYS_FLAT_PROFILE=$ROCPROFSYS_FLAT_PROFILE"
   echo "  ROCPROFSYS_TRACE=$ROCPROFSYS_TRACE"
+  echo "  ROCPROFSYS_PROFILE=$ROCPROFSYS_PROFILE"
   echo "  (hierarchical call-tree data -- needed for the extractor's self-time ranking; see -h)"
   echo "would run:"
   printf '  %q ' "${CMD[@]}"

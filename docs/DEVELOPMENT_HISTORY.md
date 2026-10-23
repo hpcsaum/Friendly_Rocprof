@@ -72,6 +72,7 @@
 | 2026-08-28 | Plan 3.15 (Phase 7 of 8): post-refactor coverage check against the real codebase -- `-h`/`--help` content coverage (13 tools) plus a curated high-value subset of a 69-item coverage-gap audit (21 items); 671 -> 714 tests -- see full accounting below |
 | 2026-08-28 | Fixed a real-HPC-system bug: on systems where the underlying AMD tool doesn't auto-create its own output directory, `rocprofv3`/`rocprof-sys`/`rocprof-compute` segfault instead of failing cleanly -- all six `scripts/*.sh` launchers now explicitly `mkdir -p` their output directory right before invoking the profiling tool -- see full accounting below |
 | 2026-08-28 | Plan 4.1: two new debugging launchers -- `debug_crash.sh` (wraps a run in `rocgdb` from process start to catch a fatal signal live) and `debug_hang.py` (adopted from a colleague's HPC-validated `hangwatch.py`, watches for output silence and live-attaches across every node) -- see full accounting below |
+| 2026-10-23 | Fixed `profile_CPU_hotspots.sh` producing no `wall_clock-*`/`sampling_*` text/JSON files on very recent ROCm: rocprof-sys's timemory backend (`ROCPROFSYS_PROFILE`) is now off by default (rocpd is the default output), and the launcher never enabled it explicitly -- it now exports `ROCPROFSYS_PROFILE=1`. Found on a real HPC run where the output filesystem was also at 98% quota, which first made the rocpd flush fail (SQLite `rc=1034`, `SQLITE_IOERR_FSYNC`) -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -3441,3 +3442,33 @@ app command/args intact. `python3 -m unittest scripts.tests.test_debug_hang -v` 
 ... OK`. As with every other script in this repo, actual `rocgdb` behavior against a real crash/hang
 can only be confirmed by the user on real HPC hardware, per `CLAUDE.md`'s environment-constraints
 note.
+
+## 2026-10-23 — `profile_CPU_hotspots.sh`: enable the timemory backend explicitly
+
+A real run on a very recent ROCm produced a large `rocpd-<pid>-0.db` but none of the
+`wall_clock-*.txt`/`sampling_*-*.txt`/`.json` files the extractors parse.
+
+Two separate causes surfaced, in this order:
+
+1. **Output filesystem at 98% quota.** The first failing run logged `Failed to flush rocpd database
+   to disk ... Database flush (backup) failed: rc=1034: disk I/O error`. SQLite's extended code 1034
+   is `SQLITE_IOERR_FSYNC` (10 | 4<<8), and the resulting `.db` was 0 bytes. In rocprof-sys's
+   `rocprofsys_finalize_hidden()`, the trace-cache/rocpd conversion (`post_process_bulk`) runs
+   *before* `timemory_finalize`, so a failure in the rocpd step also skipped the timemory text/JSON
+   output. Rerunning with enough space (and the output directory on scratch) fixed this.
+2. **Timemory backend off by default.** With space available, rocpd was written but still no
+   text/JSON files. In current rocprof-sys, `ROCPROFSYS_PROFILE` ("Enable timemory backend",
+   `ROCPROFSYS_USE_TIMEMORY` being its deprecated alias) defaults to `false`; the text/JSON files
+   come only from that backend, while `ROCPROFSYS_TEXT_OUTPUT`/`ROCPROFSYS_JSON_OUTPUT` merely pick
+   formats. The launcher never set it and relied on the old default. It now exports
+   `ROCPROFSYS_PROFILE=1` (also listed in the `--dry-run` output). Plan 1.1 had already recorded
+   `ROCPROFSYS_PROFILE` as stable between ROCm 7.0.2 and latest, so this stays retro-compatible.
+
+A first attempted fix, `ROCPROFSYS_USE_ROCPD=0` (on the theory that the unused rocpd conversion was
+the failing step), was wrong: the user confirmed it disables all output, and it was reverted before
+anything was committed.
+
+Verification: `bash -n scripts/profile_CPU_hotspots.sh` passes and `--dry-run` (with a stubbed
+`rocprof-sys-sample` on `PATH`) shows `ROCPROFSYS_PROFILE=1`. The behavior against a real
+`rocprof-sys-sample` run could not be tested here and needs confirming on the HPC system, per
+`CLAUDE.md`'s environment-constraints note.
