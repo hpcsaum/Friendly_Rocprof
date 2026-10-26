@@ -6,6 +6,7 @@ SelfTagsTests               -- self_tags vs. tags: which matches come from the r
 AncestorForThreadRootsTests -- ancestor_for_thread_roots inheritance onto a thread-root row
 SiblingGroupTests           -- wrapper_branch_noise sibling-group contamination marking
 FirstRealDescendantTests    -- first_real_descendant_skip_tag inheritance through wrapper hops
+FoldSignalFrameSubtreesTests -- fold_signal_frame_subtrees() folds a signal-trampoline subtree's time into the interrupted function
 RemoveTaggedSubtreesTests   -- remove_tagged_subtrees() drops a tagged node and its whole subtree
 SpliceByTagTests            -- splice_by_tag() reparenting, fold vs. discard of removed self-time
 ClosureTests                -- make_collapses_children()/make_is_pruned() closure factories
@@ -273,6 +274,75 @@ class FirstRealDescendantTests(unittest.TestCase):
         rows = [parent, child, gpu_grandchild]
         s3.tag_rows(rows, TAG_DEFS)
         self.assertEqual(child["tags"], set())
+
+
+class FoldSignalFrameSubtreesTests(unittest.TestCase):
+    DEFS = {"sampler_signal_frame": {"substrings": ["restore_rt"]}, **TAG_DEFS}
+
+    def test_subtree_removed_and_time_folded_into_interrupted_function(self):
+        main = make_taggable_row("main", self_sum=0.0, sum_=10.0)
+        work = make_taggable_row("work", parent=main, self_sum=1.0, sum_=10.0)
+        tramp = make_taggable_row("___restore_rt", parent=work, sum_=9.0)
+        leaf = make_taggable_row("std::set_insert", parent=tramp, self_sum=9.0, sum_=9.0)
+        kept = s3.fold_signal_frame_subtrees([main, work, tramp, leaf], self.DEFS)
+        self.assertEqual([r["label"] for r in kept], ["main", "work"])
+        self.assertAlmostEqual(work["self_sum"], 10.0)
+        self.assertAlmostEqual(work["sum"], 10.0)  # inclusive time already contained the handler's
+
+    def test_nested_trampolines_folded_once(self):
+        work = make_taggable_row("work", self_sum=0.0, sum_=5.0)
+        outer = make_taggable_row("__restore_rt", parent=work, sum_=5.0)
+        inner = make_taggable_row("__restore_rt", parent=outer, sum_=2.0)
+        leaf = make_taggable_row("handler", parent=inner, self_sum=2.0, sum_=2.0)
+        kept = s3.fold_signal_frame_subtrees([work, outer, inner, leaf], self.DEFS)
+        self.assertEqual([r["label"] for r in kept], ["work"])
+        self.assertAlmostEqual(work["self_sum"], 5.0)  # not 7.0
+
+    def test_trampoline_with_no_parent_left_alone(self):
+        tramp = make_taggable_row("___restore_rt", sum_=3.0)
+        child = make_taggable_row("handler", parent=tramp, self_sum=3.0, sum_=3.0)
+        kept = s3.fold_signal_frame_subtrees([tramp, child], self.DEFS)
+        self.assertEqual(len(kept), 2)
+
+    def test_sibling_of_trampoline_untouched(self):
+        work = make_taggable_row("work", sum_=10.0)
+        tramp = make_taggable_row("___restore_rt", parent=work, sum_=4.0)
+        other = make_taggable_row("other_callee", parent=work, self_sum=6.0, sum_=6.0)
+        kept = s3.fold_signal_frame_subtrees([work, tramp, other], self.DEFS)
+        self.assertEqual([r["label"] for r in kept], ["work", "other_callee"])
+        self.assertAlmostEqual(other["self_sum"], 6.0)
+
+    def test_noise_inside_the_removed_subtree_cannot_contaminate_siblings(self):
+        # a wrapper_noise-matching handler frame under the trampoline must vanish with it, so the
+        # real sibling "other_callee" is not flagged by tag_rows()'s sibling-group comparison
+        work = make_taggable_row("work", sum_=10.0)
+        tramp = make_taggable_row("___restore_rt", parent=work, sum_=4.0)
+        noise = make_taggable_row("gotcha_handler", parent=tramp, self_sum=4.0, sum_=4.0)
+        other = make_taggable_row("other_callee", parent=work, self_sum=6.0, sum_=6.0)
+        kept = s3.fold_signal_frame_subtrees([work, tramp, noise, other], self.DEFS)
+        s3.tag_rows(kept, self.DEFS)
+        self.assertEqual(other["structural_drop_tags"], set())
+
+    def test_noop_when_tag_absent(self):
+        work = make_taggable_row("work", sum_=5.0)
+        tramp = make_taggable_row("___restore_rt", parent=work, sum_=5.0)
+        kept = s3.fold_signal_frame_subtrees([work, tramp], TAG_DEFS)
+        self.assertEqual(len(kept), 2)
+        self.assertEqual(work["self_sum"], 0.0)
+
+    def test_label_key_name(self):
+        work = {"name": "work", "parent": None, "self_sum": 0.0, "sum": 5.0}
+        tramp = {"name": "___restore_rt", "parent": work, "self_sum": 0.0, "sum": 5.0}
+        kept = s3.fold_signal_frame_subtrees([work, tramp], self.DEFS, label_key="name")
+        self.assertEqual(kept, [work])
+        self.assertAlmostEqual(work["self_sum"], 5.0)
+
+    def test_real_default_patterns_match_libc_and_aarch64_trampolines(self):
+        defs = load_default_patterns()
+        for label in ("___restore_rt", "__restore_rt", "__kernel_rt_sigreturn"):
+            work = make_taggable_row("work", sum_=1.0)
+            tramp = make_taggable_row(label, parent=work, sum_=1.0)
+            self.assertEqual(s3.fold_signal_frame_subtrees([work, tramp], defs), [work], label)
 
 
 class RemoveTaggedSubtreesTests(unittest.TestCase):

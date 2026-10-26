@@ -16,7 +16,7 @@ import os
 
 from stage1_rocprofsys_sample import PID_SUFFIX_RE, parse_table_file
 from stage2_rocprofsys_sample import attach_ancestry
-from stage3_rocprofsys_common import remove_tagged_subtrees, tag_rows
+from stage3_rocprofsys_common import fold_signal_frame_subtrees, remove_tagged_subtrees, tag_rows
 
 NON_TIMING_FILES = {"available.txt", "instrumented.txt", "excluded.txt", "overlapping.txt"}
 # rocprof-sys's default config (ROCPROFSYS_FLAT_PROFILE=0, sampling on) writes THREE
@@ -62,6 +62,12 @@ def scan_ranks(output_dir):
     reflects the whole run's true wall-clock regardless of what gets dropped
     next.
 
+    Signal-trampoline subtrees (the sampler's own signal-handler frames, see
+    stage3_rocprofsys_common.fold_signal_frame_subtrees()) are folded into the interrupted
+    function's self-time before anything else runs, so tag_rows() and the noise drops below
+    never see them. root_sum is unaffected, since the fold only ever removes non-root rows'
+    descendants and adds time to a row whose inclusive SUM already contained it.
+
     Rows tagged wrapper_noise, compiler_runtime_noise, wrapper_branch_noise, other, or
     mpi_territory-via-ancestor-only (a thread-root row whose own label
     isn't itself an MPI call -- see stage3_rocprofsys_common.tag_rows()'s
@@ -86,6 +92,7 @@ def scan_ranks(output_dir):
         if rows is None:
             continue
         attach_ancestry(rows)
+        rows = fold_signal_frame_subtrees(rows)
         tag_rows(rows, filename=path)
 
         m = PID_SUFFIX_RE.search(base)

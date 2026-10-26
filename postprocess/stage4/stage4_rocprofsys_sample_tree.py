@@ -28,14 +28,15 @@ import os
 from stage1_rocprofsys_sample import PID_SUFFIX_RE, parse_table_file
 from stage1_rocprofv3 import parse_kernel_stats_csv
 from stage2_rocprofsys_sample import attach_ancestry
-from stage3_rocprofsys_common import tag_rows
+from stage3_rocprofsys_common import fold_signal_frame_subtrees, tag_rows
 from stage4_rocprofsys_common import kernel_owner_label
 from stage4_rocprofv3 import aggregate_per_rank
 
 
 def load_rank_trees(cpu_dir, primary_pattern, fallback_pattern, postprocess=None):
-    """Per rank: parse_table_file() + attach_ancestry() + tag_rows() directly (NOT a by-label
-    merge like stage4_rocprofsys_sample_flat.scan_ranks(), which would destroy tree identity).
+    """Per rank: parse_table_file() + attach_ancestry() + fold_signal_frame_subtrees() + tag_rows()
+    directly (NOT a by-label merge like
+    stage4_rocprofsys_sample_flat.scan_ranks(), which would destroy tree identity).
     primary_pattern's file wins per rank when present; fallback_pattern is used only for a rank
     with no primary_pattern file at all -- the two are never spliced together into one tree, since
     their parent-links come from two independently-reconstructed call orders. After
@@ -71,6 +72,7 @@ def load_rank_trees(cpu_dir, primary_pattern, fallback_pattern, postprocess=None
         if not rows:
             continue
         attach_ancestry(rows)
+        rows = fold_signal_frame_subtrees(rows)
         tag_rows(rows, filename=path)
         if postprocess is not None:
             rows = postprocess(rows)

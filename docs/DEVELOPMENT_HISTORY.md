@@ -73,6 +73,7 @@
 | 2026-08-28 | Fixed a real-HPC-system bug: on systems where the underlying AMD tool doesn't auto-create its own output directory, `rocprofv3`/`rocprof-sys`/`rocprof-compute` segfault instead of failing cleanly -- all six `scripts/*.sh` launchers now explicitly `mkdir -p` their output directory right before invoking the profiling tool -- see full accounting below |
 | 2026-08-28 | Plan 4.1: two new debugging launchers -- `debug_crash.sh` (wraps a run in `rocgdb` from process start to catch a fatal signal live) and `debug_hang.py` (adopted from a colleague's HPC-validated `hangwatch.py`, watches for output silence and live-attaches across every node) -- see full accounting below |
 | 2026-10-23 | Fixed `profile_CPU_hotspots.sh` producing no `wall_clock-*`/`sampling_*` text/JSON files on very recent ROCm: rocprof-sys's timemory backend (`ROCPROFSYS_PROFILE`) is now off by default (rocpd is the default output), and the launcher never enabled it explicitly -- it now exports `ROCPROFSYS_PROFILE=1`. Found on a real HPC run where the output filesystem was also at 98% quota, which first made the rocpd flush fail (SQLite `rc=1034`, `SQLITE_IOERR_FSYNC`) -- see full accounting below |
+| 2026-10-26 | Plan 4.2: fixed sampling profiles being dominated (or, with a user-local `std::pair` noise pattern, emptied) by the sampler's own signal-handler frames -- a sampled stack taken inside a signal handler carries the handler's frames beneath `___restore_rt`, so nearly all self-time sat on `std::pair<..._Rb_tree...>` rows and the interrupted functions showed ~0. New `sampler_signal_frame` tag + `fold_signal_frame_subtrees()` removes the trampoline subtree and folds its time into the interrupted function in both the flat and call-tree loaders; 714 -> 725 tests -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -3472,3 +3473,59 @@ Verification: `bash -n scripts/profile_CPU_hotspots.sh` passes and `--dry-run` (
 `rocprof-sys-sample` on `PATH`) shows `ROCPROFSYS_PROFILE=1`. The behavior against a real
 `rocprof-sys-sample` run could not be tested here and needs confirming on the HPC system, per
 `CLAUDE.md`'s environment-constraints note.
+
+## 2026-10-26 — Plan 4.2: fold sampler signal-handler frames into the interrupted function
+
+A real run on a very recent ROCm produced a sampling call tree whose innermost frames, in nearly
+every sample, were the sampler's own signal handler:
+
+```
+InitializeTicket::Continue          (self 0.0%)
+  ___restore_rt                     (self 0.0%)
+    std::pair<std::_Rb_tree_iterator<int>, bool> std::_Rb_tree<int,...>   (self 100%)
+```
+
+`___restore_rt` is libc's signal-return trampoline; everything beneath it is the handler's code, never
+application code, so the interrupted function (the row above the trampoline) is the row that should
+own that time. Two consequences were observed on the real file:
+
+- With a user-local `std::pair` entry in `compiler_runtime_noise` (not part of the bundled patterns), the
+  `std::pair<...>` rows were dropped together with their time. Two of them held 475 s + 28 s of a
+  ~535 s run, so the hotspots table came out empty. A throwaway diagnostic that replayed the tagging
+  per row and printed the matching pattern is what located the pattern.
+- With that entry removed, the report was a profile of the sampler itself: two `std::pair<...>` rows at
+  69.8% + 30.0% of self time, every real function at ~0.
+
+The fix (`docs/plans/4.2-fold-sampler-signal-frames.md`):
+
+- New `sampler_signal_frame` tag in `default_noise_patterns.json` (substrings `restore_rt`,
+  `rt_sigreturn`), so `--extra-noise-config` can `add`/`remove` patterns or `disable` the tag with no new flag.
+- New `fold_signal_frame_subtrees()` in `stage3_rocprofsys_common.py`: for each topmost matching row with a
+  parent, the parent's `self_sum` grows by the trampoline's inclusive `sum` and the row's whole subtree is
+  dropped. It runs after `attach_ancestry()` and **before** `tag_rows()`, deliberately: `tag_rows()`'s
+  sibling-group comparison could otherwise see handler frames (e.g. rocprof-sys's own) beneath the
+  trampoline and prune a real sibling subtree together with its time. Called from both
+  `stage4_rocprofsys_sample_flat.scan_ranks()` and `stage4_rocprofsys_sample_tree.load_rank_trees()`.
+  The trace-CSV pipeline is untouched (different data, no evidence of the artifact there).
+
+**Real-data check, and a wrong assumption in the plan.** The plan expected the existing
+`test_apps/results/*` runs to be byte-identical afterwards, on the theory that they predate the
+artifact. They do not: the three AMD runs' `sampling_wall_clock-*.txt` also contain
+`___restore_rt` -> `std::pair<...>` rows (about 30 per file), and their old `hotspots.txt` listed
+dozens of those rows at 1-4% each. Comparing old (tag disabled) and new aggregation over all six runs:
+`total_runtime` is identical in every run; the only rows removed are the trampoline itself and the
+`std::pair<...>` handler rows (31-34 rows per AMD run); no other row's self time decreased; the Cray runs
+(no trampolines) are unchanged apart from the report timestamp and output path. Of the 3.6-3.8 s that sat
+on the handler rows in each AMD run, 1.0-1.5 s now lands on application/runtime functions; the rest lands
+on rocprof-sys's own frames (e.g. `lookup_hashtable`), which `wrapper_noise` then drops, as it
+already did for their other time.
+
+Tests: 714 -> 725 passing. New: `FoldSignalFrameSubtreesTests` (8 unit tests: simple fold, nested
+trampolines folded once, parentless trampoline left alone, sibling untouched, noise inside the removed
+subtree cannot contaminate siblings, no-op when the tag is absent, `label_key="name"`, real bundled
+patterns match libc and aarch64 trampolines), `SamplerSignalFrameFixtureTests` (2) and
+`LoadRankTreesSignalFrameTests` (1) against the new `sampler_signal_frames/` fixture, and the two
+expected-tag-set assertions in `test_stage6_noise_config.py` updated. Both fixture-level tests were
+confirmed to fail with the `fold_signal_frame_subtrees()` call removed from the loaders. As with
+everything here, the behavior against the user's actual new-ROCm HPC output could not be tested in
+this environment and needs confirming there.

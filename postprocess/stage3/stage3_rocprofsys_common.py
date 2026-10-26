@@ -46,8 +46,16 @@ doesn't pass its own tag_defs explicitly. Each tag definition may combine:
     clean and the flagged sibling's OWN label doesn't itself match the source tag (that simpler
     case is already covered by the source tag's own self-match).
 
-Functions: tag_rows(), remove_tagged_subtrees(), splice_by_tag(), make_collapses_children(),
-make_is_pruned().
+One tag, "sampler_signal_frame", is acted on by fold_signal_frame_subtrees() BEFORE tag_rows()
+rather than through the usual tag -> action map. A sampled call stack taken from inside a signal
+handler carries the handler's own frames beneath the signal-return trampoline (libc's
+__restore_rt), so a sampling profile can book all of its self-time on the profiler's own
+bookkeeping instead of on the function the signal interrupted. Those frames are never
+application code; their time belongs to the interrupted function, which is the row directly above
+the trampoline.
+
+Functions: fold_signal_frame_subtrees(), tag_rows(), remove_tagged_subtrees(), splice_by_tag(),
+make_collapses_children(), make_is_pruned().
 """
 
 import os
@@ -73,6 +81,49 @@ def _build_children_map(rows):
         if parent is not None:
             children_map.setdefault(id(parent), []).append(row)
     return children_map
+
+
+SAMPLER_SIGNAL_FRAME_TAG = "sampler_signal_frame"
+
+
+def fold_signal_frame_subtrees(rows, tag_defs=None, label_key="label"):
+    """Returns a new row list with every signal-trampoline subtree removed and its inclusive time
+    added to the interrupted function's self_sum: for each TOPMOST row whose label matches the
+    sampler_signal_frame tag's patterns and that has a parent, parent["self_sum"] += row["sum"]
+    (the parent's own "sum" already includes that time, so it is left alone), then the row and its
+    whole subtree are dropped. Nested trampolines inside an already-removed subtree are skipped --
+    their time is part of the outer trampoline's "sum". A matching row with no parent is left in
+    place, since there is nothing to attribute its time to. A no-op when the tag is absent from
+    tag_defs (e.g. disabled through an --extra-noise-config).
+
+    Must run after attach_ancestry() (needs "parent") and BEFORE tag_rows(): tag_rows()'s
+    sibling-group comparison would otherwise see the handler's frames beneath the trampoline and
+    could prune a whole real sibling subtree, with its time, as "contaminated". Relies on rows
+    arriving in call-tree pre-order (as attach_ancestry() does), so a row's ancestors are always
+    visited before it. tag_defs and label_key mean the same as in tag_rows().
+    """
+    if tag_defs is None:
+        tag_defs = _stage6_tag_defs()
+    tag_def = tag_defs.get(SAMPLER_SIGNAL_FRAME_TAG)
+    if tag_def is None:
+        return rows
+
+    children_map = _build_children_map(rows)
+    removed = set()
+    for row in rows:
+        if id(row) in removed:
+            continue
+        parent = row["parent"]
+        if parent is None or not _label_matches(row[label_key], tag_def):
+            continue
+        parent["self_sum"] = parent.get("self_sum", 0.0) + row.get("sum", 0.0)
+        pending = [row]
+        while pending:
+            node = pending.pop()
+            removed.add(id(node))
+            pending.extend(children_map.get(id(node), []))
+
+    return [row for row in rows if id(row) not in removed]
 
 
 def tag_rows(rows, tag_defs=None, filename=None, label_key="label"):

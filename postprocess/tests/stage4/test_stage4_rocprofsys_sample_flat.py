@@ -5,6 +5,7 @@ OtherTagConfigTests                  -- a user-configured "other" noise tag excl
 ScanRanksMultiMetricFileTests        -- multi-metric-file-per-rank counting, wall_clock vs sampling precedence, total_runtime correctness
 RocrClassificationTests              -- ROCr runtime internals land in the GPU bucket, not CPU
 WrapperContaminatedBranchFixtureTests -- a whole noise branch, including intermediate generic layers, vanishes end to end
+SamplerSignalFrameFixtureTests       -- signal-handler frames under a trampoline fold into the interrupted function's self time
 GpuSpawnedThreadFixtureTests         -- same-labeled thread-root rows kept distinct across the CPU/GPU bucket split
 AggregatePerRankTests                -- per-rank {label: value} breakdown, self vs unfiltered (inclusive) time
 NestedDatedSubdirectoryTests         -- files found one level down inside rocprof-sys's timestamped output subdirectory
@@ -223,6 +224,38 @@ class WrapperContaminatedBranchFixtureTests(unittest.TestCase):
         self.assertIn("main", cpu_labels)
         self.assertIn("MPI_Init", cpu_labels)
         self.assertIn("run_simulation", cpu_labels)
+
+
+class SamplerSignalFrameFixtureTests(unittest.TestCase):
+    DIR = os.path.join(FIXTURES, "sampler_signal_frames")
+
+    def test_handler_frames_fold_into_interrupted_functions(self):
+        # sampler_signal_frames/sampling_wall_clock-8001.txt: main -> [fortran_runtime_init ->
+        # ___restore_rt -> std::pair<..._Rb_tree...> (60s, all self), compute_kernel (2s own) ->
+        # ___restore_rt -> {std::pair<..._Rb_tree...> 30s, rocprofsys handler 8s}]. Neither the
+        # trampoline nor anything below it may appear; its time lands on the row above it.
+        cpu, gpu, _scanned, total = flat.aggregate(self.DIR)
+        by_label = {e["label"]: e for e in cpu}
+        self.assertEqual(set(by_label), {"main", "fortran_runtime_init", "compute_kernel"})
+        self.assertEqual(gpu, [])
+        self.assertAlmostEqual(by_label["fortran_runtime_init"]["self_sum"], 60.0)
+        self.assertAlmostEqual(by_label["compute_kernel"]["self_sum"], 40.0)
+        self.assertAlmostEqual(by_label["main"]["self_sum"], 0.0)
+        self.assertAlmostEqual(total, 100.0)
+        self.assertAlmostEqual(sum(e["self_sum"] for e in cpu), total)
+
+    def test_fold_disabled_through_noise_config_restores_raw_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = os.path.join(tmp, "noise.json")
+            with open(cfg, "w") as f:
+                json.dump({"disable": ["sampler_signal_frame"]}, f)
+            stage6_noise_config.configure(cfg)
+            try:
+                cpu, _gpu, _scanned, _total = flat.aggregate(self.DIR)
+            finally:
+                stage6_noise_config.configure(None)
+        labels = {e["label"] for e in cpu}
+        self.assertIn("___restore_rt", labels)
 
 
 class GpuSpawnedThreadFixtureTests(unittest.TestCase):

@@ -6,6 +6,7 @@ KernelAnchorAttributionTests          -- real GPU kernel data split across one o
 MakeKernelNodeParentTests             -- make_kernel_node()'s parent defaulting/override
 AttachKernelSummariesCollectIntoTests -- collect_into gathering the synthetic group/kernel nodes attach_kernel_summaries() creates
 LoadRankTreesTests                    -- per-rank parse+ancestry loading, thread-root detection, primary/fallback file pattern selection, postprocess hook
+LoadRankTreesSignalFrameTests         -- signal-trampoline subtrees folded into the interrupted function before tagging
 KernelTotalsWithCountsTests           -- per-rank (count, seconds) totals from rocprofv3's kernel_stats.csv
 PairGpuPerRankTests                   -- pairing CPU rank keys to GPU kernel data, only when rank counts match
 AttachGpuKernelsTests                 -- end-to-end wiring of load_rank_trees()+merge+attach_kernel_summaries() into one tree
@@ -31,6 +32,7 @@ SAMPLING_FALLBACK_DIR = os.path.join(FIXTURES, "calltree_sampling_fallback")
 GPU_SPAWNED_THREAD_DIR = os.path.join(FIXTURES, "gpu_spawned_thread")
 MULTI_METRIC_RANK_DIR = os.path.join(FIXTURES, "multi_metric_rank")
 EMPTY_DIR = os.path.join(FIXTURES, "no_timing_data")
+SIGNAL_FRAMES_DIR = os.path.join(FIXTURES, "sampler_signal_frames")
 
 RANK = "r0"  # every hand-built test tree in this file simulates one rank
 
@@ -372,6 +374,19 @@ class LoadRankTreesTests(unittest.TestCase):
         )
         _rank_key, rows, _roots = ranks[0]
         self.assertFalse(any(r["label"] == "hipMemcpy" for r in rows))
+
+
+class LoadRankTreesSignalFrameTests(unittest.TestCase):
+    def test_trampoline_subtrees_gone_and_self_time_folded(self):
+        ranks = s4t.load_rank_trees(SIGNAL_FRAMES_DIR, "sampling_wall_clock-*.txt", "wall_clock-*.txt")
+        self.assertEqual(len(ranks), 1)
+        _rank_key, rows, roots = ranks[0]
+        by_label = {r["label"]: r for r in rows}
+        self.assertEqual(set(by_label), {"main", "fortran_runtime_init", "compute_kernel"})
+        self.assertEqual(len(roots), 1)
+        self.assertAlmostEqual(by_label["fortran_runtime_init"]["self_sum"], 60.0)
+        self.assertAlmostEqual(by_label["compute_kernel"]["self_sum"], 40.0)
+        self.assertAlmostEqual(by_label["compute_kernel"]["sum"], 40.0)
 
 
 class KernelTotalsWithCountsTests(unittest.TestCase):

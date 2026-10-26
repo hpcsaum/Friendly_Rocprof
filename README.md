@@ -409,7 +409,8 @@ Most tools above that read CPU-side data (both hotspots extractors, both calltre
 caller-chains tool, the instrumentation-selection tool, and the POP-metrics tool — check a
 tool's own `-h`/`--help` if you're unsure) classify rows using a bundled, editable set of
 patterns: MPI internals, GPU-API calls, compiler-runtime helpers, and rocprof-sys's own
-instrumentation wrappers are recognized and hidden or collapsed by default. If your
+instrumentation wrappers are recognized and hidden or collapsed by default; the sampler's own
+signal-handler frames are folded into the function the sample interrupted. If your
 application uses a library or naming convention the bundled patterns don't recognize, pass a
 small JSON file via `--extra-noise-config path/to/config.json` (or set
 `$FRIENDLY_ROCPROF_NOISE_CONFIG` once for every run) to add, remove, or disable patterns
