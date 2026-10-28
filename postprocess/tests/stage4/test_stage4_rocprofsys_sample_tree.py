@@ -6,6 +6,7 @@ KernelAnchorAttributionTests          -- real GPU kernel data split across one o
 MakeKernelNodeParentTests             -- make_kernel_node()'s parent defaulting/override
 AttachKernelSummariesCollectIntoTests -- collect_into gathering the synthetic group/kernel nodes attach_kernel_summaries() creates
 LoadRankTreesTests                    -- per-rank parse+ancestry loading, thread-root detection, primary/fallback file pattern selection, postprocess hook
+LoadRankTreesOpenMpRuntimeTests       -- libomp runtime rows spliced out, outlined bodies/task bodies reparented to their owner
 LoadRankTreesSignalFrameTests         -- signal-trampoline subtrees folded into the interrupted function before tagging
 KernelTotalsWithCountsTests           -- per-rank (count, seconds) totals from rocprofv3's kernel_stats.csv
 PairGpuPerRankTests                   -- pairing CPU rank keys to GPU kernel data, only when rank counts match
@@ -33,6 +34,7 @@ GPU_SPAWNED_THREAD_DIR = os.path.join(FIXTURES, "gpu_spawned_thread")
 MULTI_METRIC_RANK_DIR = os.path.join(FIXTURES, "multi_metric_rank")
 EMPTY_DIR = os.path.join(FIXTURES, "no_timing_data")
 SIGNAL_FRAMES_DIR = os.path.join(FIXTURES, "sampler_signal_frames")
+OPENMP_REGION_DIR = os.path.join(FIXTURES, "openmp_parallel_region")
 
 RANK = "r0"  # every hand-built test tree in this file simulates one rank
 
@@ -374,6 +376,23 @@ class LoadRankTreesTests(unittest.TestCase):
         )
         _rank_key, rows, _roots = ranks[0]
         self.assertFalse(any(r["label"] == "hipMemcpy" for r in rows))
+
+
+class LoadRankTreesOpenMpRuntimeTests(unittest.TestCase):
+    def test_runtime_rows_gone_and_bodies_reparented_to_their_owner(self):
+        ranks = s4t.load_rank_trees(OPENMP_REGION_DIR, "sampling_wall_clock-*.txt", "wall_clock-*.txt")
+        _rank_key, rows, _roots = ranks[0]
+        self.assertFalse([r["label"] for r in rows if "kmp" in r["label"].lower()])
+        by_parent = {}
+        for r in rows:
+            by_parent.setdefault(r["parent"]["label"] if r["parent"] else None, []).append(r)
+        # master region body hangs directly off compute_step, the worker's directly off start_thread
+        self.assertEqual({r["label"] for r in by_parent["compute_step"]}, {"compute_step..omp_par.1"})
+        self.assertEqual({r["label"] for r in by_parent["start_thread"]}, {"compute_step..omp_par.1"})
+        # the task body sits under the region body, kernel_body under the task body
+        region_rows = [r for r in rows if r["label"] == "compute_step..omp_par.1" and r["parent"]["label"] == "compute_step"]
+        self.assertEqual({r["label"] for r in rows if r["parent"] is region_rows[0]}, {"compute_step..omp_par"})
+        self.assertEqual({r["label"] for r in by_parent["other_step"]}, {"other_step..omp_par"})
 
 
 class LoadRankTreesSignalFrameTests(unittest.TestCase):

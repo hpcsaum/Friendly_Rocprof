@@ -74,6 +74,7 @@
 | 2026-08-28 | Plan 4.1: two new debugging launchers -- `debug_crash.sh` (wraps a run in `rocgdb` from process start to catch a fatal signal live) and `debug_hang.py` (adopted from a colleague's HPC-validated `hangwatch.py`, watches for output silence and live-attaches across every node) -- see full accounting below |
 | 2026-10-23 | Fixed `profile_CPU_hotspots.sh` producing no `wall_clock-*`/`sampling_*` text/JSON files on very recent ROCm: rocprof-sys's timemory backend (`ROCPROFSYS_PROFILE`) is now off by default (rocpd is the default output), and the launcher never enabled it explicitly -- it now exports `ROCPROFSYS_PROFILE=1`. Found on a real HPC run where the output filesystem was also at 98% quota, which first made the rocpd flush fail (SQLite `rc=1034`, `SQLITE_IOERR_FSYNC`) -- see full accounting below |
 | 2026-10-26 | Plan 4.2: fixed sampling profiles being dominated (or, with a user-local `std::pair` noise pattern, emptied) by the sampler's own signal-handler frames -- a sampled stack taken inside a signal handler carries the handler's frames beneath `___restore_rt`, so nearly all self-time sat on `std::pair<..._Rb_tree...>` rows and the interrupted functions showed ~0. New `sampler_signal_frame` tag + `fold_signal_frame_subtrees()` removes the trampoline subtree and folds its time into the interrupted function in both the flat and call-tree loaders; 714 -> 725 tests -- see full accounting below |
+| 2026-10-28 | Plan 4.3: OpenMP runtime frames (libomp/libgomp fork, barrier, wait) no longer merge every parallel region into a few generic hotspots like `__kmp_invoke_microtask` or `kmp_flag_64<...>::wait`: new `openmp_runtime` tag + `splice_by_tag(into_owner=True, skip_tags=...)` credits each runtime row's self-time to the user function that called into the runtime and discards worker-thread idle time. Checked against stacks captured from `amdflang`/`amdclang` programs covering ~20 OpenMP constructs; 725 -> 737 tests -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -3529,3 +3530,57 @@ expected-tag-set assertions in `test_stage6_noise_config.py` updated. Both fixtu
 confirmed to fail with the `fold_signal_frame_subtrees()` call removed from the loaders. As with
 everything here, the behavior against the user's actual new-ROCm HPC output could not be tested in
 this environment and needs confirming there.
+
+## 2026-10-28 — Plan 4.3: OpenMP runtime frames credited to the owning function
+
+A real run of an OpenMP code showed one generic row, `__kmp_invoke_microtask`, as a top CPU hotspot.
+Cause: the flat hotspots table merges rows by label across the whole tree, so the runtime-side cost
+(fork/join, barrier waits) of *every* parallel region collapsed into the same few libomp rows; worker
+threads idle-spinning in the runtime would add more. Nothing in the tool recognized OpenMP runtime frames.
+
+**What was tested first.** One program per construct (parallel, parallel do, do static/dynamic, sections,
+single, master, critical, atomic, barrier, workshare, task, taskgroup, reduction, simd, loop, teams distribute
+parallel do, ordered) compiled with `amdflang` 22 / `amdclang` (ROCm 7.2.4) and inspected with `nm` and `gdb`
+backtraces, including waiting threads sampled at ~0.4 s (spinning) and ~2.5 s (sleeping), and with
+`OMP_NUM_THREADS=1`. Findings that shaped the design:
+
+- Every CPU construct has the same entry `__kmpc_fork_call -> __kmp_fork_call -> __kmp_invoke_task_func ->
+  __kmp_invoke_microtask -> <outlined body>` (also with one thread); the other constructs' runtime calls happen
+  inside that body, so they are children of the region row. `atomic` has no runtime call.
+- Task bodies run below runtime frames (`__kmpc_omp_taskwait|__kmpc_barrier -> ... -> __kmp_execute_tasks_*
+  -> __kmp_invoke_task -> body`), so reparenting them to the region body is the right treatment.
+- **`kmp_flag_64<false, true>::wait` — the leaf where threads spin — has no `__kmp` in its name**, so the
+  first draft pattern (`__kmp`) would have missed exactly the row that holds the spinning time; the tag uses
+  `kmp_`, `kmpc_` (`__kmpc_*` does not contain `kmp_`) and `gomp_`.
+- flang names *every* outlined body `<parent>..omp_par[.N]` — task and teams bodies too, not only parallel
+  regions (an earlier statement that `..omp_par` marks a parallel region was therefore too strong); clang uses
+  `.omp_outlined[_debug__]`/`.omp_task_entry.`, gfortran `._omp_fn.N`. None are matched.
+- flang 22 does not implement `taskloop`; clang does. This machine's libgomp is stripped (worker frames show as
+  `??`), so only `GOMP_parallel` could be checked and `gomp_` coverage is best-effort.
+
+**Change** (`docs/plans/4.3-fold-openmp-runtime-frames.md`): new `openmp_runtime` tag; `splice_by_tag()` gained
+`into_owner` (credit only `self_sum` to the nearest surviving ancestor — the owner's inclusive `sum` already
+contains it, so adding it, as plain `fold=True` does, would double-count — and discard instead when the owner is a
+thread root or absent) and `skip_tags` (leave rows that also carry e.g. `gpu_api`/`mpi_territory` alone); both
+default to today's behavior. `splice_openmp_runtime()` wraps the call; `scan_ranks()` (after `root_sum` is taken)
+and `load_rank_trees()` call it right after `tag_rows()`, so hotspots, call-tree and caller-chain tools see the
+same folded view. `--extra-noise-config` can `disable`/`remove` as with the other tags.
+
+**Known limits, not fixed:** attribution is per outlined body, not per directive (`single`, `critical`,
+`barrier`, a static loop and their waits share one `..omp_par.N` row; `gdb -batch -ex "break <name>"` with `-g`
+gives the source line); waits inside a region count as that region's self time; libc frames under a sleeping
+worker's `__kmp_suspend_*` (`___pthread_cond_wait`, `__futex_abstimed_wait_*`) are untouched — to be decided on
+real data; Cray's OpenMP runtime symbols were not available to check.
+
+**Real-data check.** None of the six `test_apps/results` runs contains an OpenMP runtime frame (verified by grep
+first this time, after plan 4.2's wrong "identical" expectation), and all 12 regenerated reports are identical
+to the baseline apart from the timestamp and output path.
+
+Tests: 725 -> 737. `SpliceIntoOwnerTests` (6) and `OpenMpRuntimePatternTests` (3) in stage3,
+`OpenMpRuntimeFixtureTests` (2) and `LoadRankTreesOpenMpRuntimeTests` (1) against the new
+`openmp_parallel_region/` fixture built from the captured stacks (master + worker thread, barrier chain,
+task chain, a second region, idle worker branch), and the two expected-tag-set assertions updated. Both
+fixture-level tests were confirmed to fail with the `splice_openmp_runtime()` calls removed. On that fixture the
+generic `kmp_flag_64<...>::wait` row was the #1 hotspot (125 s) before the change and is gone after, with
+`compute_step..omp_par.1` ranked first (130 s) and `compute_step` credited its 20 s of fork/join runtime.
+As always, behavior on the user's real rocprof-sys output could not be tested here.

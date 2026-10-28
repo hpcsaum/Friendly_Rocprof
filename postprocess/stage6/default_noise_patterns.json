@@ -31,6 +31,9 @@
       "__default_morecore", "sbrk", "_fwf", "_xfer_iolist"
     ]
   },
+  "openmp_runtime": {
+    "substrings": ["kmp_", "kmpc_", "gomp_"]
+  },
   "sampler_signal_frame": {
     "substrings": ["restore_rt", "rt_sigreturn"]
   },

@@ -33,7 +33,7 @@ class ConfigureAndTagDefsTests(unittest.TestCase):
         self.assertEqual(
             set(defs.keys()),
             {"gpu_api", "wrapper_noise", "mpi_territory", "compiler_runtime_noise",
-             "sampler_signal_frame", "wrapper_branch_noise", "other"},
+             "openmp_runtime", "sampler_signal_frame", "wrapper_branch_noise", "other"},
         )
         self.assertEqual(defs["other"], {"substrings": []})
 
@@ -144,7 +144,7 @@ class LoadDefaultPatternsTests(unittest.TestCase):
         self.assertEqual(
             set(patterns.keys()),
             {"gpu_api", "wrapper_noise", "mpi_territory", "compiler_runtime_noise",
-             "sampler_signal_frame", "wrapper_branch_noise"},
+             "openmp_runtime", "sampler_signal_frame", "wrapper_branch_noise"},
         )
 
 

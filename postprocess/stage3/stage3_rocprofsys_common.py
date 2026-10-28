@@ -54,8 +54,13 @@ bookkeeping instead of on the function the signal interrupted. Those frames are 
 application code; their time belongs to the interrupted function, which is the row directly above
 the trampoline.
 
+splice_by_tag() also has an owner-attribution mode (into_owner=True) used for the "openmp_runtime"
+tag: OpenMP runtime frames (libomp/libgomp fork/join, barrier and wait machinery) are generic, so
+merging them by label would pile every parallel region's runtime cost into the same few rows;
+instead each one's self-time is credited to the surviving ancestor that called into the runtime.
+
 Functions: fold_signal_frame_subtrees(), tag_rows(), remove_tagged_subtrees(), splice_by_tag(),
-make_collapses_children(), make_is_pruned().
+splice_openmp_runtime(), make_collapses_children(), make_is_pruned().
 """
 
 import os
@@ -277,25 +282,44 @@ def remove_tagged_subtrees(rows, tags):
     return [row for row in rows if id(row) not in removed]
 
 
-def splice_by_tag(rows, tag, fold=True):
+def splice_by_tag(rows, tag, fold=True, into_owner=False, skip_tags=()):
     """Reparents every row whose "parent" chain passes through a `tag`-matched row up to the
     nearest ancestor that doesn't match, then drops the matched rows entirely -- a row whose whole
     ancestor chain matched ends up with parent=None, becoming a new root. When fold=True, each
     removed row's own self_sum/sum is added into the ancestor its children got reparented to,
-    instead of being discarded; fold=False keeps today's discard-it behavior."""
+    instead of being discarded; fold=False keeps today's discard-it behavior.
+
+    skip_tags: a row only counts as matched when it carries `tag` AND none of `skip_tags` -- lets a
+    caller splice one tag's rows while leaving rows that also carry a tag with its own handling
+    (e.g. gpu_api, mpi_territory) in place.
+
+    into_owner (only meaningful with fold=True): attribute a removed row's time to the OWNER -- the
+    nearest surviving ancestor -- the way a profiler would blame the function that called the
+    runtime. Only self_sum is folded: the owner's inclusive "sum" already contains the removed
+    row's time, so adding it again (what plain fold=True does) would double-count. A removed
+    row whose owner is a thread root or doesn't exist is discarded instead of folded: its time is
+    thread start-up or idle waiting between pieces of work, not work done on behalf of any
+    function."""
+    skip_tags = set(skip_tags)
+
+    def is_matched(row):
+        row_tags = row.get("tags", set())
+        return tag in row_tags and not (skip_tags & row_tags)
+
     def walk_skip(parent):
-        while parent is not None and tag in parent.get("tags", set()):
+        while parent is not None and is_matched(parent):
             parent = parent["parent"]
         return parent
 
     fold_totals = {}
     for row in rows:
         new_parent = walk_skip(row["parent"])
-        if tag in row.get("tags", set()):
-            if fold and new_parent is not None:
+        if is_matched(row):
+            if fold and new_parent is not None and not (into_owner and new_parent.get("is_thread_root")):
                 totals = fold_totals.setdefault(id(new_parent), {"self_sum": 0.0, "sum": 0.0})
                 totals["self_sum"] += row.get("self_sum", 0.0)
-                totals["sum"] += row.get("sum", 0.0)
+                if not into_owner:
+                    totals["sum"] += row.get("sum", 0.0)
         else:
             row["parent"] = new_parent
 
@@ -306,7 +330,16 @@ def splice_by_tag(rows, tag, fold=True):
                 row["self_sum"] = row.get("self_sum", 0.0) + totals["self_sum"]
                 row["sum"] = row.get("sum", 0.0) + totals["sum"]
 
-    return [row for row in rows if tag not in row.get("tags", set())]
+    return [row for row in rows if not is_matched(row)]
+
+
+def splice_openmp_runtime(rows):
+    """splice_by_tag() configured for the "openmp_runtime" tag: runtime rows are removed and their
+    self-time credited to the owning function (see splice_by_tag()'s into_owner). Rows that also
+    carry gpu_api or mpi_territory keep those tags' own handling instead of being spliced. Must run
+    after tag_rows(). Returns the new row list."""
+    return splice_by_tag(rows, "openmp_runtime", fold=True, into_owner=True,
+                         skip_tags=("gpu_api", "mpi_territory"))
 
 
 def make_collapses_children(tags):

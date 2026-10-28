@@ -16,7 +16,9 @@ import os
 
 from stage1_rocprofsys_sample import PID_SUFFIX_RE, parse_table_file
 from stage2_rocprofsys_sample import attach_ancestry
-from stage3_rocprofsys_common import fold_signal_frame_subtrees, remove_tagged_subtrees, tag_rows
+from stage3_rocprofsys_common import (
+    fold_signal_frame_subtrees, remove_tagged_subtrees, splice_openmp_runtime, tag_rows,
+)
 
 NON_TIMING_FILES = {"available.txt", "instrumented.txt", "excluded.txt", "overlapping.txt"}
 # rocprof-sys's default config (ROCPROFSYS_FLAT_PROFILE=0, sampling on) writes THREE
@@ -68,6 +70,10 @@ def scan_ranks(output_dir):
     never see them. root_sum is unaffected, since the fold only ever removes non-root rows'
     descendants and adds time to a row whose inclusive SUM already contained it.
 
+    OpenMP runtime rows (openmp_runtime tag) are then spliced out and their self-time credited to
+    the user function that called into the runtime (splice_openmp_runtime()), after root_sum is
+    taken, so generic libomp frames don't merge every parallel region into the same few rows.
+
     Rows tagged wrapper_noise, compiler_runtime_noise, wrapper_branch_noise, other, or
     mpi_territory-via-ancestor-only (a thread-root row whose own label
     isn't itself an MPI call -- see stage3_rocprofsys_common.tag_rows()'s
@@ -104,6 +110,7 @@ def scan_ranks(output_dir):
         bucket["files"].append(path)
         if rows:
             bucket["root_sum"] = max(bucket["root_sum"], max(row["sum"] for row in rows))
+        rows = splice_openmp_runtime(rows)
 
         # Keyed by (label, gpu), not just label -- two rows can share a generic
         # label (e.g. "start_thread") while tag_rows()'s ancestor scope tells them

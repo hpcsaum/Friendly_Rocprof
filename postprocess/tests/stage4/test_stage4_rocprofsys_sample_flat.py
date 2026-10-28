@@ -5,6 +5,7 @@ OtherTagConfigTests                  -- a user-configured "other" noise tag excl
 ScanRanksMultiMetricFileTests        -- multi-metric-file-per-rank counting, wall_clock vs sampling precedence, total_runtime correctness
 RocrClassificationTests              -- ROCr runtime internals land in the GPU bucket, not CPU
 WrapperContaminatedBranchFixtureTests -- a whole noise branch, including intermediate generic layers, vanishes end to end
+OpenMpRuntimeFixtureTests            -- libomp fork/join/barrier frames credited to the owning function, worker idle time dropped
 SamplerSignalFrameFixtureTests       -- signal-handler frames under a trampoline fold into the interrupted function's self time
 GpuSpawnedThreadFixtureTests         -- same-labeled thread-root rows kept distinct across the CPU/GPU bucket split
 AggregatePerRankTests                -- per-rank {label: value} breakdown, self vs unfiltered (inclusive) time
@@ -224,6 +225,49 @@ class WrapperContaminatedBranchFixtureTests(unittest.TestCase):
         self.assertIn("main", cpu_labels)
         self.assertIn("MPI_Init", cpu_labels)
         self.assertIn("run_simulation", cpu_labels)
+
+
+class OpenMpRuntimeFixtureTests(unittest.TestCase):
+    DIR = os.path.join(FIXTURES, "openmp_parallel_region")
+
+    def test_runtime_time_credited_to_the_owning_function(self):
+        # openmp_parallel_region/sampling_wall_clock-9001.txt: stacks captured from amdflang/libomp.
+        # Master: compute_step -> fork chain -> microtask (self 20) -> compute_step..omp_par.1 (self 20)
+        # -> {barrier chain ending in kmp_flag_64::wait 40, taskwait chain -> task body
+        # compute_step..omp_par -> kernel_body}; a worker thread runs the same region body (self 35)
+        # under start_thread with its own 35s barrier wait and a 50s idle wait; other_step has a
+        # second, separate region.
+        cpu, gpu, _scanned, total = flat.aggregate(self.DIR)
+        by_label = {e["label"]: e for e in cpu}
+        self.assertEqual(gpu, [])
+        self.assertFalse([l for l in by_label if "kmp" in l.lower()])
+        # compute_step: own 25 + microtask self 20 (fork/task_func rows have 0 self)
+        self.assertAlmostEqual(by_label["compute_step"]["self_sum"], 45.0)
+        # region body, master + worker merged by label: (20 + 40 barrier) + (35 + 35 barrier)
+        self.assertAlmostEqual(by_label["compute_step..omp_par.1"]["self_sum"], 130.0)
+        # task body reparented under the region: its own 5 plus kernel_body's 15 stay separate rows
+        self.assertAlmostEqual(by_label["compute_step..omp_par"]["self_sum"], 5.0)
+        self.assertAlmostEqual(by_label["kernel_body"]["self_sum"], 15.0)
+        # second region stays its own row and its owner is not polluted by the first region's cost
+        self.assertAlmostEqual(by_label["other_step..omp_par"]["self_sum"], 38.0)
+        self.assertAlmostEqual(by_label["other_step"]["self_sum"], 2.0)
+        # worker thread root keeps no idle/launch time
+        self.assertAlmostEqual(by_label["start_thread"]["self_sum"], 0.0)
+        self.assertAlmostEqual(total, 200.0)
+
+    def test_disabling_the_tag_restores_the_raw_runtime_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = os.path.join(tmp, "noise.json")
+            with open(cfg, "w") as f:
+                json.dump({"disable": ["openmp_runtime"]}, f)
+            stage6_noise_config.configure(cfg)
+            try:
+                cpu, _gpu, _scanned, _total = flat.aggregate(self.DIR)
+            finally:
+                stage6_noise_config.configure(None)
+        labels = {e["label"] for e in cpu}
+        self.assertIn("kmp_flag_64<false, true>::wait(kmp_info*, int, void*)", labels)
+        self.assertIn("__kmp_invoke_microtask", labels)
 
 
 class SamplerSignalFrameFixtureTests(unittest.TestCase):

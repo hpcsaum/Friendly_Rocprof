@@ -9,6 +9,8 @@ FirstRealDescendantTests    -- first_real_descendant_skip_tag inheritance throug
 FoldSignalFrameSubtreesTests -- fold_signal_frame_subtrees() folds a signal-trampoline subtree's time into the interrupted function
 RemoveTaggedSubtreesTests   -- remove_tagged_subtrees() drops a tagged node and its whole subtree
 SpliceByTagTests            -- splice_by_tag() reparenting, fold vs. discard of removed self-time
+SpliceIntoOwnerTests        -- splice_by_tag(into_owner=True, skip_tags=...) owner attribution, thread-root discard
+OpenMpRuntimePatternTests   -- real default_noise_patterns.json's openmp_runtime substrings, via splice_openmp_runtime()
 ClosureTests                -- make_collapses_children()/make_is_pruned() closure factories
 OpenMpiPrefixTests          -- real default_noise_patterns.json's mpi_territory prefix list
 TagDefsFallbackWiringTests  -- tag_rows()'s fallback to the process-wide stage6_noise_config
@@ -423,6 +425,95 @@ class SpliceByTagTests(unittest.TestCase):
         self.assertIsNone(real_root_candidate["parent"])
         self.assertAlmostEqual(real_root_candidate["self_sum"], 1.0)
         self.assertAlmostEqual(real_root_candidate["sum"], 1.0)
+
+
+class SpliceIntoOwnerTests(unittest.TestCase):
+    DEFS = {"openmp_runtime": {"substrings": ["kmp_"]}, **TAG_DEFS}
+
+    def _spliced(self, rows, **kwargs):
+        s3.tag_rows(rows, self.DEFS)
+        return s3.splice_by_tag(rows, "openmp_runtime", fold=True, into_owner=True, **kwargs)
+
+    def test_runtime_chain_self_time_folds_into_owner_and_child_is_reparented(self):
+        owner = make_taggable_row("compute_step", self_sum=2.0, sum_=10.0)
+        fork = make_taggable_row("__kmp_fork_call", parent=owner, self_sum=1.0, sum_=8.0)
+        micro = make_taggable_row("__kmp_invoke_microtask", parent=fork, self_sum=3.0, sum_=7.0)
+        body = make_taggable_row("compute_step..omp_par", parent=micro, self_sum=4.0, sum_=4.0)
+        result = self._spliced([owner, fork, micro, body])
+        self.assertEqual([r["label"] for r in result], ["compute_step", "compute_step..omp_par"])
+        self.assertIs(body["parent"], owner)
+        self.assertAlmostEqual(owner["self_sum"], 6.0)  # 2 + 1 + 3
+        self.assertAlmostEqual(owner["sum"], 10.0)  # inclusive time already contained the runtime's
+
+    def test_plain_fold_still_adds_inclusive_sum(self):
+        # into_owner defaults to False: today's fold=True behavior is unchanged
+        owner = make_taggable_row("main", self_sum=1.0, sum_=10.0)
+        runtime = make_taggable_row("__kmp_x", parent=owner, self_sum=2.0, sum_=2.0)
+        s3.tag_rows([owner, runtime], self.DEFS)
+        s3.splice_by_tag([owner, runtime], "openmp_runtime", fold=True)
+        self.assertAlmostEqual(owner["sum"], 12.0)
+
+    def test_runtime_time_under_thread_root_is_discarded(self):
+        thread_root = make_taggable_row("start_thread", is_thread_root=True, self_sum=0.0, sum_=9.0)
+        launch = make_taggable_row("__kmp_launch_worker", parent=thread_root, self_sum=5.0, sum_=9.0)
+        body = make_taggable_row("work..omp_par", parent=launch, self_sum=4.0, sum_=4.0)
+        result = self._spliced([thread_root, launch, body])
+        self.assertEqual([r["label"] for r in result], ["start_thread", "work..omp_par"])
+        self.assertIs(body["parent"], thread_root)
+        self.assertAlmostEqual(thread_root["self_sum"], 0.0)
+
+    def test_runtime_root_with_no_owner_is_discarded(self):
+        runtime_root = make_taggable_row("__kmp_launch_thread", self_sum=5.0, sum_=9.0)
+        body = make_taggable_row("work..omp_par", parent=runtime_root, self_sum=4.0, sum_=4.0)
+        result = self._spliced([runtime_root, body])
+        self.assertEqual([r["label"] for r in result], ["work..omp_par"])
+        self.assertIsNone(body["parent"])
+
+    def test_skip_tags_row_is_left_in_place(self):
+        owner = make_taggable_row("compute_step", sum_=10.0)
+        gpu_runtime = make_taggable_row("hip_kmp_launch", parent=owner, self_sum=3.0, sum_=3.0)
+        plain_runtime = make_taggable_row("__kmp_barrier", parent=owner, self_sum=2.0, sum_=2.0)
+        result = self._spliced([owner, gpu_runtime, plain_runtime], skip_tags=("gpu_api",))
+        self.assertEqual([r["label"] for r in result], ["compute_step", "hip_kmp_launch"])
+        self.assertAlmostEqual(owner["self_sum"], 2.0)  # only the plain runtime row folded in
+        self.assertAlmostEqual(gpu_runtime["self_sum"], 3.0)
+
+    def test_no_matching_rows_changes_nothing(self):
+        owner = make_taggable_row("main", self_sum=1.0, sum_=2.0)
+        child = make_taggable_row("work", parent=owner, self_sum=1.0, sum_=1.0)
+        result = self._spliced([owner, child])
+        self.assertEqual(result, [owner, child])
+        self.assertAlmostEqual(owner["self_sum"], 1.0)
+
+
+class OpenMpRuntimePatternTests(unittest.TestCase):
+    def setUp(self):
+        stage6_noise_config.configure(None)
+
+    def _kept_labels(self, labels):
+        owner = make_taggable_row("owner", sum_=1.0)
+        rows = [owner] + [make_taggable_row(label, parent=owner, sum_=0.1) for label in labels]
+        s3.tag_rows(rows)
+        return {r["label"] for r in s3.splice_openmp_runtime(rows)}
+
+    def test_runtime_frames_are_spliced(self):
+        runtime = [
+            "__kmpc_fork_call", "__kmp_fork_call", "__kmp_invoke_microtask", "__kmpc_barrier",
+            "kmp_flag_64<false, true>::wait(kmp_info*, int, void*)",
+            "_INTERNAL12abcdef__kmp_x", "__kmpc_fork_teams", "GOMP_parallel", "gomp_team_start",
+        ]
+        self.assertEqual(self._kept_labels(runtime), {"owner"})
+
+    def test_user_work_and_public_api_are_kept(self):
+        user = [
+            "omp_get_thread_num", "compute_step..omp_par.97", "work.omp_outlined",
+            ".omp_task_entry.", "solver._omp_fn.0",
+        ]
+        self.assertEqual(self._kept_labels(user), {"owner", *user})
+
+    def test_rows_also_tagged_gpu_api_are_kept(self):
+        # hip* matches gpu_api in the real patterns; a runtime-looking GPU launch row stays put
+        self.assertIn("hipLaunchKernel_kmp_shim", self._kept_labels(["hipLaunchKernel_kmp_shim"]))
 
 
 class ClosureTests(unittest.TestCase):

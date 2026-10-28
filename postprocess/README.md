@@ -71,7 +71,15 @@ renderers below). One tag, `sampler_signal_frame`, is acted on by `fold_signal_f
 before tagging: a sampled stack taken inside a signal handler carries the handler's own frames
 beneath the signal-return trampoline (`___restore_rt`), so the whole subtree below a trampoline is
 removed and its time is added to the interrupted function's self-time instead. Both sample-pipeline
-loaders (`scan_ranks()` and `load_rank_trees()`) run it right after ancestry-linking. Nothing in this engine is specific to either backend — it takes which key holds
+loaders (`scan_ranks()` and `load_rank_trees()`) run it right after ancestry-linking.
+Another tag, `openmp_runtime` (libomp/libgomp fork, barrier and wait machinery), is acted on after tagging
+by `splice_openmp_runtime()` — `splice_by_tag()` in its `into_owner` mode: each runtime row's self-time is
+credited to the user function that called into the runtime (the owner), instead of every parallel region's
+runtime cost merging by label into a few generic rows. Runtime time under a worker thread's root (idle
+spinning, launch overhead) is discarded, and rows that also carry `gpu_api`/`mpi_territory` are left alone.
+Compiler-outlined region and task bodies (`..omp_par`, `.omp_outlined`, `._omp_fn`) are never matched — they are
+the program's own work, and barrier/wait time inside a region lands on that region's row. Cray's OpenMP runtime
+symbol names have not been checked against the patterns. Nothing in this engine is specific to either backend — it takes which key holds
 a row's display name as a parameter (`label_key`, defaulting to `"label"` for the sample pipeline),
 so `stage3_rocprofsys_trace.py` reuses it unchanged for the trace-CSV pipeline's `wrapper_noise`/
 `compiler_runtime_noise`/`wrapper_branch_noise` tags, layering its own exact `category`-based
@@ -258,7 +266,9 @@ rules (`"ancestor_for_thread_roots"`, `"first_real_descendant_skip_tag"`, `"sibl
 ```
 
 To see the raw rows beneath a signal-return trampoline instead of having them folded into the
-interrupted function, use `"disable": ["sampler_signal_frame"]`.
+interrupted function, use `"disable": ["sampler_signal_frame"]`; to see OpenMP runtime frames as their own
+rows instead of credited to the owning function, use `"disable": ["openmp_runtime"]` (or `remove` a
+substring from it if one of your own symbols contains `kmp_`, `kmpc_` or `gomp_`).
 
 `add`/`remove` only ever touch a tag's `"substrings"` list; `disable` drops a tag entirely and is
 resolved first, so an `add`/`remove` naming a disabled tag is a no-op rather than an error. The
