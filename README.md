@@ -181,6 +181,21 @@ hot kernel's own caller chain traced back through whichever CPU call site launch
 omit it for a CPU-only report. `--max-depth N` here truncates each chain to its N nearest
 callers, counting *up* from the hotspot itself, not down from the root.
 
+### Who called this frame? — `extract_frame_callers.py`
+
+A table row tells you how much time a function took, not who called it. This standalone
+helper (Python 3 standard library only, so the one file can be copied to a machine where the
+profile itself can't leave) takes a regex, finds every matching row in the `sampling_*_clock-*.txt`
+tables, and prints the time they account for, their nearest caller, the nearest "anchor" caller
+(e.g. `hipStreamSynchronize`, `AMDGPUStreamTy::synchronize`, a runtime helper loop), a per-thread
+breakdown and the full call chains. By default it looks for the CPU-waiting-on-the-GPU frames
+(`Signal::WaitAcquire`/`WaitRelaxed`).
+
+```bash
+python3 postprocess/tools/extract_frame_callers.py <output-dir> [--target REGEX] [--anchor REGEX] \
+  [--time self|inclusive] [--max-chains N] [--max-depth N]
+```
+
 ### Selective instrumentation — `instrument_hotspots.sh`
 
 Once you already know your hotspots (from `profile_hotspots.sh` above),
@@ -411,7 +426,9 @@ tool's own `-h`/`--help` if you're unsure) classify rows using a bundled, editab
 patterns: MPI internals, GPU-API calls, compiler-runtime helpers, and rocprof-sys's own
 instrumentation wrappers are recognized and hidden or collapsed by default; the sampler's own
 signal-handler frames are folded into the function the sample interrupted, and OpenMP runtime
-frames (fork/join, barriers, waits) are credited to the function that contains the parallel region. If your
+frames (fork/join, barriers, waits) are credited to the function that contains the parallel region; runtime helper
+threads that only wait on the runtime (e.g. the OpenMP-offload RPC server thread) are left out of the CPU hotspot
+tables and named in a note instead. If your
 application uses a library or naming convention the bundled patterns don't recognize, pass a
 small JSON file via `--extra-noise-config path/to/config.json` (or set
 `$FRIENDLY_ROCPROF_NOISE_CONFIG` once for every run) to add, remove, or disable patterns

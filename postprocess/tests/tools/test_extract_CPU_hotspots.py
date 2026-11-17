@@ -1,7 +1,7 @@
 """Tests for extract_CPU_hotspots.py, the CPU-side (timemory text output) hotspots report tool.
 
 MetadataGuessingTests        -- EXECUTABLE_KEYS/RUN_DATETIME_KEYS/etc. match a real metadata.json/filenames
-WriteReportTests             -- end-to-end report content: tables, header, threshold/show-all/load imbalance
+WriteReportTests             -- end-to-end report content: tables, header, threshold/show-all/load imbalance, helper-thread note
 NestedDatedSubdirectoryTests -- ROCPROFSYS_TIME_OUTPUT's default timestamped subdirectory nesting
 MainCliTests                 -- --extra-noise-config via CLI flag and FRIENDLY_ROCPROF_NOISE_CONFIG env var
 """
@@ -87,6 +87,20 @@ class WriteReportTests(unittest.TestCase):
             self.assertIn("run date/time: 2026-07-21T07:40:00", report)
             self.assertIn("runtime: 21.824161 sec", report)
             self.assertIn("MPI ranks: 2", report)
+
+    def test_helper_thread_excluded_from_tables_and_named_in_note(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = hotspots.write_report(os.path.join(FIXTURES, "runtime_helper_thread"),
+                                           os.path.join(tmp, "hotspots.txt"))
+        self.assertIn("compute_kernel", report)
+        self.assertNotIn("std::pair", report)
+        self.assertIn("Excluded runtime helper thread(s)", report)
+        self.assertIn("rank 9101, thread 1: 335.000 sec in", report)
+
+    def test_no_helper_thread_note_when_none_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = hotspots.write_report(os.path.join(FIXTURES, "single_rank"), os.path.join(tmp, "h.txt"))
+        self.assertNotIn("Excluded runtime helper", report)
 
     def test_end_to_end_on_single_rank_fixture_blank_header(self):
         with tempfile.TemporaryDirectory() as tmp:

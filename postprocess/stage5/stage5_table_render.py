@@ -10,14 +10,14 @@ column means, only how wide it is and how to read its value out of an entry, har
 trailing unpadded label column (via wrap_trailing_label()) at a shared column-width target when a
 label is too long to fit. iter_table_rows() is the matching reader, letting a caller re-parse a
 rendered table's rows back out of report text without knowing where render_table() cut a wrapped
-label across physical lines. pct_total_note()/ranking_note() generate a table's own bulleted
+label across physical lines. pct_total_note()/ranking_note()/helper_thread_note() generate a table's own bulleted
 explanatory prose (what "%total" means, which time basis ranked it) from the same parameters that
 already decided the table's shape, so the prose and the table can't drift apart. What differs
 between tables (which columns, which field to rank by, which field means "% of total") is data
 supplied by the caller, not new code here.
 
 Functions: select_entries(), render_table(), wrap_trailing_label(), iter_table_rows(),
-pct_total_note(), ranking_note().
+pct_total_note(), ranking_note(), helper_thread_note().
 """
 
 
@@ -179,3 +179,20 @@ def ranking_note(unfiltered, extra_clause=""):
         "pass-through functions fall out of the ranking on their own"
     )
     return f"  - Ranked by {basis}.{extra_clause}\n"
+
+
+def helper_thread_note(helper_threads):
+    """Bulleted note listing runtime helper threads that were removed from a table (see
+    stage4_rocprofsys_sample_flat.aggregate()'s helper_threads_out), or "" when there are none.
+    Each thread's loop name and inclusive seconds are shown per rank, so the omitted time is
+    visible instead of silently missing."""
+    if not helper_threads:
+        return ""
+    lines = [
+        "  - Excluded runtime helper thread(s) -- present for the run but waiting on the runtime, "
+        "not on the critical path, so left out of every row and of the total above:\n"
+    ]
+    for h in sorted(helper_threads, key=lambda h: (str(h["rank"]), -h["sum"])):
+        loops = ", ".join(h["loops"])
+        lines.append(f"      rank {h['rank']}, thread {h['thread_id']}: {h['sum']:.3f} sec in {loops}\n")
+    return "".join(lines)

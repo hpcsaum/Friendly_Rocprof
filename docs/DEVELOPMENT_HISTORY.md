@@ -75,6 +75,7 @@
 | 2026-10-23 | Fixed `profile_CPU_hotspots.sh` producing no `wall_clock-*`/`sampling_*` text/JSON files on very recent ROCm: rocprof-sys's timemory backend (`ROCPROFSYS_PROFILE`) is now off by default (rocpd is the default output), and the launcher never enabled it explicitly -- it now exports `ROCPROFSYS_PROFILE=1`. Found on a real HPC run where the output filesystem was also at 98% quota, which first made the rocpd flush fail (SQLite `rc=1034`, `SQLITE_IOERR_FSYNC`) -- see full accounting below |
 | 2026-10-26 | Plan 4.2: fixed sampling profiles being dominated (or, with a user-local `std::pair` noise pattern, emptied) by the sampler's own signal-handler frames -- a sampled stack taken inside a signal handler carries the handler's frames beneath `___restore_rt`, so nearly all self-time sat on `std::pair<..._Rb_tree...>` rows and the interrupted functions showed ~0. New `sampler_signal_frame` tag + `fold_signal_frame_subtrees()` removes the trampoline subtree and folds its time into the interrupted function in both the flat and call-tree loaders; 714 -> 725 tests -- see full accounting below |
 | 2026-10-28 | Plan 4.3: OpenMP runtime frames (libomp/libgomp fork, barrier, wait) no longer merge every parallel region into a few generic hotspots like `__kmp_invoke_microtask` or `kmp_flag_64<...>::wait`: new `openmp_runtime` tag + `splice_by_tag(into_owner=True, skip_tags=...)` credits each runtime row's self-time to the user function that called into the runtime and discards worker-thread idle time. Checked against stacks captured from `amdflang`/`amdclang` programs covering ~20 OpenMP constructs; 725 -> 737 tests -- see full accounting below |
+| 2026-11-17 | Plan 4.4: runtime helper threads (the OpenMP-offload RPC server thread, alive for the whole run but only waiting on the runtime) no longer rank their wrapper frames as CPU hotspots or inflate the GPU-API table: new `runtime_helper_loop` tag with a thread-level `descendant_for_thread_roots` rule removes the whole thread subtree in both sample loaders and a note names what was left out; new standalone `extract_frame_callers.py` to trace who called any frame (written to diagnose this, usable on profiles that cannot leave the system); 737 -> 753 tests -- see full accounting below |
 
 ## 2026-07-30 — Project scaffolding and rules
 
@@ -3584,3 +3585,56 @@ fixture-level tests were confirmed to fail with the `splice_openmp_runtime()` ca
 generic `kmp_flag_64<...>::wait` row was the #1 hotspot (125 s) before the change and is gone after, with
 `compute_step..omp_par.1` ranked first (130 s) and `compute_step` credited its 20 s of fork/join runtime.
 As always, behavior on the user's real rocprof-sys output could not be tested here.
+
+## 2026-11-17 — Plan 4.4: remove runtime helper threads
+
+A real OpenMP-offload run (profile data cannot leave the user's system) had two threads per rank. Thread 0
+spent 65% of its time waiting for the GPU under `AMDGPUStreamTy::synchronize` (real, critical-path GPU wait).
+Thread 1 was the OpenMP-offload RPC server thread (`start_thread -> std::pair<...> -> std::pair<...> ->
+std::error_code::default_error_condition -> RPCServerTy::ServerThread::run -> hsa_signal_wait_scacquire ->
+InterruptSignal::WaitAcquire -> ___restore_rt -> std::pair<...int...>`), alive for the whole ~338 s run with
+82% of its CPU time inside `InterruptSignal::Wait*`. The user had been filtering `std::pair` by hand; unfiltered,
+every CPU hotspot was a `std::pair` row.
+
+How it was diagnosed. `rocr::core::InterruptSignal` is not described in any rocprofiler documentation; it is
+ROCr's signal implementation backed by a kernel event, chosen by `hsa_amd_signal_create` when interrupt waits
+are on (`HSA_ENABLE_INTERRUPT=1`, default) and a CPU agent consumes the signal. The new standalone
+`postprocess/tools/extract_frame_callers.py` (stdlib only, so it could be copied next to the confidential
+profile) answered "who called these frames?" in four steps: nesting under a HIP/OpenMP synchronize call or a
+runtime loop; per-thread matched-vs-total time; self time with sampler handler frames folded (every wait
+frame's own self time was 0 because all its samples sit under `___restore_rt`, hence `--no-fold` and the
+default fold); inclusive time double-counts `WaitRelaxed` nested under `WaitAcquire`. CPU-clock tables showed the
+waits are *spinning* (about 95% of a core on each thread), consistent with the OpenMP plugin's active HSA wait state
+(2 s default busy-wait window) — a CPU cost, not idle time.
+
+Two wrong statements made along the way and corrected: (1) that every percentage in this pipeline's tables was
+skewed by summing threads — `scan_ranks()`'s `root_sum` is the rank's largest single row, so the main tables are
+not (the 674 s denominator was specific to the new caller tool); (2) that a blocked wait costs no CPU, while the
+CPU-clock data showed these waits are not blocked.
+
+**Change** (`docs/plans/4.4-remove-runtime-helper-threads.md`): new `runtime_helper_loop` tag
+(`rpcserverty::serverthread::run`) with a new tag-definition key `descendant_for_thread_roots`:
+`helper_thread_tops()` walks up from a matching row through same-`thread_id` parents to the thread's entry row,
+never tagging the main thread (first row's `thread_id`) and never crossing threads, so a profile that reports
+every thread under one thread id tags nothing. Both loaders remove the tagged subtree right after `tag_rows()`
+(`scan_ranks()` also before `root_sum`, so a helper thread cannot inflate the rank total);
+`helper_thread_summaries()` records thread id, entry label, loop name and inclusive time first.
+`aggregate(..., helper_threads_out=[])` and `build_combined_view()`'s `info["helper_threads"]` carry them to
+`extract_CPU_hotspots.py`/`extract_hotspots.py`, which print `helper_thread_note()`. `AsyncEventsLoop` was
+deliberately not added (it runs real async handlers and is already counted as GPU-API overhead);
+`--extra-noise-config` can add loops or `disable` the tag.
+
+**Known limits, not fixed:** the call-tree tools and the caller-chains tool drop the thread silently (no note);
+the 43-56 s of thread 1's time outside the wait frames is removed with the thread; the origin of the
+mis-resolved `std::pair`/`error_code` wrapper frames above the loop is unexplained; only the main-thread/other
+thread split recorded in `thread_id` is used.
+
+**Real-data check.** None of the five `Heat_Convection_Solver` run directories contains the RPC loop, so
+`extract_CPU_hotspots.py` and `extract_calltree.py` were regenerated against the committed baseline for all five:
+all ten reports are identical apart from timestamps and paths. The affected profile cannot be tested here; the user confirmed on their own profile that the extra helper thread is gone from the tables (their earlier leftover `std::pair` rows under `___restore_rt` came from a corrupted wrapper script around the postprocessing tools, not from the fold).
+
+Tests: 737 -> 753. `RuntimeHelperThreadTests` (7) in stage3, `RuntimeHelperThreadFixtureTests` (4) in stage4
+flat and `LoadRankTreesHelperThreadTests` (1) in stage4 tree against the new `runtime_helper_thread/` fixture
+(main thread with a 200 s synchronize wait; a 335 s second thread with the exact wrapper/loop/restore_rt chain),
+`HelperThreadNoteTests` (2) and two `extract_CPU_hotspots.py` report tests; two expected-tag-set assertions
+updated. 

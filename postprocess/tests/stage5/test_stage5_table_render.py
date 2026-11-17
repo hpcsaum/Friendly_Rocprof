@@ -8,6 +8,7 @@ RenderTableTests        -- column alignment/padding, empty-entries case, end-to-
 WrapTrailingLabelTests  -- wrap_trailing_label()'s chunking, indentation, and pathological-width floor
 IterTableRowsTests      -- iter_table_rows() round-tripping unwrapped and wrapped rows back out
 PctTotalNoteTests       -- pct_total_note()'s prose
+HelperThreadNoteTests   -- helper_thread_note()'s excluded-thread listing
 RankingNoteTests        -- ranking_note()'s self-time vs inclusive-time wording
 """
 
@@ -262,6 +263,20 @@ class PctTotalNoteTests(unittest.TestCase):
     def test_different_entry_noun(self):
         note = tr.pct_total_note("kernel", "of the combined pool above")
         self.assertIn("each kernel's share", note)
+
+
+class HelperThreadNoteTests(unittest.TestCase):
+    def test_empty_when_no_helper_threads(self):
+        self.assertEqual(tr.helper_thread_note([]), "")
+
+    def test_lists_each_thread_with_rank_loop_and_seconds(self):
+        note = tr.helper_thread_note([
+            {"rank": "7002", "thread_id": "1", "label": "start_thread", "loops": ["RPC::run"], "sum": 12.5},
+            {"rank": "7001", "thread_id": "1", "label": "start_thread", "loops": ["RPC::run"], "sum": 335.0},
+        ])
+        self.assertIn("Excluded runtime helper thread(s)", note)
+        self.assertLess(note.index("rank 7001"), note.index("rank 7002"))
+        self.assertIn("rank 7001, thread 1: 335.000 sec in RPC::run", note)
 
 
 class RankingNoteTests(unittest.TestCase):

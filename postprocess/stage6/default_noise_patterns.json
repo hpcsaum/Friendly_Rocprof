@@ -34,6 +34,10 @@
   "openmp_runtime": {
     "substrings": ["kmp_", "kmpc_", "gomp_"]
   },
+  "runtime_helper_loop": {
+    "substrings": ["rpcserverty::serverthread::run"],
+    "descendant_for_thread_roots": true
+  },
   "sampler_signal_frame": {
     "substrings": ["restore_rt", "rt_sigreturn"]
   },

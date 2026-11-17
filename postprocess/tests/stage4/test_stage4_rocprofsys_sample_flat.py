@@ -7,6 +7,7 @@ RocrClassificationTests              -- ROCr runtime internals land in the GPU b
 WrapperContaminatedBranchFixtureTests -- a whole noise branch, including intermediate generic layers, vanishes end to end
 OpenMpRuntimeFixtureTests            -- libomp fork/join/barrier frames credited to the owning function, worker idle time dropped
 SamplerSignalFrameFixtureTests       -- signal-handler frames under a trampoline fold into the interrupted function's self time
+RuntimeHelperThreadFixtureTests      -- a second thread running the RPC server loop is removed whole and reported
 GpuSpawnedThreadFixtureTests         -- same-labeled thread-root rows kept distinct across the CPU/GPU bucket split
 AggregatePerRankTests                -- per-rank {label: value} breakdown, self vs unfiltered (inclusive) time
 NestedDatedSubdirectoryTests         -- files found one level down inside rocprof-sys's timestamped output subdirectory
@@ -300,6 +301,52 @@ class SamplerSignalFrameFixtureTests(unittest.TestCase):
                 stage6_noise_config.configure(None)
         labels = {e["label"] for e in cpu}
         self.assertIn("___restore_rt", labels)
+
+
+class RuntimeHelperThreadFixtureTests(unittest.TestCase):
+    DIR = os.path.join(FIXTURES, "runtime_helper_thread")
+
+    def test_helper_thread_rows_and_time_are_removed(self):
+        # runtime_helper_thread/sampling_wall_clock-9101.txt: thread 0 = main (300s: compute_kernel
+        # 100s self + a 200s hipStreamSynchronize wait); thread 1 = start_thread (335s) -> std::pair
+        # wrappers -> RPCServerTy::ServerThread::run -> signal wait -> ___restore_rt -> std::pair.
+        # Nothing of thread 1 may remain, and its 335s must not inflate the rank's total (300s).
+        helpers = []
+        cpu, gpu, _scanned, total = flat.aggregate(self.DIR, helper_threads_out=helpers)
+        self.assertEqual({e["label"] for e in cpu}, {"main", "compute_kernel"})
+        self.assertEqual({e["label"] for e in gpu},
+                         {"hip::hipStreamSynchronize",
+                          "rocr::core::InterruptSignal::WaitAcquire(hsa_signal_condition_t, long)"})
+        self.assertAlmostEqual(total, 300.0)
+        self.assertEqual(len(helpers), 1)
+        self.assertEqual(helpers[0]["rank"], "9101")
+        self.assertEqual(helpers[0]["thread_id"], "1")
+        self.assertEqual(helpers[0]["label"], "start_thread")
+        self.assertAlmostEqual(helpers[0]["sum"], 335.0)
+        self.assertIn("RPCServerTy::ServerThread::run", helpers[0]["loops"][0])
+
+    def test_main_thread_wait_is_kept(self):
+        _cpu, gpu, _scanned, _total = flat.aggregate(self.DIR)
+        wait = next(e for e in gpu if "WaitAcquire" in e["label"])
+        self.assertAlmostEqual(wait["self_sum"], 200.0)
+
+    def test_helper_threads_out_is_optional(self):
+        cpu, _gpu, _scanned, _total = flat.aggregate(self.DIR)
+        self.assertTrue(cpu)
+
+    def test_disabled_through_noise_config_restores_the_thread(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = os.path.join(tmp, "noise.json")
+            with open(cfg, "w") as f:
+                json.dump({"disable": ["runtime_helper_loop"]}, f)
+            stage6_noise_config.configure(cfg)
+            try:
+                helpers = []
+                cpu, _gpu, _scanned, _total = flat.aggregate(self.DIR, helper_threads_out=helpers)
+            finally:
+                stage6_noise_config.configure(None)
+        self.assertEqual(helpers, [])
+        self.assertIn("start_thread", {e["label"] for e in cpu})
 
 
 class GpuSpawnedThreadFixtureTests(unittest.TestCase):

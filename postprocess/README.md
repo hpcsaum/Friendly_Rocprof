@@ -72,6 +72,15 @@ before tagging: a sampled stack taken inside a signal handler carries the handle
 beneath the signal-return trampoline (`___restore_rt`), so the whole subtree below a trampoline is
 removed and its time is added to the interrupted function's self-time instead. Both sample-pipeline
 loaders (`scan_ranks()` and `load_rank_trees()`) run it right after ancestry-linking.
+Another tag, `runtime_helper_loop`, marks whole threads: a non-main thread whose own call chain runs a
+known runtime server loop (currently the OpenMP-offload RPC server's `RPCServerTy::ServerThread::run`) is a
+helper thread that lives for the whole run but only waits on the runtime, off the critical path. Both loaders
+drop its entire subtree right after tagging (`helper_thread_summaries()` first records its thread entry,
+loop name and inclusive time), `aggregate()`'s optional `helper_threads_out` list carries those records,
+and the CPU hotspot tables print them in a note (`stage5_table_render.helper_thread_note()`) so the omitted
+time stays visible. The tag definition's `"descendant_for_thread_roots"` key does the thread-level matching;
+the main thread (the first row's `thread_id`) is never tagged, and a profile that reports every thread under one
+thread id is left untouched.
 Another tag, `openmp_runtime` (libomp/libgomp fork, barrier and wait machinery), is acted on after tagging
 by `splice_openmp_runtime()` — `splice_by_tag()` in its `into_owner` mode: each runtime row's self-time is
 credited to the user function that called into the runtime (the owner), instead of every parallel region's
@@ -252,7 +261,7 @@ See that module's own docstring for the exact mechanism.
 `default_noise_patterns.json` (in `stage6/`) maps each tag name to a pattern definition:
 `"prefixes"`/`"substrings"`/`"suffixes"` (case-insensitive label matches) and/or
 `"filename_substrings"` (matched against the source file's basename), plus a couple of structural
-rules (`"ancestor_for_thread_roots"`, `"first_real_descendant_skip_tag"`, `"sibling_group_source_tag"`
+rules (`"ancestor_for_thread_roots"`, `"descendant_for_thread_roots"`, `"first_real_descendant_skip_tag"`, `"sibling_group_source_tag"`
 — see `stage3_rocprofsys_common.py`'s own module docstring for exactly what each one does). A user's
 `--extra-noise-config`/`$FRIENDLY_ROCPROF_NOISE_CONFIG` file layers a diff on top, resolved by
 `stage6_noise_config.configure()`:
@@ -269,6 +278,9 @@ To see the raw rows beneath a signal-return trampoline instead of having them fo
 interrupted function, use `"disable": ["sampler_signal_frame"]`; to see OpenMP runtime frames as their own
 rows instead of credited to the owning function, use `"disable": ["openmp_runtime"]` (or `remove` a
 substring from it if one of your own symbols contains `kmp_`, `kmpc_` or `gomp_`).
+
+To keep a runtime helper thread in the tables, use `"disable": ["runtime_helper_loop"]`; to treat another
+runtime waiter loop as a helper thread, `"add": {"runtime_helper_loop": ["<lowercase loop name>"]}`.
 
 `add`/`remove` only ever touch a tag's `"substrings"` list; `disable` drops a tag entirely and is
 resolved first, so an `add`/`remove` naming a disabled tag is a no-op rather than an error. The

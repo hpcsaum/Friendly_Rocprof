@@ -17,7 +17,8 @@ import os
 from stage1_rocprofsys_sample import PID_SUFFIX_RE, parse_table_file
 from stage2_rocprofsys_sample import attach_ancestry
 from stage3_rocprofsys_common import (
-    fold_signal_frame_subtrees, remove_tagged_subtrees, splice_openmp_runtime, tag_rows,
+    RUNTIME_HELPER_LOOP_TAG, fold_signal_frame_subtrees, helper_thread_summaries,
+    remove_tagged_subtrees, splice_openmp_runtime, tag_rows,
 )
 
 NON_TIMING_FILES = {"available.txt", "instrumented.txt", "excluded.txt", "overlapping.txt"}
@@ -50,7 +51,7 @@ def scan_ranks(output_dir):
     exact instrumented value is preferred over the statistical one.
 
     Returns a list of {"rank_key": str, "rows": [...merged, each tagged with
-    "gpu"/"mpi": bool...], "files": [source paths], "root_sum": float}, one
+    "gpu"/"mpi": bool...], "files": [source paths], "root_sum": float, "helper_threads": [...]}, one
     entry per distinct rank, in the same order the sorted glob produces.
     "root_sum" is that rank's largest RAW row SUM across all its included
     files, from before same-label rows were merged together -- deliberately
@@ -69,6 +70,11 @@ def scan_ranks(output_dir):
     function's self-time before anything else runs, so tag_rows() and the noise drops below
     never see them. root_sum is unaffected, since the fold only ever removes non-root rows'
     descendants and adds time to a row whose inclusive SUM already contained it.
+
+    Runtime helper threads (runtime_helper_loop tag: a non-main thread running e.g. the OpenMP-offload
+    RPC server loop) are removed whole, subtree included, right after tagging, so neither their
+    frames nor their time reach root_sum or any table; each one is recorded in the rank's
+    "helper_threads" list ({"thread_id", "label", "loops", "sum"}) so a report can say what was left out.
 
     OpenMP runtime rows (openmp_runtime tag) are then spliced out and their self-time credited to
     the user function that called into the runtime (splice_openmp_runtime()), after root_sum is
@@ -100,14 +106,23 @@ def scan_ranks(output_dir):
         attach_ancestry(rows)
         rows = fold_signal_frame_subtrees(rows)
         tag_rows(rows, filename=path)
+        helper_summaries = helper_thread_summaries(rows)
+        rows = remove_tagged_subtrees(rows, {RUNTIME_HELPER_LOOP_TAG})
 
         m = PID_SUFFIX_RE.search(base)
         rank_key = m.group(1) if m else path
         if rank_key not in per_rank:
-            per_rank[rank_key] = {"files": [], "wall_clock": {}, "sampling": {}, "root_sum": 0.0}
+            per_rank[rank_key] = {"files": [], "wall_clock": {}, "sampling": {}, "root_sum": 0.0,
+                                  "helper_threads": {}}
             order.append(rank_key)
         bucket = per_rank[rank_key]
         bucket["files"].append(path)
+        # A rank's wall_clock and sampling_wall_clock tables both list the same helper thread;
+        # keep one summary per (thread, entry label), the larger of the two measurements.
+        for summary in helper_summaries:
+            key = (summary["thread_id"], summary["label"])
+            if key not in bucket["helper_threads"] or summary["sum"] > bucket["helper_threads"][key]["sum"]:
+                bucket["helper_threads"][key] = summary
         if rows:
             bucket["root_sum"] = max(bucket["root_sum"], max(row["sum"] for row in rows))
         rows = splice_openmp_runtime(rows)
@@ -158,12 +173,13 @@ def scan_ranks(output_dir):
             "rows": list(merged.values()),
             "files": bucket["files"],
             "root_sum": bucket["root_sum"],
+            "helper_threads": list(bucket["helper_threads"].values()),
         })
 
     return ranks
 
 
-def aggregate(output_dir):
+def aggregate(output_dir, helper_threads_out=None):
     """Scan output_dir for timemory text tables and aggregate rows by clean function name.
 
     Returns (cpu_entries, gpu_entries, scanned_files, total_runtime) where each
@@ -187,10 +203,16 @@ def aggregate(output_dir):
     own "pct_total" here is self_sum-based (select_entries() recomputes it
     against whichever metric it's actually ranking by, so this is just a
     sensible default for callers that use aggregate()'s output directly).
+
+    helper_threads_out, when given a list, is extended with every removed runtime helper thread
+    (scan_ranks()'s "helper_threads" entries plus a "rank" key), so a report can mention them
+    without changing the 4-tuple every existing caller unpacks.
     """
     ranks = scan_ranks(output_dir)
     scanned_files = [f for r in ranks for f in r["files"]]
     total_runtime = sum(r["root_sum"] for r in ranks)
+    if helper_threads_out is not None:
+        helper_threads_out.extend(dict(h, rank=r["rank_key"]) for r in ranks for h in r["helper_threads"])
 
     # Keyed by (label, gpu), not just label -- see scan_ranks()'s same note:
     # the same generic label (e.g. "start_thread") can be classified

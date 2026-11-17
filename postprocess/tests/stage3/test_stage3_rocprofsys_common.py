@@ -6,6 +6,7 @@ SelfTagsTests               -- self_tags vs. tags: which matches come from the r
 AncestorForThreadRootsTests -- ancestor_for_thread_roots inheritance onto a thread-root row
 SiblingGroupTests           -- wrapper_branch_noise sibling-group contamination marking
 FirstRealDescendantTests    -- first_real_descendant_skip_tag inheritance through wrapper hops
+RuntimeHelperThreadTests    -- runtime_helper_loop tags a non-main thread's entry row; main thread and one-thread-id files untouched
 FoldSignalFrameSubtreesTests -- fold_signal_frame_subtrees() folds a signal-trampoline subtree's time into the interrupted function
 RemoveTaggedSubtreesTests   -- remove_tagged_subtrees() drops a tagged node and its whole subtree
 SpliceByTagTests            -- splice_by_tag() reparenting, fold vs. discard of removed self-time
@@ -276,6 +277,83 @@ class FirstRealDescendantTests(unittest.TestCase):
         rows = [parent, child, gpu_grandchild]
         s3.tag_rows(rows, TAG_DEFS)
         self.assertEqual(child["tags"], set())
+
+
+class RuntimeHelperThreadTests(unittest.TestCase):
+    """descendant_for_thread_roots / helper_thread_summaries() against the real bundled
+    runtime_helper_loop definition."""
+
+    LOOP = "llvm::omp::target::RPCServerTy::ServerThread::run(llvm::omp::target::RPCServerTy*)"
+
+    @staticmethod
+    def row(label, thread, parent=None, sum_=0.0):
+        r = make_taggable_row(label, parent=parent, sum_=sum_)
+        r["thread_id"] = thread
+        r["is_thread_root"] = parent is not None and parent["thread_id"] != thread
+        return r
+
+    def defs(self):
+        return {"runtime_helper_loop": load_default_patterns()["runtime_helper_loop"]}
+
+    def second_thread_rows(self):
+        main = self.row("main", "0", sum_=300.0)
+        spawn = self.row("pthread_create", "0", parent=main)
+        entry = self.row("start_thread", "1", parent=spawn, sum_=335.0)  # nested thread root
+        wrapper = self.row("std::pair<std::_Rb_tree_iterator<int>, bool>", "1", parent=entry, sum_=335.0)
+        loop = self.row(self.LOOP, "1", parent=wrapper, sum_=335.0)
+        wait = self.row("rocr::core::InterruptSignal::WaitAcquire", "1", parent=loop, sum_=335.0)
+        return [main, spawn, entry, wrapper, loop, wait], entry
+
+    def test_nested_thread_root_is_tagged_and_whole_thread_removed(self):
+        rows, entry = self.second_thread_rows()
+        s3.tag_rows(rows, self.defs())
+        self.assertIn("runtime_helper_loop", entry["tags"])
+        self.assertNotIn("runtime_helper_loop", rows[0]["tags"])
+        kept = s3.remove_tagged_subtrees(rows, {"runtime_helper_loop"})
+        self.assertEqual([r["label"] for r in kept], ["main", "pthread_create"])
+
+    def test_untethered_second_thread_tree_is_tagged(self):
+        main = self.row("main", "0", sum_=300.0)
+        entry = self.row("start_thread", "1", sum_=335.0)
+        loop = self.row(self.LOOP, "1", parent=entry, sum_=335.0)
+        s3.tag_rows([main, entry, loop], self.defs())
+        self.assertIn("runtime_helper_loop", entry["tags"])
+        self.assertNotIn("runtime_helper_loop", main["tags"])
+
+    def test_main_thread_loop_is_never_tagged(self):
+        main = self.row("main", "0", sum_=300.0)
+        loop = self.row(self.LOOP, "0", parent=main, sum_=10.0)
+        s3.tag_rows([main, loop], self.defs())
+        self.assertNotIn("runtime_helper_loop", main["tags"])
+        self.assertEqual(s3.helper_thread_summaries([main, loop], self.defs()), [])
+
+    def test_single_thread_id_file_tags_nothing_beyond_the_loop_itself(self):
+        # Every row reports thread "0": the helper cannot be told apart from the main thread, so
+        # no ancestor may be flagged (which would remove the whole main tree).
+        main = self.row("main", "0", sum_=300.0)
+        entry = self.row("start_thread", "0", parent=main, sum_=335.0)
+        loop = self.row(self.LOOP, "0", parent=entry, sum_=335.0)
+        s3.tag_rows([main, entry, loop], self.defs())
+        self.assertNotIn("runtime_helper_loop", main["tags"])
+        self.assertNotIn("runtime_helper_loop", entry["tags"])
+
+    def test_summary_reports_thread_entry_loop_and_inclusive_time(self):
+        rows, _entry = self.second_thread_rows()
+        summaries = s3.helper_thread_summaries(rows, self.defs())
+        self.assertEqual(summaries, [{"thread_id": "1", "label": "start_thread",
+                                      "loops": [self.LOOP], "sum": 335.0}])
+
+    def test_rows_without_thread_id_are_ignored(self):
+        # trace-CSV rows carry no thread_id and use label_key="name"
+        row = {"name": self.LOOP, "parent": None, "is_thread_root": False}
+        other = {"name": "main", "parent": None, "is_thread_root": False}
+        s3.tag_rows([other, row], self.defs(), label_key="name")
+        self.assertNotIn("runtime_helper_loop", other["tags"])
+        self.assertEqual(s3.helper_thread_summaries([other, row], self.defs(), label_key="name"), [])
+
+    def test_disabled_tag_yields_no_summaries(self):
+        rows, _entry = self.second_thread_rows()
+        self.assertEqual(s3.helper_thread_summaries(rows, {}), [])
 
 
 class FoldSignalFrameSubtreesTests(unittest.TestCase):

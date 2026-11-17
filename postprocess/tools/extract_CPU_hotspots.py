@@ -22,7 +22,7 @@ from stage1_rocprofsys_sample import PID_SUFFIX_RE
 from stage4_rocprofsys_sample_flat import aggregate, aggregate_per_rank
 from stage5_cpu_hotspots_table import CPU_HOTSPOTS_COLUMNS
 from stage5_load_imbalance_table import compute_load_imbalance, imbalance_note, load_imbalance_columns
-from stage5_table_render import pct_total_note, ranking_note, render_table, select_entries
+from stage5_table_render import helper_thread_note, pct_total_note, ranking_note, render_table, select_entries
 import stage6_cli_common
 import stage6_noise_config
 from stage6_report_builder import command_header, render_report, standard_header, write_report_file
@@ -85,7 +85,8 @@ def gather_run_info(output_dir, scanned_files):
 
 def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False, unfiltered=False,
                   command_line=""):
-    cpu_entries, gpu_entries, scanned_files, total_runtime = aggregate(output_dir)
+    helper_threads = []
+    cpu_entries, gpu_entries, scanned_files, total_runtime = aggregate(output_dir, helper_threads_out=helper_threads)
     if not scanned_files:
         raise SystemExit(
             f"error: no rocprof-sys timemory text table found in {output_dir!r} "
@@ -139,7 +140,8 @@ def write_report(output_dir, dest_path, top=None, threshold=None, show_all=False
          + ranking_note(unfiltered)
          + pct_total_note("function", threshold_unit)
          + "  - This won't add up to 100% across both this table and the GPU API table below "
-           "-- they share one denominator.\n"),
+           "-- they share one denominator.\n"
+         + helper_thread_note(helper_threads)),
         (f"GPU API / launch overhead -- showing {gpu_desc}\n",
          render_table(CPU_HOTSPOTS_COLUMNS, gpu_selected) + "\n"
          + "  - Host-side call overhead only -- NOT device kernel execution time. rocprof-sys's "

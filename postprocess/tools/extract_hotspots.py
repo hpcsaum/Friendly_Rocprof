@@ -31,7 +31,7 @@ from stage5_cpu_hotspots_table import CPU_HOTSPOTS_COLUMNS
 from stage5_fused_hotspots_table import FUSED_HOTSPOTS_COLUMNS, build_combined_view
 from stage5_gpu_hotspots_table import GPU_HOTSPOTS_COLUMNS
 from stage5_load_imbalance_table import compute_load_imbalance, imbalance_note, load_imbalance_columns
-from stage5_table_render import pct_total_note, ranking_note, render_table, select_entries
+from stage5_table_render import helper_thread_note, pct_total_note, ranking_note, render_table, select_entries
 import stage6_cli_common
 import stage6_noise_config
 from stage6_report_builder import command_header, render_report, standard_header, write_report_file
@@ -180,7 +180,8 @@ def write_report(rocprof_sys_dir, rocprofv3_dir, dest_path, top=None, threshold=
         (f"CPU compute hotspots (rocprof-sys run) -- showing {cpu_desc}\n",
          render_table(CPU_HOTSPOTS_COLUMNS, cpu_selected) + "\n"
          + pct_total_note("entry", cpu_unit)
-         + ranking_note(unfiltered)),
+         + ranking_note(unfiltered)
+         + helper_thread_note(info["helper_threads"])),
         (f"GPU kernel hotspots (rocprofv3 run) -- showing {gpu_desc}\n",
          render_table(GPU_HOTSPOTS_COLUMNS, gpu_selected) + "\n"
          + pct_total_note("entry", gpu_unit)),

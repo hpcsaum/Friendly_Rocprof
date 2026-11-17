@@ -35,6 +35,11 @@ doesn't pass its own tag_defs explicitly. Each tag definition may combine:
     every row in that file.
   - "ancestor_for_thread_roots": true -- a thread-root row (row["is_thread_root"]) that doesn't
     match by its own label also carries this tag if ANY ancestor's label does.
+  - "descendant_for_thread_roots": true -- the row that starts a thread's own subtree (a
+    thread-root row, or an untethered root with parent=None) carries this tag if ANY row in that
+    same thread's subtree matches by its own label. Never applied to the first row's thread (the
+    main thread), and never crosses into another thread's subtree; a file that reports every thread
+    under one thread id therefore tags nothing. See helper_thread_tops().
   - "first_real_descendant_skip_tag": <other tag name> -- an untethered root (row["parent"] is
     None) that doesn't already carry this tag inherits it from the first descendant reached by
     walking down through its first child at each level, skipping any child that itself carries
@@ -54,13 +59,20 @@ bookkeeping instead of on the function the signal interrupted. Those frames are 
 application code; their time belongs to the interrupted function, which is the row directly above
 the trampoline.
 
+One tag, "runtime_helper_loop", marks whole threads rather than frames: a thread whose own call
+chain runs a runtime server loop (e.g. the OpenMP-offload RPC server's wait loop) is a helper
+thread that exists for the whole run but is not on the critical path, so the loaders remove its
+entire subtree (remove_tagged_subtrees()) and report it through helper_thread_summaries() instead
+of ranking its frames as hotspots.
+
 splice_by_tag() also has an owner-attribution mode (into_owner=True) used for the "openmp_runtime"
 tag: OpenMP runtime frames (libomp/libgomp fork/join, barrier and wait machinery) are generic, so
 merging them by label would pile every parallel region's runtime cost into the same few rows;
 instead each one's self-time is credited to the surviving ancestor that called into the runtime.
 
-Functions: fold_signal_frame_subtrees(), tag_rows(), remove_tagged_subtrees(), splice_by_tag(),
-splice_openmp_runtime(), make_collapses_children(), make_is_pruned().
+Functions: fold_signal_frame_subtrees(), helper_thread_tops(), helper_thread_summaries(), tag_rows(),
+remove_tagged_subtrees(), splice_by_tag(), splice_openmp_runtime(), make_collapses_children(),
+make_is_pruned().
 """
 
 import os
@@ -129,6 +141,49 @@ def fold_signal_frame_subtrees(rows, tag_defs=None, label_key="label"):
             pending.extend(children_map.get(id(node), []))
 
     return [row for row in rows if id(row) not in removed]
+
+
+RUNTIME_HELPER_LOOP_TAG = "runtime_helper_loop"
+
+
+def helper_thread_tops(rows, tag_def, label_key="label"):
+    """Maps id(top_row) -> (top_row, sorted loop labels) for every non-main thread whose subtree
+    contains a row matching tag_def by its own label. top_row is the row where that thread's chain
+    begins: walking up from a matching row through parents of the same thread_id until a thread
+    root (is_thread_root) or an untethered root (parent None) is reached. The main thread -- the
+    thread_id of the file's first row -- is skipped, so a file that reports every thread under
+    one thread id yields nothing instead of flagging the main tree. Rows without a thread_id
+    (trace-CSV pipeline) never match."""
+    if not rows:
+        return {}
+    main_thread = rows[0].get("thread_id")
+    tops = {}
+    for row in rows:
+        thread = row.get("thread_id")
+        if thread is None or thread == main_thread or not _label_matches(row[label_key], tag_def):
+            continue
+        top = row
+        while (top["parent"] is not None and not top.get("is_thread_root")
+               and top["parent"].get("thread_id") == thread):
+            top = top["parent"]
+        entry = tops.setdefault(id(top), (top, set()))
+        entry[1].add(row[label_key])
+    return {key: (top, sorted(loops)) for key, (top, loops) in tops.items()}
+
+
+def helper_thread_summaries(rows, tag_defs=None, label_key="label"):
+    """One {"thread_id", "label", "loops", "sum"} dict per runtime helper thread found in `rows`
+    (see helper_thread_tops()), "sum" being the thread's inclusive seconds. Call BEFORE the
+    helper subtrees are removed. Empty when the runtime_helper_loop tag is absent from tag_defs
+    (e.g. disabled through an --extra-noise-config)."""
+    if tag_defs is None:
+        tag_defs = _stage6_tag_defs()
+    tag_def = tag_defs.get(RUNTIME_HELPER_LOOP_TAG)
+    if tag_def is None:
+        return []
+    tops = helper_thread_tops(rows, tag_def, label_key)
+    return [{"thread_id": top.get("thread_id"), "label": top[label_key], "loops": loops,
+             "sum": top.get("sum", 0.0)} for top, loops in tops.values()]
 
 
 def tag_rows(rows, tag_defs=None, filename=None, label_key="label"):
@@ -224,6 +279,11 @@ def tag_rows(rows, tag_defs=None, filename=None, label_key="label"):
         row["self_tags"] = set(self_match[key])
         row["tags"] = tags
         row["structural_drop_tags"] = set()
+
+    for name, td in patterned_tags.items():
+        if td.get("descendant_for_thread_roots"):
+            for top, _loops in helper_thread_tops(rows, td, label_key).values():
+                top["tags"].add(name)
 
     for siblings in [top_level] + list(children_map.values()):
         if len(siblings) < 2:

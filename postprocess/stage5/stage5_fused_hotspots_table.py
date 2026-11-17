@@ -63,7 +63,9 @@ def build_combined_view(rocprof_sys_dir, rocprofv3_dir):
     from multiple threads), self_sum sums correctly across them since every
     node's self-time is disjoint from every other's.
     """
-    cpu_entries, cpu_gpu_api_entries, cpu_scanned, cpu_total_raw = stage4_rocprofsys_sample_flat.aggregate(rocprof_sys_dir)
+    helper_threads = []
+    cpu_entries, cpu_gpu_api_entries, cpu_scanned, cpu_total_raw = stage4_rocprofsys_sample_flat.aggregate(
+        rocprof_sys_dir, helper_threads_out=helper_threads)
     gpu_entries, gpu_scanned, gpu_total_ns = stage4_rocprofv3.aggregate(rocprofv3_dir)
 
     gpu_api_overhead_sec = sum(e["self_sum"] for e in cpu_gpu_api_entries if e["label"] in SYNC_WAIT_LABELS)
@@ -98,5 +100,6 @@ def build_combined_view(rocprof_sys_dir, rocprofv3_dir):
         "cpu_pure_total_sec": cpu_pure_total_sec,
         "gpu_total_sec": gpu_total_sec,
         "combined_total_sec": combined_total_sec,
+        "helper_threads": helper_threads,
     }
     return fused_entries, cpu_entries, cpu_gpu_api_entries, gpu_entries, info

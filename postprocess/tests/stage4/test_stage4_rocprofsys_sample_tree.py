@@ -8,6 +8,7 @@ AttachKernelSummariesCollectIntoTests -- collect_into gathering the synthetic gr
 LoadRankTreesTests                    -- per-rank parse+ancestry loading, thread-root detection, primary/fallback file pattern selection, postprocess hook
 LoadRankTreesOpenMpRuntimeTests       -- libomp runtime rows spliced out, outlined bodies/task bodies reparented to their owner
 LoadRankTreesSignalFrameTests         -- signal-trampoline subtrees folded into the interrupted function before tagging
+LoadRankTreesHelperThreadTests        -- a runtime helper thread's whole subtree is absent from the loaded tree
 KernelTotalsWithCountsTests           -- per-rank (count, seconds) totals from rocprofv3's kernel_stats.csv
 PairGpuPerRankTests                   -- pairing CPU rank keys to GPU kernel data, only when rank counts match
 AttachGpuKernelsTests                 -- end-to-end wiring of load_rank_trees()+merge+attach_kernel_summaries() into one tree
@@ -34,6 +35,7 @@ GPU_SPAWNED_THREAD_DIR = os.path.join(FIXTURES, "gpu_spawned_thread")
 MULTI_METRIC_RANK_DIR = os.path.join(FIXTURES, "multi_metric_rank")
 EMPTY_DIR = os.path.join(FIXTURES, "no_timing_data")
 SIGNAL_FRAMES_DIR = os.path.join(FIXTURES, "sampler_signal_frames")
+HELPER_THREAD_DIR = os.path.join(FIXTURES, "runtime_helper_thread")
 OPENMP_REGION_DIR = os.path.join(FIXTURES, "openmp_parallel_region")
 
 RANK = "r0"  # every hand-built test tree in this file simulates one rank
@@ -406,6 +408,18 @@ class LoadRankTreesSignalFrameTests(unittest.TestCase):
         self.assertAlmostEqual(by_label["fortran_runtime_init"]["self_sum"], 60.0)
         self.assertAlmostEqual(by_label["compute_kernel"]["self_sum"], 40.0)
         self.assertAlmostEqual(by_label["compute_kernel"]["sum"], 40.0)
+
+
+class LoadRankTreesHelperThreadTests(unittest.TestCase):
+    def test_helper_thread_subtree_removed_main_thread_kept(self):
+        ranks = s4t.load_rank_trees(HELPER_THREAD_DIR, "sampling_wall_clock-*.txt", "wall_clock-*.txt")
+        _rank_key, rows, roots = ranks[0]
+        labels = {r["label"] for r in rows}
+        self.assertIn("main", labels)
+        self.assertIn("compute_kernel", labels)
+        self.assertNotIn("start_thread", labels)
+        self.assertFalse(any("std::pair" in r["label"] or "RPCServerTy" in r["label"] for r in rows))
+        self.assertEqual([r["label"] for r in roots], ["main"])
 
 
 class KernelTotalsWithCountsTests(unittest.TestCase):
